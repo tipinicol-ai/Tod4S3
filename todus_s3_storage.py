@@ -95,26 +95,60 @@ def build_object_key(
     if isinstance(telegram_user_id, bool) or int(telegram_user_id) <= 0:
         raise ValueError("El ID de Telegram debe ser un entero positivo.")
 
-    stamp = (now or datetime.now(timezone.utc)).strftime("%Y%m%d-%H%M%S")
-    folder_id = uuid.uuid4().hex[:6]
-    file_id = uuid.uuid4().hex[:12]
-    original_name = Path(filename or "download.bin").name
-    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", original_name).strip("._") or "download.bin"
-    extension = Path(safe_name).suffix.lower()
+    original_name = str(filename or "download.bin").replace("\\", "/").rsplit("/", 1)[-1]
+    original_name = "".join(
+        character for character in original_name
+        if ord(character) >= 32 and not 127 <= ord(character) <= 159
+    ).strip()
+    if original_name in {"", ".", ".."}:
+        original_name = "download.bin"
+    extension = Path(original_name).suffix.lower()
     if not re.fullmatch(r"\.[a-z0-9]{1,16}", extension):
         extension = ".bin"
-        safe_name = f"{Path(safe_name).stem or 'download'}{extension}"
+        original_name = f"{Path(original_name).stem or 'download'}{extension}"
     if object_prefix is None:
+        stamp = (now or datetime.now(timezone.utc)).strftime("%Y%m%d-%H%M%S")
+        folder_id = uuid.uuid4().hex[:6]
+        file_id = uuid.uuid4().hex[:12]
         prefix = f"users/tg_{int(telegram_user_id)}/telegram"
-    else:
-        prefix_parts = str(object_prefix).strip("/").split("/")
-        if not prefix_parts or any(
-            part in {"", ".", ".."} or not re.fullmatch(r"[A-Za-z0-9._-]+", part)
-            for part in prefix_parts
-        ):
-            raise ValueError("El prefijo de almacenamiento no es válido.")
-        prefix = "/".join(prefix_parts)
-    return f"{prefix}/{stamp}-{folder_id}/telegram_{file_id}_{safe_name}"
+        safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", original_name).strip("._") or "download.bin"
+        return f"{prefix}/{stamp}-{folder_id}/telegram_{file_id}_{safe_name}"
+
+    prefix_parts = str(object_prefix).strip("/").split("/")
+    if not prefix_parts or any(
+        part in {"", ".", ".."} or not re.fullmatch(r"[A-Za-z0-9._-]+", part)
+        for part in prefix_parts
+    ):
+        raise ValueError("El prefijo de almacenamiento no es válido.")
+    prefix = "/".join(prefix_parts)
+    return f"{prefix}/{int(telegram_user_id)}/{original_name}"
+
+
+def _key_for_upload(session, key: str, base_url: str, timeout_seconds: int) -> str:
+    """Usa el nombre original si está libre; evita sobrescribir una carga previa."""
+    url = f"{base_url.rstrip('/')}/{quote(key, safe='/')}"
+    try:
+        response = session.head(
+            url,
+            timeout=(min(30, timeout_seconds), min(30, timeout_seconds)),
+            headers={"User-Agent": "JK-Telegram-Bot/1.0"},
+            allow_redirects=True,
+        )
+    except requests.RequestException:
+        response = None
+
+    if response is not None and response.status_code in {404, 410}:
+        return key
+    if response is not None and not (
+        200 <= response.status_code < 300 or response.status_code == 405 or response.status_code >= 500
+    ):
+        raise ToDusS3UploadError(
+            f"ToDus S3 respondió HTTP {response.status_code} al comprobar el nombre del archivo."
+        )
+
+    path = Path(key)
+    unique_name = f"{path.stem}_{uuid.uuid4().hex[:10]}{path.suffix}"
+    return f"{path.parent.as_posix()}/{unique_name}"
 
 
 def _content_disposition(filename: str) -> str:
@@ -195,7 +229,8 @@ def upload_to_todus_s3(
     """Upload a file with an unauthenticated PUT to ToDus S3 and return its public URL.
 
     By default, the Telegram user ID forms part of the object namespace; callers
-    may provide a validated object_prefix to use a configured destination folder.
+    may provide a validated object_prefix to use ``prefix/user_id/original_name``.
+    A collision gets a short suffix instead of overwriting an existing object.
     No ToDus account, phone number, password or Authorization header is required.
     """
     path = Path(local_path)
@@ -203,7 +238,6 @@ def upload_to_todus_s3(
         raise FileNotFoundError(f"Archivo no encontrado: {path}")
     size = path.stat().st_size
     key = build_object_key(telegram_user_id, filename=filename, object_prefix=object_prefix)
-    url = f"{base_url.rstrip('/')}/{quote(key, safe='/')}"
     content_type = mimetypes.guess_type(Path(filename).name)[0] or "application/octet-stream"
     headers = {
         "Content-Type": content_type,
@@ -216,6 +250,9 @@ def upload_to_todus_s3(
     last_error: Exception | None = None
 
     with requests.Session() as session:
+        if object_prefix is not None:
+            key = _key_for_upload(session, key, base_url, timeout)
+        url = f"{base_url.rstrip('/')}/{quote(key, safe='/')}"
         for attempt in range(MAX_RETRIES):
             if is_cancelled and is_cancelled():
                 raise ToDusS3UploadCancelled("Subida cancelada.")

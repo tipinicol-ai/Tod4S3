@@ -19,7 +19,7 @@ import zipfile
 from datetime import datetime, timedelta, timezone
 from email.message import Message
 from pathlib import Path
-from urllib.parse import quote, quote_plus, urljoin, urlsplit
+from urllib.parse import quote, quote_plus, unquote, urljoin, urlsplit
 
 import aiohttp
 from aiohttp.abc import AbstractResolver
@@ -1811,7 +1811,7 @@ def filename_from_response(headers, final_url: str) -> str:
         if candidate:
             filename = clean_filename(candidate)
     if not filename:
-        path_name = urlsplit(final_url).path.rsplit("/", 1)[-1]
+        path_name = unquote(urlsplit(final_url).path.rsplit("/", 1)[-1])
         filename = clean_filename(path_name, "download")
     if not Path(filename).suffix:
         content_type = (headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
@@ -1918,6 +1918,17 @@ async def download_to_temp(session, original_url, progress_callback=None, max_by
                     url = validate_url_syntax(urljoin(url, location))
                     continue
                 if response.status < 200 or response.status >= 300:
+                    s3_host = (urlsplit(url).hostname or "").rstrip(".").lower()
+                    if response.status == 404 and s3_host == "s3.todus.cu":
+                        try:
+                            s3_error = await response.text(errors="replace")
+                        except Exception:
+                            s3_error = ""
+                        if "NoSuchKey" in s3_error:
+                            raise ValueError(
+                                "Ese archivo ya no existe en la nube S3. "
+                                "El enlace pudo expirar o el objeto fue borrado; pide un enlace nuevo."
+                            )
                     upstream = response.headers.get("x-e2b-error-message") or response.headers.get("x-error-message")
                     detail = f": {upstream}" if upstream else ""
                     raise ValueError(f"HTTP {response.status}{detail}")

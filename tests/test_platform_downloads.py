@@ -216,6 +216,72 @@ class WebpageResponseTests(unittest.IsolatedAsyncioTestCase):
             await download_to_temp(FakeSession(), "https://example.com/watch/123")
 
 
+    async def test_downloads_todus_s3_url_and_decodes_original_filename(self):
+        url = "https://s3.todus.cu/stream/users/df/73421/%C2%A1v%C3%ADdeo%20de%20prueba.mp4"
+        payload = b"video-data"
+
+        class FakeContent:
+            async def iter_chunked(self, _size):
+                yield payload
+
+        class FakeResponse:
+            status = 200
+            content_length = len(payload)
+            headers = {"Content-Type": "video/mp4"}
+            content = FakeContent()
+
+            def __init__(self):
+                self.url = url
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+        class FakeSession:
+            def get(self, *_args, **_kwargs):
+                return FakeResponse()
+
+        with TemporaryDirectory() as directory:
+            path, filename, size = await download_to_temp(
+                FakeSession(), url, partial_path=Path(directory) / "download.part"
+            )
+            self.assertEqual(filename, "¡vídeo de prueba.mp4")
+            self.assertEqual(size, len(payload))
+            self.assertEqual(path.read_bytes(), payload)
+
+    async def test_todus_s3_missing_key_returns_an_expiry_hint(self):
+        url = "https://s3.todus.cu/stream/users/df/73421/ausente.mp4"
+
+        class FakeResponse:
+            status = 404
+            content_length = 0
+            headers = {"Content-Type": "application/xml"}
+
+            def __init__(self):
+                self.url = url
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            async def text(self, errors="strict"):
+                return "<Error><Code>NoSuchKey</Code></Error>"
+
+        class FakeSession:
+            def get(self, *_args, **_kwargs):
+                return FakeResponse()
+
+        with TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(ValueError, "pudo expirar"):
+                await download_to_temp(
+                    FakeSession(), url, partial_path=Path(directory) / "download.part"
+                )
+
+
 class ResponseFilenameTests(unittest.TestCase):
     def test_infers_mp4_from_mime_when_url_has_no_extension(self):
         self.assertEqual(
