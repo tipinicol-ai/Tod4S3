@@ -1248,10 +1248,13 @@ public final class MainActivity extends Activity {
         circle.setShape(GradientDrawable.OVAL);
         circle.setColor(accentColor());
         badge.setBackground(circle);
-        TextView initials = text(token == null || token.isEmpty() ? "➤" : "T", 20, true);
-        initials.setTextColor(onAccentColor());
-        initials.setGravity(Gravity.CENTER);
-        badge.addView(initials, new FrameLayout.LayoutParams(dp(48), dp(48), Gravity.CENTER));
+        ImageView profilePhoto = new ImageView(this);
+        profilePhoto.setImageResource(R.drawable.ic_launcher_foreground);
+        profilePhoto.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        profilePhoto.setPadding(dp(9), dp(9), dp(9), dp(9));
+        profilePhoto.setContentDescription("Foto de perfil de Telegram");
+        badge.addView(profilePhoto, new FrameLayout.LayoutParams(dp(48), dp(48), Gravity.CENTER));
+        loadTelegramProfilePhoto(profilePhoto);
         account.addView(badge, new LinearLayout.LayoutParams(dp(48), dp(48)));
         LinearLayout accountText = new LinearLayout(this);
         accountText.setOrientation(LinearLayout.VERTICAL);
@@ -1267,7 +1270,14 @@ public final class MainActivity extends Activity {
         account.addView(accountAction, new LinearLayout.LayoutParams(dp(34), dp(38)));
         content.addView(account, margin(0, 0, 0, 18));
 
-        PopupWindow popup = new PopupWindow(content, dp(296), -1, true);
+        ScrollView drawerScroll = new ScrollView(this);
+        drawerScroll.setFillViewport(true);
+        drawerScroll.setSmoothScrollingEnabled(true);
+        drawerScroll.setVerticalScrollBarEnabled(true);
+        drawerScroll.setOverScrollMode(View.OVER_SCROLL_IF_CONTENT_SCROLLS);
+        drawerScroll.setBackgroundColor(surfaceColor());
+        drawerScroll.addView(content, new FrameLayout.LayoutParams(-1, -2));
+        PopupWindow popup = new PopupWindow(drawerScroll, dp(296), -1, true);
         popup.setBackgroundDrawable(new ColorDrawable(surfaceColor()));
         popup.setOutsideTouchable(true);
         popup.setElevation(dp(18));
