@@ -50,7 +50,7 @@ El estado Premium se vuelve a consultar al abrir/volver a la app y cada 15 segun
 
 ## Estado
 
-La versión 1.3.1 muestra los planes antes de la primera elección y los guarda dentro del menú ☰ después de seleccionar; los nombres indican «Premium 15 días», «Premium 20 días» y «Premium 30 días». El panel ☰ se desplaza verticalmente sin mostrar una barra gruesa y enseña la foto de Telegram en su cabecera cuando está disponible. Incluye iconos de Transfermóvil y saldo móvil, foto de Telegram también en el encabezado de Ajustes, menú de cuenta y pestañas «Todos», «Activas» y «Completadas». Ajustes se desplaza verticalmente para recorrer sus secciones. Las descargas por enlace aparecen en «Activas» con progreso y controles para pausar, reanudar o eliminar la tarea y sus temporales. No incorpora textos de otra aplicación ni botones de repositorio. El APK conserva el relleno inerte para quedar cerca de 1.9 MB.
+La versión 1.3.2 muestra los planes antes de la primera elección y los guarda dentro del menú ☰ después de seleccionar; los nombres indican «Premium 15 días», «Premium 20 días» y «Premium 30 días». El panel ☰ se desplaza verticalmente sin mostrar una barra gruesa y enseña la foto de Telegram en su cabecera cuando está disponible. Incluye iconos de Transfermóvil y saldo móvil, foto de Telegram también en el encabezado de Ajustes y pestañas «# ToDus», «Activas» y «Completadas». «# ToDus» muestra exclusivamente archivos entregados por ToDus; las tareas de enlaces directos permanecen en «Activas» y el historial local en «Completadas». Ajustes se desplaza verticalmente para recorrer sus secciones. El APK conserva el relleno inerte para quedar cerca de 1.9 MB.
 
 
 ## Tamaño del APK

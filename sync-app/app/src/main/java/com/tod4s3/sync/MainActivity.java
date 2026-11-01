@@ -586,7 +586,7 @@ public final class MainActivity extends Activity {
         View tabDivider = new View(this);
         tabDivider.setBackgroundColor(borderColor());
         page.addView(tabDivider, new LinearLayout.LayoutParams(-1, dp(1)));
-        TextView status = bodyText("Descargas de Tod4S3 Sync");
+        TextView status = bodyText("all".equals(filter) ? "Entregas recibidas por ToDus" : "Descargas de Tod4S3 Sync");
         status.setTextSize(12);
         page.addView(status, margin(2, 12, 2, 0));
         dashboardItemsBox = new LinearLayout(this);
@@ -643,7 +643,7 @@ public final class MainActivity extends Activity {
     private LinearLayout dashboardTabs() {
         LinearLayout tabs = new LinearLayout(this);
         tabs.setOrientation(LinearLayout.HORIZONTAL);
-        String[][] options = {{"all", "# Todos"}, {"active", "↓ Activas"}, {"completed", "✓ Completadas"}};
+        String[][] options = {{"all", "# ToDus"}, {"active", "↓ Activas"}, {"completed", "✓ Completadas"}};
         for (String[] option : options) {
             LinearLayout item = new LinearLayout(this);
             item.setOrientation(LinearLayout.VERTICAL);
@@ -707,35 +707,38 @@ public final class MainActivity extends Activity {
         if (!viewingDashboard || dashboardItemsBox == null) return;
         dashboardItemsBox.removeAllViews();
         int shown = 0;
-        if ("all".equals(dashboardFilter) || "active".equals(dashboardFilter)) {
+        boolean toDusTab = "all".equals(dashboardFilter);
+        if ("active".equals(dashboardFilter)) {
             shown += renderDirectLinkTasks();
         }
-        ArrayList<JSONObject> tasks = new ArrayList<>();
-        for (int i = 0; i < latestAppTaskRows.length(); i++) {
-            JSONObject row = latestAppTaskRows.optJSONObject(i);
-            if (row == null) continue;
-            String state = row.optString("state", "queued");
-            boolean active = state.equals("queued") || state.equals("downloading")
-                    || state.equals("uploading") || state.equals("cancelling");
-            boolean done = state.equals("done") || state.equals("error") || state.equals("paused");
-            if ("active".equals(dashboardFilter) && !active) continue;
-            if ("completed".equals(dashboardFilter) && !done) continue;
-            String searchText = (row.optString("filename", "") + " " + row.optString("task_id", ""))
-                    .toLowerCase(java.util.Locale.ROOT);
-            if (!dashboardSearch.isEmpty() && !searchText.contains(dashboardSearch.toLowerCase(java.util.Locale.ROOT))) continue;
-            tasks.add(row);
+        if (!toDusTab) {
+            ArrayList<JSONObject> tasks = new ArrayList<>();
+            for (int i = 0; i < latestAppTaskRows.length(); i++) {
+                JSONObject row = latestAppTaskRows.optJSONObject(i);
+                if (row == null) continue;
+                String state = row.optString("state", "queued");
+                boolean active = state.equals("queued") || state.equals("downloading")
+                        || state.equals("uploading") || state.equals("cancelling");
+                boolean done = state.equals("done") || state.equals("error") || state.equals("paused");
+                if ("active".equals(dashboardFilter) && !active) continue;
+                if ("completed".equals(dashboardFilter) && !done) continue;
+                String searchText = (row.optString("filename", "") + " " + row.optString("task_id", ""))
+                        .toLowerCase(java.util.Locale.ROOT);
+                if (!dashboardSearch.isEmpty() && !searchText.contains(dashboardSearch.toLowerCase(java.util.Locale.ROOT))) continue;
+                tasks.add(row);
+            }
+            java.util.Collections.sort(tasks, (left, right) -> {
+                long a = left.optLong("created_at", 0);
+                long b = right.optLong("created_at", 0);
+                return sortOldestFirst ? Long.compare(a, b) : Long.compare(b, a);
+            });
+            for (JSONObject row : tasks) {
+                dashboardItemsBox.addView(appTaskCard(row), margin(0, 0, 0, 9));
+                shown++;
+            }
         }
-        java.util.Collections.sort(tasks, (left, right) -> {
-            long a = left.optLong("created_at", 0);
-            long b = right.optLong("created_at", 0);
-            return sortOldestFirst ? Long.compare(a, b) : Long.compare(b, a);
-        });
-        for (JSONObject row : tasks) {
-            dashboardItemsBox.addView(appTaskCard(row), margin(0, 0, 0, 9));
-            shown++;
-        }
-        if ("all".equals(dashboardFilter) && latestDeliveryRows.length() > 0) {
-            TextView cloudTitle = text("Archivos en la nube", 15, true);
+        if (toDusTab && latestDeliveryRows.length() > 0) {
+            TextView cloudTitle = text("Entregas de ToDus", 15, true);
             dashboardItemsBox.addView(cloudTitle, margin(2, 10, 0, 8));
             LinearLayout cloudBox = new LinearLayout(this);
             cloudBox.setOrientation(LinearLayout.VERTICAL);
@@ -865,6 +868,7 @@ public final class MainActivity extends Activity {
     }
 
     private void addDashboardEmptyState(LinearLayout container) {
+        boolean toDusTab = "all".equals(dashboardFilter);
         LinearLayout empty = card();
         empty.setGravity(Gravity.CENTER_HORIZONTAL);
         empty.setPadding(dp(22), dp(34), dp(22), dp(30));
@@ -872,15 +876,19 @@ public final class MainActivity extends Activity {
         icon.setGravity(Gravity.CENTER);
         icon.setTextColor(accentColor());
         empty.addView(icon, new LinearLayout.LayoutParams(-1, dp(62)));
-        TextView title = text("No hay descargas", 18, true);
+        TextView title = text(toDusTab ? "No hay entregas de ToDus" : "No hay descargas", 18, true);
         title.setGravity(Gravity.CENTER);
         empty.addView(title, margin(0, 8, 0, 0));
-        TextView hint = bodyText("Pega el enlace que recibiste del bot para descargarlo en el teléfono.");
+        TextView hint = bodyText(toDusTab
+                ? "Cuando el bot te entregue archivos por ToDus, aparecerán aquí."
+                : "Pega el enlace que recibiste del bot para descargarlo en el teléfono.");
         hint.setGravity(Gravity.CENTER);
-        empty.addView(hint, margin(0, 7, 0, 14));
-        Button add = primaryButton("Nueva descarga");
-        add.setOnClickListener(v -> openNewDownloadDialog());
-        empty.addView(add, margin(0, 0, 0, 0));
+        empty.addView(hint, margin(0, 7, 0, toDusTab ? 0 : 14));
+        if (!toDusTab) {
+            Button add = primaryButton("Nueva descarga");
+            add.setOnClickListener(v -> openNewDownloadDialog());
+            empty.addView(add, margin(0, 0, 0, 0));
+        }
         container.addView(empty, margin(0, 24, 0, 0));
     }
 
@@ -2778,7 +2786,7 @@ public final class MainActivity extends Activity {
             }
         }
         if (shown == 0) {
-            TextView empty = bodyText("No tienes entregas nuevas del bot.");
+            TextView empty = bodyText("No tienes entregas nuevas de ToDus.");
             empty.setGravity(Gravity.CENTER);
             empty.setPadding(dp(12), dp(20), dp(12), dp(20));
             deliveriesBox.addView(empty, new LinearLayout.LayoutParams(-1, -2));
