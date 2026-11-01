@@ -92,7 +92,6 @@ public final class MainActivity extends Activity {
     private static final String PREF_DOWNLOAD_FOLDER = "download_folder_uri_v1";
     private static final int REQUEST_WRITE_STORAGE = 702;
     private static final int REQUEST_PAYMENT_RECEIPT = 703;
-    private static final int REQUEST_IMPORT_JK = 704;
     private static final int REQUEST_DOWNLOAD_FOLDER = 705;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -117,8 +116,6 @@ public final class MainActivity extends Activity {
     private LinearLayout deliveriesBox;
     private LinearLayout dashboardItemsBox;
     private View dashboardFab;
-    private EditText jkImportTarget;
-    private TextView jkImportStatus;
     private String token;
     private String todusPhone = "";
     private String todusPassword = "";
@@ -142,6 +139,9 @@ public final class MainActivity extends Activity {
     private boolean sortOldestFirst;
     private JSONArray latestDeliveryRows = new JSONArray();
     private JSONArray latestAppTaskRows = new JSONArray();
+    private android.graphics.Bitmap telegramProfileBitmap;
+    private boolean telegramProfilePhotoLoading;
+    private final ArrayList<ImageView> pendingProfileAvatarViews = new ArrayList<>();
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
@@ -183,21 +183,6 @@ public final class MainActivity extends Activity {
                 showSettings(false);
             } catch (Exception e) {
                 Toast.makeText(this, "No se pudo guardar el acceso a esa carpeta.", Toast.LENGTH_LONG).show();
-            }
-            return;
-        }
-        if (requestCode == REQUEST_IMPORT_JK) {
-            if (resultCode != RESULT_OK || data == null || data.getData() == null) return;
-            try {
-                ArrayList<String> links = extractLinks(readImportFile(data.getData()));
-                if (links.isEmpty()) {
-                    if (jkImportStatus != null) jkImportStatus.setText("El archivo no contiene enlaces HTTP/HTTPS.");
-                } else if (jkImportTarget != null) {
-                    jkImportTarget.setText(android.text.TextUtils.join("\n", links));
-                    if (jkImportStatus != null) jkImportStatus.setText("Se importaron " + links.size() + " enlace(s). Revisa la lista y pulsa Iniciar descarga.");
-                }
-            } catch (Exception e) {
-                if (jkImportStatus != null) jkImportStatus.setText(e.getMessage() == null ? "No se pudo leer el archivo .JK." : e.getMessage());
             }
             return;
         }
@@ -276,7 +261,7 @@ public final class MainActivity extends Activity {
 
         page.addView(text("Planes Premium", 20, true), margin(0, 4, 0, 4));
         page.addView(bodyText("Descargas sin límite mientras el plan esté activo."), margin(0, 0, 0, 10));
-        page.addView(planOffer("Premium 15", "15 días · 250 CUP", "Compresor Premium y entrega directa por ToDus.", "Premium 15 días · 250 CUP"), margin(0, 0, 0, 10));
+        page.addView(planOffer("Premium 15", "15 días · 250 CUP", "Descargas sin límite y entrega directa por ToDus.", "Premium 15 días · 250 CUP"), margin(0, 0, 0, 10));
         page.addView(planOffer("Premium 20", "20 días · 300 CUP", "Descargas sin límite durante 20 días.", "Premium 20 días · 300 CUP"), margin(0, 0, 0, 10));
         page.addView(planOffer("Premium 30", "30 días · 500 CUP", "Un mes completo de descargas sin límite.", "Premium 30 días · 500 CUP"), margin(0, 0, 0, 10));
         LinearLayout paymentMethods = new LinearLayout(this);
@@ -558,6 +543,7 @@ public final class MainActivity extends Activity {
         page.setOrientation(LinearLayout.VERTICAL);
         page.setPadding(dp(14), dp(12), dp(14), dp(24));
         page.addView(dashboardToolbar(), margin(0, 0, 0, 0));
+        if ("all".equals(filter)) page.addView(premiumPlansBanner(), margin(0, 10, 0, 0));
         page.addView(dashboardTabs(), margin(0, 12, 0, 0));
         View tabDivider = new View(this);
         tabDivider.setBackgroundColor(borderColor());
@@ -577,6 +563,30 @@ public final class MainActivity extends Activity {
                 refreshAppTasks();
             }, animated ? 260L : 0L);
         }
+    }
+
+    private LinearLayout premiumPlansBanner() {
+        LinearLayout banner = new LinearLayout(this);
+        banner.setOrientation(LinearLayout.HORIZONTAL);
+        banner.setGravity(Gravity.CENTER_VERTICAL);
+        banner.setPadding(dp(14), dp(10), dp(10), dp(10));
+        banner.setBackground(roundRect(Color.rgb(35, 31, 23), 18, Color.rgb(143, 111, 48)));
+        LinearLayout copy = new LinearLayout(this);
+        copy.setOrientation(LinearLayout.VERTICAL);
+        TextView title = text("Planes Premium", 16, true);
+        title.setTextColor(Color.rgb(255, 221, 141));
+        copy.addView(title);
+        TextView subtitle = bodyText("Precios, duración y opciones de pago");
+        subtitle.setTextSize(12);
+        copy.addView(subtitle, margin(0, 3, 0, 0));
+        banner.addView(copy, new LinearLayout.LayoutParams(0, -2, 1f));
+        Button viewPlans = goldButton("Ver planes");
+        viewPlans.setTextSize(12);
+        viewPlans.setMinHeight(dp(40));
+        viewPlans.setPadding(dp(10), dp(3), dp(10), dp(3));
+        viewPlans.setOnClickListener(v -> showPlansStep(true));
+        banner.addView(viewPlans, margin(dp(8), 0, 0, 0));
+        return banner;
     }
 
     private LinearLayout dashboardToolbar() {
@@ -609,6 +619,9 @@ public final class MainActivity extends Activity {
         LinearLayout.LayoutParams sortLayout = new LinearLayout.LayoutParams(dp(44), dp(44));
         sortLayout.setMargins(dp(5), 0, 0, 0);
         bar.addView(sort, sortLayout);
+        LinearLayout.LayoutParams accountLayout = new LinearLayout.LayoutParams(dp(52), dp(52));
+        accountLayout.setMargins(dp(5), 0, 0, 0);
+        bar.addView(accountMenuButton(), accountLayout);
         return bar;
     }
 
@@ -767,7 +780,7 @@ public final class MainActivity extends Activity {
         TextView title = text("No hay descargas", 18, true);
         title.setGravity(Gravity.CENTER);
         empty.addView(title, margin(0, 8, 0, 0));
-        TextView hint = bodyText("Pega un enlace o importa un archivo .JK para empezar.");
+        TextView hint = bodyText("Pega el enlace que recibiste del bot para descargarlo en el teléfono.");
         hint.setGravity(Gravity.CENTER);
         empty.addView(hint, margin(0, 7, 0, 14));
         Button add = primaryButton("Nueva descarga");
@@ -796,43 +809,29 @@ public final class MainActivity extends Activity {
         LinearLayout content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
         content.setPadding(dp(18), dp(10), dp(18), dp(12));
-        content.addView(bodyText("Pega enlaces de YouTube o enlaces directos. El bot los procesará y entregará el archivo a tu ToDus."));
-        EditText linkInput = input("Pega aquí el enlace", android.text.InputType.TYPE_CLASS_TEXT
+        content.addView(bodyText("Pega aquí el enlace de descarga que te entregó el bot para guardarlo en el teléfono."));
+        EditText linkInput = input("Pega aquí el enlace del bot", android.text.InputType.TYPE_CLASS_TEXT
                 | android.text.InputType.TYPE_TEXT_VARIATION_URI | android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE);
         linkInput.setSingleLine(false);
         linkInput.setMinLines(2);
         linkInput.setMaxLines(5);
         linkInput.setGravity(Gravity.TOP | Gravity.START);
         content.addView(linkInput, margin(0, 12, 0, 0));
-        TextView status = bodyText("También puedes importar un archivo .JK. Para entregar por ToDus, registra tu número en el bot con /todus.");
+        TextView status = bodyText("La descarga se guardará en Descargas del teléfono. Para iniciar un trabajo nuevo, usa «Enviar enlace al bot»." );
         status.setTextSize(12);
         content.addView(status, margin(0, 10, 0, 0));
-        Button importButton = secondaryButton("Importar archivo .JK");
-        importButton.setOnClickListener(v -> {
-            jkImportTarget = linkInput;
-            jkImportStatus = status;
-            Intent picker = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-            picker.addCategory(Intent.CATEGORY_OPENABLE);
-            picker.setType("*/*");
-            try {
-                startActivityForResult(picker, REQUEST_IMPORT_JK);
-            } catch (Exception e) {
-                status.setText("No se pudo abrir el selector de archivos.");
-            }
-        });
-        content.addView(importButton, margin(0, 12, 0, 0));
-        TextView localDownloadStatus = bodyText("Descarga aquí un enlace HTTPS directo al archivo. Este flujo es independiente de las entregas ToDus y de la cola del bot.");
+        TextView localDownloadStatus = bodyText("Descarga el enlace recibido del bot directamente en la carpeta Descargas del teléfono.");
         localDownloadStatus.setTextSize(12);
         content.addView(localDownloadStatus, margin(0, 12, 0, 0));
         ProgressBar localDownloadProgress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
         localDownloadProgress.setMax(100);
         localDownloadProgress.setVisibility(View.GONE);
         content.addView(localDownloadProgress, margin(0, 6, 0, 0));
-        Button localDownload = secondaryButton("Descargar link directo aquí");
+        Button localDownload = secondaryButton("Descargar enlace recibido");
         localDownload.setOnClickListener(v -> {
             ArrayList<String> links = extractLinks(linkInput.getText().toString());
             if (links.size() != 1) {
-                localDownloadStatus.setText("Pega un solo enlace HTTPS directo al archivo para descargarlo aquí.");
+                localDownloadStatus.setText("Pega un solo enlace HTTPS recibido del bot para descargarlo aquí.");
                 return;
             }
             if (!links.get(0).toLowerCase(java.util.Locale.ROOT).startsWith("https://")) {
@@ -853,7 +852,7 @@ public final class MainActivity extends Activity {
         submit.setOnClickListener(v -> {
             ArrayList<String> links = extractLinks(linkInput.getText().toString());
             if (links.isEmpty()) {
-                status.setText("Pega un enlace HTTP/HTTPS válido o importa un archivo .JK.");
+                status.setText("Pega un enlace HTTP/HTTPS válido.");
                 return;
             }
             if (links.size() > 20) {
@@ -1037,22 +1036,6 @@ public final class MainActivity extends Activity {
         }, "app-url-submit").start();
     }
 
-    private String readImportFile(Uri uri) throws Exception {
-        try (InputStream input = getContentResolver().openInputStream(uri);
-             ByteArrayOutputStream output = new ByteArrayOutputStream()) {
-            if (input == null) throw new IOException("No se pudo leer el archivo.");
-            byte[] buffer = new byte[4096];
-            int count;
-            int total = 0;
-            while ((count = input.read(buffer)) != -1) {
-                total += count;
-                if (total > 256 * 1024) throw new IOException("El archivo .JK supera el límite de 256 KB.");
-                output.write(buffer, 0, count);
-            }
-            return new String(output.toByteArray(), StandardCharsets.UTF_8);
-        }
-    }
-
     private void showNavigationDrawer(View anchor) {
         LinearLayout content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
@@ -1098,7 +1081,7 @@ public final class MainActivity extends Activity {
             }
             else showAccountMenu(v);
         });
-        addDrawerRow(content, popup, "▣", "Archivos en la Nube", "Entregas del bot", () -> showHomeSection(false, true));
+        addDrawerRow(content, popup, "▣", "Archivos en la Nube", "Entregas del bot", () -> showDashboard("all", true));
         addDrawerRow(content, popup, "↓", "Descargas", "Archivos guardados en el teléfono", () -> showDashboard("completed", true));
         addDrawerRow(content, popup, "▥", "Estadísticas", "Uso y actividad", () -> showStats(true));
         addDrawerRow(content, popup, "◉", "Grupo de Telegram", "Dark Zone", () -> openExternalUrl("https://t.me/Dark_Zone_666"));
@@ -1309,11 +1292,8 @@ public final class MainActivity extends Activity {
 
         addSettingsHeading(page, "APLICACIÓN");
         LinearLayout appInfo = card();
-        appInfo.addView(text("JK Downloader · Tod4S3 Sync", 15, true));
+        appInfo.addView(text("Tod4S3 Sync", 15, true));
         appInfo.addView(bodyText("Versión " + appVersion() + " · Android"), margin(0, 5, 0, 0));
-        Button repository = secondaryButton("Ver repositorio y actualizaciones");
-        repository.setOnClickListener(v -> openExternalUrl("https://github.com/yunierki1234-coder/Tod4S3"));
-        appInfo.addView(repository, margin(0, 12, 0, 0));
         page.addView(appInfo);
         page.addView(infoCard("Privacidad", "La app solo consulta las entregas del bot vinculado y las tareas que tú envías desde este formulario. No lee chats privados ni envía tu contraseña de ToDus."), margin(0, 12, 0, 0));
         showPage(page, animated);
@@ -1410,8 +1390,9 @@ public final class MainActivity extends Activity {
         page.setOrientation(LinearLayout.VERTICAL);
         page.setPadding(dp(16), dp(14), dp(16), dp(28));
         page.addView(sectionHeader("Acerca de"));
-        page.addView(infoCard("Tod4S3 Sync", "Versión " + appVersion() + "\nDescargas gestionadas por el bot vinculado."), margin(0, 20, 0, 0));
-        page.addView(infoCard("Privacidad", "La app no accede a tus chats privados ni a mensajes de otras personas. Solo muestra los archivos que entrega el bot y los enlaces que tú envías explícitamente."), margin(0, 10, 0, 0));
+        page.addView(infoCard("Tod4S3 Sync", "Versión " + appVersion() + "\nDescarga las entregas y enlaces que recibes del bot."), margin(0, 20, 0, 0));
+        page.addView(infoCard("Privacidad", "La app no accede a tus chats privados ni a mensajes de otras personas. Solo muestra los archivos que entrega el bot y los enlaces que tú envías explícitamente. La cuota gratis se guarda en el servidor por tu cuenta y borrar datos locales no la reinicia."), margin(0, 10, 0, 0));
+        page.addView(infoCard("Dispositivo y cuota", "Se conserva un identificador seudónimo estable del móvil para vincular esta instalación. La cuota gratuita se comparte por cuenta de Telegram y se renueva al cumplirse 24 horas."), margin(0, 10, 0, 0));
         page.addView(infoCard("ToDus", "La contraseña se guarda cifrada en este dispositivo y no se envía al bot."), margin(0, 10, 0, 0));
         Button group = secondaryButton("Abrir grupo de Telegram");
         group.setOnClickListener(v -> openExternalUrl("https://t.me/Dark_Zone_666"));
@@ -1425,8 +1406,9 @@ public final class MainActivity extends Activity {
     }
 
     private void shareReport(String topic) {
-        String message = "Reporte desde Tod4S3 Sync: " + topic + ". Describe aquí lo ocurrido.";
-        openExternalUrl("https://t.me/share/url?url=&text=" + Uri.encode(message));
+        String message = "Hola, necesito ayuda con Tod4S3 Sync.\n\nMotivo: " + topic
+                + "\n\nDescribe aquí el problema y revisa el mensaje antes de enviarlo.";
+        openTelegramChat(message);
     }
 
     private void showHomeSection(boolean downloadsTab, boolean animated) {
@@ -1713,6 +1695,7 @@ public final class MainActivity extends Activity {
         logo.setScaleType(ImageView.ScaleType.FIT_CENTER);
         logo.setPadding(dp(9), dp(9), dp(9), dp(9));
         avatar.addView(logo, new FrameLayout.LayoutParams(dp(48), dp(48), Gravity.CENTER));
+        loadTelegramProfilePhoto(logo);
         TextView bars = text("☰", 11, true);
         bars.setGravity(Gravity.CENTER);
         bars.setTextColor(Color.rgb(40, 27, 6));
@@ -1727,6 +1710,70 @@ public final class MainActivity extends Activity {
             return false;
         });
         return avatar;
+    }
+
+    private void loadTelegramProfilePhoto(ImageView target) {
+        if (token == null || token.isEmpty()) return;
+        if (telegramProfileBitmap != null) {
+            applyTelegramProfilePhoto(target, telegramProfileBitmap);
+            return;
+        }
+        if (!pendingProfileAvatarViews.contains(target)) pendingProfileAvatarViews.add(target);
+        if (telegramProfilePhotoLoading) return;
+        telegramProfilePhotoLoading = true;
+        String requestToken = token;
+        new Thread(() -> {
+            HttpURLConnection connection = null;
+            android.graphics.Bitmap decoded = null;
+            try {
+                connection = (HttpURLConnection) new URL(API_BASE + "/api/app/profile/photo").openConnection();
+                connection.setRequestMethod("GET");
+                connection.setConnectTimeout(8_000);
+                connection.setReadTimeout(12_000);
+                connection.setRequestProperty("Accept", "image/*");
+                connection.setRequestProperty("Authorization", "Bearer " + requestToken);
+                int code = connection.getResponseCode();
+                if (code == HttpURLConnection.HTTP_OK) {
+                    try (InputStream input = connection.getInputStream();
+                         ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+                        byte[] buffer = new byte[8192];
+                        int count;
+                        int total = 0;
+                        while ((count = input.read(buffer)) != -1) {
+                            total += count;
+                            if (total > 1024 * 1024) throw new IOException("La foto de perfil supera el límite.");
+                            output.write(buffer, 0, count);
+                        }
+                        byte[] image = output.toByteArray();
+                        decoded = android.graphics.BitmapFactory.decodeByteArray(image, 0, image.length);
+                    }
+                }
+            } catch (Exception ignored) {
+                // Mantener el icono predeterminado si el usuario no tiene foto o no hay conexión.
+            } finally {
+                if (connection != null) connection.disconnect();
+            }
+            android.graphics.Bitmap result = decoded;
+            runOnUiThread(() -> {
+                telegramProfilePhotoLoading = false;
+                if (requestToken.equals(token) && result != null) {
+                    telegramProfileBitmap = result;
+                    for (ImageView image : pendingProfileAvatarViews) applyTelegramProfilePhoto(image, result);
+                }
+                pendingProfileAvatarViews.clear();
+            });
+        }, "telegram-profile-photo").start();
+    }
+
+    private void applyTelegramProfilePhoto(ImageView target, android.graphics.Bitmap photo) {
+        target.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        target.setPadding(0, 0, 0, 0);
+        GradientDrawable clip = new GradientDrawable();
+        clip.setShape(GradientDrawable.OVAL);
+        clip.setColor(Color.TRANSPARENT);
+        target.setBackground(clip);
+        target.setClipToOutline(true);
+        target.setImageBitmap(photo);
     }
 
     private void showAccountMenu(View anchor) {
@@ -2054,11 +2101,26 @@ public final class MainActivity extends Activity {
 
     private String deviceId() {
         String id = prefs.getString("device_id", "");
-        if (id.isEmpty()) {
-            id = Settings.Secure.getString(getContentResolver(), Settings.Secure.ANDROID_ID);
-            if (id == null || id.isEmpty()) id = UUID.randomUUID().toString();
-            prefs.edit().putString("device_id", id).apply();
+        if (id.matches("[0-9a-f]{64}")) return id;
+        String androidId = Settings.Secure.getString(getContentResolver(), Settings.Secure.ANDROID_ID);
+        if (androidId != null && !androidId.isEmpty()) {
+            try {
+                byte[] digest = MessageDigest.getInstance("SHA-256")
+                        .digest(("Tod4S3Sync:" + androidId).getBytes(StandardCharsets.UTF_8));
+                StringBuilder fingerprint = new StringBuilder(64);
+                final char[] hex = "0123456789abcdef".toCharArray();
+                for (byte value : digest) {
+                    fingerprint.append(hex[(value >> 4) & 0x0f]);
+                    fingerprint.append(hex[value & 0x0f]);
+                }
+                id = fingerprint.toString();
+            } catch (Exception ignored) {
+                id = androidId;
+            }
+        } else if (id.isEmpty()) {
+            id = UUID.randomUUID().toString();
         }
+        prefs.edit().putString("device_id", id).apply();
         return id;
     }
 

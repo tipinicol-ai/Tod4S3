@@ -58,7 +58,7 @@ def test_build_object_key_rejects_path_traversal_in_custom_prefix():
 
 
 def test_upload_uses_users_df_user_id_and_original_name(tmp_path: Path):
-    filename = "¡vídeo de prueba.mp4"
+    filename = "¡LO PROBAMOS Y SÍ PAGA! 😱 ｜ Source Hunter (Juego NFT Gratis Móvil y PC) [2bMdfR7vilk].mp4"
     local_file = tmp_path / "video.mp4"
     local_file.write_bytes(b"datos de prueba")
     fake_session = FakeSession(head_status=404)
@@ -67,13 +67,18 @@ def test_upload_uses_users_df_user_id_and_original_name(tmp_path: Path):
         url, size = storage.upload_to_todus_s3(
             local_file,
             filename,
-            73421,
+            5721542653,
             object_prefix="users/df",
         )
 
     assert url == fake_session.put_url
-    assert unquote(urlsplit(url).path) == f"/stream/users/df/73421/{filename}"
-    assert "%C2%A1v%C3%ADdeo%20de%20prueba.mp4" in url
+    assert url == (
+        "https://s3.todus.cu/stream/users/df/5721542653/"
+        "%C2%A1LO%20PROBAMOS%20Y%20S%C3%8D%20PAGA%21%20%F0%9F%98%B1%20"
+        "%EF%BD%9C%20Source%20Hunter%20%28Juego%20NFT%20Gratis%20M%C3%B3vil%20y%20PC%29%20"
+        "%5B2bMdfR7vilk%5D.mp4"
+    )
+    assert unquote(urlsplit(url).path) == f"/stream/users/df/5721542653/{filename}"
     assert fake_session.head_urls == [url]
     assert size == len(b"datos de prueba")
 

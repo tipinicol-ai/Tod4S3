@@ -2507,7 +2507,8 @@ def expiry_label(expires_at: str | None) -> str:
 def transfer_complete_text(filename: str = "", size: int = 0, parts: int = 1,
                            username: str | None = None, user_id: int | None = None,
                            task_id: str | None = None, duration: float | None = None,
-                           expires_at: str | None = None) -> str:
+                           expires_at: str | None = None,
+                           link_url: str | None = None) -> str:
     safe_name = (filename or "archivo")[:42]
     lines = [
         "Ya está disponible en la nube.",
@@ -2522,6 +2523,8 @@ def transfer_complete_text(filename: str = "", size: int = 0, parts: int = 1,
         "",
         "Usa los botones para descargar, copiar, convertir o borrar.",
     ]
+    if link_url:
+        lines.extend(["", f"🔗 Enlace completo: {{mono:{link_url}}}"])
     return card("✅ ᴀʀᴄʜɪᴠᴏ ʟɪꜱᴛᴏ", lines)
 
 
@@ -3138,7 +3141,7 @@ async def send_task_links(job: TransferTask, bot_obj, chat_id: int | None = None
         part_name = _part_filename(job.filename or "archivo", i + 1, total)
         await bot_obj.send_message(
             chat_id=target_chat,
-            text=card(f"📎 ᴘᴀʀᴛᴇ {i + 1}/{total}", [part_name, "", url]),
+            text=card(f"📎 ᴘᴀʀᴛᴇ {i + 1}/{total}", [part_name, "", f"{{mono:{url}}}"]),
             reply_markup=download_keyboard(url),
             disable_web_page_preview=True,
         )
@@ -3622,9 +3625,10 @@ async def process_task(job: TransferTask, application: Application) -> None:
                 transfer_complete_text(
                     filename=filename,
                     size=size,
-                    parts=len(job.part_urls),
+                    parts=len(links),
                     duration=max(0, job.updated_at - job.created_at),
                     expires_at=expires_at,
+                    link_url=links[0][1] if delivery_mode == "s3" and len(links) == 1 else None,
                 ),
                 reply_markup=final_keyboard,
                 disable_web_page_preview=True,
@@ -6434,6 +6438,51 @@ def sync_app_profile(user_id: int) -> dict:
     return {"premium": is_owner(user_id) or plan == "premium", "plan": plan}
 
 
+def sync_app_profile_photo(user_id: int) -> bytes | None:
+    """Returns the linked Telegram user's profile photo bytes without exposing the bot token."""
+    from urllib.parse import urlencode
+    from urllib.request import Request, urlopen
+
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip() or TELEGRAM_BOT_TOKEN.strip()
+    if not token:
+        return None
+    api_base = os.getenv("TELEGRAM_API_BASE_URL", "").strip().rstrip("/") or "https://api.telegram.org"
+    file_base = os.getenv("TELEGRAM_FILE_BASE_URL", "").strip().rstrip("/") or api_base
+
+    def call_api(method: str, params: dict) -> dict | None:
+        query = urlencode(params)
+        url = f"{api_base}/bot{token}/{method}?{query}"
+        request = Request(url, headers={"Accept": "application/json"})
+        with urlopen(request, timeout=8) as response:
+            payload = json.loads(response.read(256 * 1024).decode("utf-8"))
+        if not isinstance(payload, dict) or not payload.get("ok"):
+            return None
+        result = payload.get("result")
+        return result if isinstance(result, dict) else None
+
+    try:
+        photos = call_api("getUserProfilePhotos", {"user_id": int(user_id), "limit": 1})
+        photo_sets = photos.get("photos", []) if photos else []
+        if not photo_sets or not isinstance(photo_sets[0], list):
+            return None
+        candidates = [item for item in photo_sets[0] if isinstance(item, dict) and item.get("file_id")]
+        if not candidates:
+            return None
+        photo = max(candidates, key=lambda item: int(item.get("file_size", 0) or 0))
+        file_info = call_api("getFile", {"file_id": photo["file_id"]})
+        file_path = file_info.get("file_path", "") if file_info else ""
+        if not isinstance(file_path, str) or not file_path or ".." in file_path.split("/"):
+            return None
+        file_url = f"{file_base}/file/bot{token}/{quote(file_path, safe='/')}"
+        request = Request(file_url, headers={"Accept": "image/*"})
+        with urlopen(request, timeout=10) as response:
+            image = response.read(1024 * 1024 + 1)
+        return image if 0 < len(image) <= 1024 * 1024 else None
+    except Exception as exc:
+        log.debug("Foto Telegram no disponible para usuario=%s (%s)", user_id, type(exc).__name__)
+        return None
+
+
 async def sync_app_task_request(application: Application, action: str, user_id: int,
                                 payload: dict) -> tuple[dict, int]:
     """Acciones de cola solicitadas por un dispositivo emparejado."""
@@ -6520,7 +6569,7 @@ async def sync_app_task_request(application: Application, action: str, user_id: 
 def main() -> None:
     try:
         from web_store import start_store_server
-        start_store_server(profile_checker=sync_app_profile)
+        start_store_server(profile_checker=sync_app_profile, profile_photo_checker=sync_app_profile_photo)
     except Exception:
         log.exception("No se pudo iniciar la tienda web de Railway")
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip() or TELEGRAM_BOT_TOKEN.strip()

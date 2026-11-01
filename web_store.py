@@ -26,6 +26,7 @@ _MAX_VISITORS = 5000
 _VISITOR_RE = re.compile(r"^[A-Za-z0-9-]{8,96}$")
 _DEFAULT_ORIGIN = "https://tod4s3-production.up.railway.app"
 _PROFILE_CHECKER: Callable[[int], dict] | None = None
+_PROFILE_PHOTO_CHECKER: Callable[[int], bytes | None] | None = None
 _APP_TASK_BRIDGE: Callable[[str, int, dict], tuple[dict, int]] | None = None
 _APP_TASK_BRIDGE_LOCK = Lock()
 
@@ -161,6 +162,36 @@ class StoreHandler(SimpleHTTPRequestHandler):
     def do_GET(self):  # noqa: N802
         parsed = urlsplit(unquote(self.path))
         path = parsed.path
+        if path == "/api/app/profile/photo":
+            authorization = self.headers.get("Authorization", "")
+            token = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
+            user_id = sync_api.user_id_for_token(token)
+            if user_id is None:
+                self._json_response({"ok": False, "error": "unauthorized"}, 401)
+                return
+            checker = _PROFILE_PHOTO_CHECKER
+            if checker is None:
+                self._json_response({"ok": False, "error": "profile_photo_unavailable"}, 503)
+                return
+            try:
+                photo = checker(user_id)
+            except Exception:
+                photo = None
+            if not isinstance(photo, (bytes, bytearray)) or not photo:
+                self._json_response({"ok": False, "error": "profile_photo_not_found"}, 404)
+                return
+            if len(photo) > 1024 * 1024:
+                self._json_response({"ok": False, "error": "profile_photo_too_large"}, 413)
+                return
+            body = bytes(photo)
+            self.send_response(200)
+            self.send_header("Content-Type", "image/jpeg")
+            self.send_header("Cache-Control", "private, max-age=3600")
+            self.send_header("Vary", "Authorization")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if path == "/api/app/profile":
             authorization = self.headers.get("Authorization", "")
             token = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
@@ -335,9 +366,13 @@ class StoreHandler(SimpleHTTPRequestHandler):
         super().end_headers()
 
 
-def start_store_server(profile_checker: Callable[[int], dict] | None = None) -> Thread:
-    global _PROFILE_CHECKER
+def start_store_server(
+    profile_checker: Callable[[int], dict] | None = None,
+    profile_photo_checker: Callable[[int], bytes | None] | None = None,
+) -> Thread:
+    global _PROFILE_CHECKER, _PROFILE_PHOTO_CHECKER
     _PROFILE_CHECKER = profile_checker
+    _PROFILE_PHOTO_CHECKER = profile_photo_checker
     port = int(os.getenv("PORT", "8080"))
     server = ThreadingHTTPServer(("0.0.0.0", port), StoreHandler)
     thread = Thread(target=server.serve_forever, name="todus-store-http", daemon=True)
