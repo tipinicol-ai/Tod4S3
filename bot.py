@@ -1855,8 +1855,99 @@ def admin_app_users_keyboard(page: int = 0) -> InlineKeyboardMarkup:
         nav.append(btn("Siguiente ➡️", callback_data=f"admin:appusers:{page + 1}"))
     if nav:
         rows.append(nav)
+    rows.append([btn("🔎 Buscar / banear por ID de Telegram", callback_data="admin:appban:lookup")])
+    rows.append([btn("📨 Mensajes de soporte APK", callback_data="admin:appsupport:0")])
     rows.append([btn("🔄 Actualizar lista", callback_data=f"admin:appusers:{page}")])
     rows.append([btn("⬅️ Gestión de usuarios", callback_data="admin:menu:users")])
+    return InlineKeyboardMarkup(rows)
+
+
+def admin_app_user_lookup_text(user_id: int) -> str:
+    info = sync_api.app_user_info(user_id)
+    records = _load_json(USERS_DATA_FILE).get("users", {})
+    records = records if isinstance(records, dict) else {}
+    record = records.get(str(user_id), {})
+    record = record if isinstance(record, dict) else {}
+    name = re.sub(r"[\x00-\x1f\x7f]", " ", str(
+        record.get("full_name") or record.get("first_name") or "Sin nombre"
+    ))[:64].replace("&", "＆").replace("<", "‹").replace(">", "›").replace("{", "｛").replace("}", "｝")
+    username = re.sub(r"[^A-Za-z0-9_]+", "", str(record.get("username", "")))[:32]
+    status = "⛔ BANEADO SOLO EN LA APK" if info["banned"] else "✅ PERMITIDO EN LA APK"
+    lines = [
+        f"Usuario: {name}",
+        f"Telegram ID: {{mono:{user_id}}}",
+        f"Estado APK: {status}",
+        f"Alias: @{username}" if username else "Alias: no registrado",
+    ]
+    if info["last_seen_at"]:
+        seen = datetime.fromtimestamp(info["last_seen_at"], timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        lines.append(f"Última actividad APK: {seen}")
+    else:
+        lines.append("Última actividad APK: sin registro")
+    if info["device_ids"]:
+        lines.extend(["", "Huella(s) móvil(es) completa(s):"])
+        for index, device_id in enumerate(info["device_ids"], 1):
+            mark = " · bloqueado" if device_id in info["banned_device_ids"] else ""
+            lines.append(f"Móvil {index}{mark}: {{mono:{device_id}}}")
+    else:
+        lines.extend(["", "No hay un móvil vinculado todavía.",
+                      "El ban por Telegram ID también impedirá futuras vinculaciones."])
+    if info["banned"]:
+        lines.extend(["", "Esta acción afecta exclusivamente al acceso a la APK."])
+    return card("🔎 ʙúꜱǫᴜᴇᴅᴀ ᴅᴇ ᴜꜱᴜᴀʀɪᴏ ᴀᴘᴋ", lines) + f"\n\n{BOT_FOOTER}"
+
+
+def admin_app_user_lookup_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    info = sync_api.app_user_info(user_id)
+    action = "unban" if info["banned"] else "ban"
+    label = "✅ Quitar baneo APK" if info["banned"] else "🚫 Banear solo la APK"
+    return InlineKeyboardMarkup([
+        [btn(label, callback_data=f"admin:appban:{action}:{int(user_id)}:0")],
+        [btn("🔎 Buscar otro ID", callback_data="admin:appban:lookup")],
+        [btn("⬅️ Usuarios de la APK", callback_data="admin:appusers:0")],
+    ])
+
+
+ADMIN_APP_SUPPORT_PAGE_SIZE = 1
+
+
+def admin_app_support_text(page: int = 0, status_message: str = "") -> str:
+    tickets, total = sync_api.app_support_messages_page(page, ADMIN_APP_SUPPORT_PAGE_SIZE)
+    lines = [f"Ticket {page + 1} · {total} mensajes recibidos por la APK", ""]
+    if status_message:
+        lines.extend([status_message, ""])
+    if not tickets:
+        lines.append("La bandeja está vacía.")
+    for ticket in tickets:
+        created = datetime.fromtimestamp(int(ticket.get("created_at", 0) or 0), timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        safe_message = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", " ", str(ticket.get("message", "")))
+        safe_message = safe_message.replace("{", "[").replace("}", "]")[:2000]
+        device_id = str(ticket.get("device_id", ""))[:128]
+        lines.extend([
+            f"╭─ Ticket {{mono:{str(ticket.get('id', ''))}}}",
+            f"┃ Telegram ID: {{mono:{int(ticket.get('user_id', 0) or 0)}}}",
+            f"┃ Móvil: {{mono:{device_id}}}",
+            f"┃ Fecha: {created}",
+            f"┃ Estado: {str(ticket.get('status', 'open')).upper()}",
+            "┃ Mensaje:",
+            f"┃ {{mono:{safe_message}}}",
+            "╰────────────",
+        ])
+    return card("📨 ᴍᴇɴꜱᴀᴊᴇꜱ ᴅᴇ ꜱᴏᴘᴏʀᴛᴇ ᴀᴘᴋ", lines) + f"\n\n{BOT_FOOTER}"
+
+
+def admin_app_support_keyboard(page: int = 0) -> InlineKeyboardMarkup:
+    _tickets, total = sync_api.app_support_messages_page(page, ADMIN_APP_SUPPORT_PAGE_SIZE)
+    nav = []
+    if page > 0:
+        nav.append(btn("⬅️ Anterior", callback_data=f"admin:appsupport:{page - 1}"))
+    if (page + 1) * ADMIN_APP_SUPPORT_PAGE_SIZE < total:
+        nav.append(btn("Siguiente ➡️", callback_data=f"admin:appsupport:{page + 1}"))
+    rows = [nav] if nav else []
+    rows.extend([
+        [btn("🔄 Actualizar", callback_data=f"admin:appsupport:{page}")],
+        [btn("⬅️ Usuarios de la APK", callback_data="admin:appusers:0")],
+    ])
     return InlineKeyboardMarkup(rows)
 
 
@@ -5064,6 +5155,31 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await edit_query_message_text(query.message, admin_panel_text(), reply_markup=admin_keyboard())
             return
 
+        if query.data == "admin:appban:lookup":
+            context.user_data["admin_state"] = {"step": "admin_app_user_lookup"}
+            await edit_query_message_text(
+                query.message,
+                card("🔎 ʙᴜꜱᴄᴀʀ ᴜꜱᴜᴀʀɪᴏ ᴅᴇ ʟᴀ ᴀᴘᴋ", [
+                    "Envía el ID numérico de Telegram.",
+                    "Mostraré el estado y la huella del móvil,",
+                    "con acciones exclusivas para la APK.",
+                ]),
+                reply_markup=InlineKeyboardMarkup([[btn("⬅️ Usuarios de la APK", callback_data="admin:appusers:0")]]),
+            )
+            return
+
+        if query.data.startswith("admin:appsupport:"):
+            try:
+                page = max(0, int(query.data.rsplit(":", 1)[-1]))
+            except (TypeError, ValueError):
+                page = 0
+            await edit_query_message_text(
+                query.message,
+                admin_app_support_text(page),
+                reply_markup=admin_app_support_keyboard(page),
+            )
+            return
+
         if query.data.startswith("admin:appusers:"):
             try:
                 page = max(0, int(query.data.rsplit(":", 1)[-1]))
@@ -6379,6 +6495,21 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             )
             return
 
+        if step == "admin_app_user_lookup":
+            try:
+                target_id = int(text)
+                if target_id <= 0:
+                    raise ValueError
+            except ValueError:
+                await message.reply_text(sc("Envía un ID de Telegram numérico y positivo."))
+                return
+            context.user_data.pop("admin_state", None)
+            await message.reply_text(
+                admin_app_user_lookup_text(target_id),
+                reply_markup=admin_app_user_lookup_keyboard(target_id),
+            )
+            return
+
         if step == "admin_cloud_user":
             context.user_data.pop("admin_state", None)
             try:
@@ -6908,7 +7039,7 @@ def schedule_data_backup(application: Application, reason: str = "cambio de dato
 
 async def post_init(application: Application) -> None:
     loop = asyncio.get_running_loop()
-    from web_store import configure_app_task_bridge
+    from web_store import configure_app_backup_notifier, configure_app_task_bridge
 
     def app_task_bridge(action: str, user_id: int, payload: dict) -> tuple[dict, int]:
         future = asyncio.run_coroutine_threadsafe(
@@ -6924,6 +7055,14 @@ async def post_init(application: Application) -> None:
             return {"ok": False, "error": "task_api_unavailable"}, 503
 
     configure_app_task_bridge(app_task_bridge)
+
+    def app_backup_notifier(reason: str) -> None:
+        try:
+            loop.call_soon_threadsafe(schedule_data_backup, application, reason)
+        except RuntimeError:
+            log.debug("No se pudo programar el backup del inbox APK: el event loop ya está cerrado.")
+
+    configure_app_backup_notifier(app_backup_notifier)
     backup_chat_id = configured_backup_chat_id()
     backup_layout = telegram_backup_layout()
     backup_layout.auth_dir.mkdir(parents=True, exist_ok=True, mode=0o700)

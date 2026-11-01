@@ -28,6 +28,7 @@ _DEFAULT_ORIGIN = "https://tod4s3-production.up.railway.app"
 _PROFILE_CHECKER: Callable[[int], dict] | None = None
 _PROFILE_PHOTO_CHECKER: Callable[[int], bytes | None] | None = None
 _APP_TASK_BRIDGE: Callable[[str, int, dict], tuple[dict, int]] | None = None
+_APP_BACKUP_NOTIFIER: Callable[[str], None] | None = None
 _APP_TASK_BRIDGE_LOCK = Lock()
 
 
@@ -36,6 +37,12 @@ def configure_app_task_bridge(bridge: Callable[[str, int, dict], tuple[dict, int
     global _APP_TASK_BRIDGE
     with _APP_TASK_BRIDGE_LOCK:
         _APP_TASK_BRIDGE = bridge
+
+
+def configure_app_backup_notifier(notifier: Callable[[str], None] | None) -> None:
+    """Conecta cambios de soporte APK con el backup cifrado del bot."""
+    global _APP_BACKUP_NOTIFIER
+    _APP_BACKUP_NOTIFIER = notifier
 
 
 def _dispatch_app_task(token: str, action: str, payload: dict) -> tuple[dict, int]:
@@ -361,7 +368,7 @@ class StoreHandler(SimpleHTTPRequestHandler):
         if parsed.path not in {
             "/api/app/pair", "/api/app/revoke", "/api/app/deliveries/delete",
             "/api/app/download", "/api/app/tasks/cancel", "/api/app/cloud/clear",
-            "/api/app/premium/claim",
+            "/api/app/premium/claim", "/api/app/support",
         }:
             self._json_response({"ok": False, "error": "not_found"}, 404)
             return
@@ -392,6 +399,34 @@ class StoreHandler(SimpleHTTPRequestHandler):
             return
         token = self.headers.get("Authorization", "")
         token = token[7:].strip() if token.lower().startswith("bearer ") else ""
+        if parsed.path == "/api/app/support":
+            identity = sync_api.app_identity_for_token(token)
+            if identity is None:
+                identity = sync_api.support_identity_from_pairing(
+                    body.get("code", ""), body.get("device_id", ""),
+                )
+            if identity is None:
+                self._json_response({"ok": False, "error": "unauthorized_or_pairing_expired"}, 401)
+                return
+            try:
+                ticket = sync_api.create_app_support_message(
+                    int(identity["user_id"]), str(identity["device_id"]), body.get("message", ""),
+                )
+            except ValueError as exc:
+                reason = str(exc)
+                if reason == "support_rate_limited":
+                    self._json_response({"ok": False, "error": reason}, 429)
+                else:
+                    self._json_response({"ok": False, "error": reason or "invalid_support_message"}, 400)
+                return
+            notifier = _APP_BACKUP_NOTIFIER
+            if notifier is not None:
+                try:
+                    notifier("mensaje de soporte APK")
+                except Exception:
+                    pass
+            self._json_response({"ok": True, "ticket_id": ticket["id"]}, 201)
+            return
         if parsed.path != "/api/app/revoke":
             _, error, status = _authorize_app_token(token)
             if error:

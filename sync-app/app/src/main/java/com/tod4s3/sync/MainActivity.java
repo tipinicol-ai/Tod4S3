@@ -4,6 +4,10 @@ import android.Manifest;
 import android.animation.ObjectAnimator;
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
 import android.content.ClipData;
 import android.content.ContentValues;
 import android.content.Intent;
@@ -46,10 +50,13 @@ import android.widget.PopupWindow;
 import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.widget.VideoView;
 import android.webkit.MimeTypeMap;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.media.AudioAttributes;
+import android.media.RingtoneManager;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -98,13 +105,19 @@ public final class MainActivity extends Activity {
     private static final int REQUEST_WRITE_STORAGE = 702;
     private static final int REQUEST_PAYMENT_RECEIPT = 703;
     private static final int REQUEST_DOWNLOAD_FOLDER = 705;
+    private static final int REQUEST_NOTIFICATIONS = 706;
+    private static final String DOWNLOAD_NOTIFICATION_CHANNEL = "downloads_complete_v1";
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Runnable poller = new Runnable() {
         @Override public void run() {
-            refreshDeliveries();
-            refreshAppTasks();
-            refreshAccountProfile();
+            if (appBanned || unbannedScreenVisible) {
+                refreshAccountProfile();
+            } else {
+                refreshDeliveries();
+                refreshAppTasks();
+                refreshAccountProfile();
+            }
             handler.postDelayed(this, 15_000L);
         }
     };
@@ -135,6 +148,7 @@ public final class MainActivity extends Activity {
     private TextView quotaResetText;
     private View dashboardFab;
     private String token;
+    private String pendingPairingCode = "";
     private String todusPhone = "";
     private String todusPassword = "";
     private String todusToken = "";
@@ -154,6 +168,9 @@ public final class MainActivity extends Activity {
     private boolean profileRefreshInFlight;
     private volatile boolean appBanned;
     private boolean bannedScreenVisible;
+    private volatile boolean unbannedScreenVisible;
+    private volatile int appAccessGeneration;
+    private VideoView introVideoView;
     private boolean premiumActive;
     private boolean premiumVerified;
     private int freeQuotaPercent;
@@ -165,6 +182,7 @@ public final class MainActivity extends Activity {
     private String premiumExpiresAt = "";
     private final Object downloadConcurrencyLock = new Object();
     private int activeDownloadJobs;
+    private int nextDownloadNotificationId = 2000;
     private final Object directLinkDownloadLock = new Object();
     private final java.util.Set<String> activeDirectLinkKeys = new java.util.HashSet<>();
     private final java.util.LinkedHashMap<String, DirectLinkTask> directLinkTasks = new java.util.LinkedHashMap<>();
@@ -193,6 +211,9 @@ public final class MainActivity extends Activity {
         loadToDusDownloadTasks();
         loadToDusCredentials();
         buildUi();
+        ensureDownloadNotificationChannel();
+        playIntroVideo();
+        handler.postDelayed(this::requestNotificationPermissionIfNeeded, 1_200L);
 
         if (!prefs.getString(PREF_SELECTED_PLAN, "").isEmpty()
                 && savedCredentialsCouldNotBeDecrypted && todusStatus != null) {
@@ -301,6 +322,59 @@ public final class MainActivity extends Activity {
             showHomeStep(false);
         } else {
             showPhoneStep(false);
+        }
+    }
+
+    private void playIntroVideo() {
+        if (appRoot == null) return;
+        VideoView video = new VideoView(this);
+        video.setBackgroundColor(Color.rgb(7, 18, 42));
+        introVideoView = video;
+        appRoot.addView(video, new FrameLayout.LayoutParams(-1, -1));
+        video.setOnPreparedListener(player -> player.setVolume(0.82f, 0.82f));
+        video.setOnCompletionListener(player -> dismissIntroVideo(video));
+        video.setOnErrorListener((player, what, extra) -> {
+            dismissIntroVideo(video);
+            return true;
+        });
+        try {
+            video.setVideoURI(Uri.parse("android.resource://" + getPackageName() + "/" + R.raw.intro_epic));
+            video.start();
+            handler.postDelayed(() -> {
+                if (introVideoView == video) dismissIntroVideo(video);
+            }, 8_000L);
+        } catch (Exception ignored) {
+            dismissIntroVideo(video);
+        }
+    }
+
+    private void dismissIntroVideo(VideoView video) {
+        if (video == null || introVideoView != video) return;
+        introVideoView = null;
+        try { video.stopPlayback(); } catch (Exception ignored) { }
+        if (appRoot != null) appRoot.removeView(video);
+    }
+
+    private void ensureDownloadNotificationChannel() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
+        NotificationManager manager = getSystemService(NotificationManager.class);
+        if (manager == null || manager.getNotificationChannel(DOWNLOAD_NOTIFICATION_CHANNEL) != null) return;
+        NotificationChannel channel = new NotificationChannel(
+                DOWNLOAD_NOTIFICATION_CHANNEL, "Descargas completadas", NotificationManager.IMPORTANCE_DEFAULT);
+        channel.setDescription("Avisos sonoros al finalizar una descarga en Tod4S3 Sync.");
+        channel.enableVibration(true);
+        AudioAttributes attributes = new AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .build();
+        channel.setSound(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION), attributes);
+        manager.createNotificationChannel(channel);
+    }
+
+    private void requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT >= 33
+                && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, REQUEST_NOTIFICATIONS);
         }
     }
 
@@ -1338,7 +1412,7 @@ public final class MainActivity extends Activity {
             recordDownloadedFile(target, downloadedSize);
             saved = true;
             String savedName = target.name;
-            runOnUiThread(() -> Toast.makeText(this, "Descarga completada en Descargas: " + savedName, Toast.LENGTH_LONG).show());
+            notifyDownloadCompleted(savedName);
         } catch (Exception e) {
             if (target != null) deletePublicDownload(target);
             if (!task.pauseRequested && !task.deleteRequested) {
@@ -2320,9 +2394,44 @@ public final class MainActivity extends Activity {
     }
 
     private void showBannedScreen() {
-        if (bannedScreenVisible) return;
+        if (!appBanned || bannedScreenVisible) return;
         appBanned = true;
         bannedScreenVisible = true;
+        unbannedScreenVisible = false;
+        showAccessStatusScreen(false);
+    }
+
+    private void showUnbannedScreen() {
+        appBanned = false;
+        bannedScreenVisible = false;
+        unbannedScreenVisible = true;
+        showAccessStatusScreen(true);
+    }
+
+    private void resetDashboardReferencesForAccessTransition() {
+        viewingDashboard = false;
+        showingPlansPage = false;
+        viewingDownloadsTab = false;
+        deliveriesBox = null;
+        dashboardItemsBox = null;
+        dashboardStatusText = null;
+        dashboardPlanStatusText = null;
+        planStatus = null;
+        syncStatus = null;
+        todusStatus = null;
+        todusSessionStatusText = null;
+        quotaUsageBox = null;
+        quotaProgressBar = null;
+        quotaUsageText = null;
+        quotaResetText = null;
+        freeQuotaPanel = null;
+        freeQuotaPanelProgress = null;
+        freeQuotaPanelUsage = null;
+        freeQuotaPanelReset = null;
+    }
+
+    private void showAccessStatusScreen(boolean accessRestored) {
+        resetDashboardReferencesForAccessTransition();
         LinearLayout page = new LinearLayout(this);
         page.setOrientation(LinearLayout.VERTICAL);
         page.setGravity(Gravity.CENTER_HORIZONTAL);
@@ -2333,67 +2442,121 @@ public final class MainActivity extends Activity {
         brand.setGravity(Gravity.CENTER);
         page.addView(brand, margin(0, 0, 0, 34));
 
-        TextView lock = text("🔒", 48, true);
+        TextView lock = text(accessRestored ? "✓" : "🔒", 48, true);
         lock.setGravity(Gravity.CENTER);
-        lock.setBackground(roundRect(Color.rgb(27, 128, 91), 64, Color.rgb(99, 230, 216)));
+        int accessColor = accessRestored ? Color.rgb(27, 128, 91) : Color.rgb(174, 45, 58);
+        lock.setBackground(roundRect(accessColor, 64,
+                accessRestored ? Color.rgb(99, 230, 216) : Color.rgb(255, 155, 164)));
         LinearLayout.LayoutParams lockParams = new LinearLayout.LayoutParams(dp(112), dp(112));
         lockParams.gravity = Gravity.CENTER_HORIZONTAL;
         lockParams.bottomMargin = dp(26);
         page.addView(lock, lockParams);
 
-        TextView title = text("Tu acceso está bloqueado", 23, true);
+        TextView title = text(accessRestored ? "Usted ha sido desbaneado" : "Usted ha sido baneado", 23, true);
         title.setGravity(Gravity.CENTER);
         page.addView(title, margin(0, 0, 0, 12));
-        TextView detail = bodyText(
-                "El administrador ha bloqueado el acceso a esta aplicación. "
-                + "El bloqueo queda asociado a tu cuenta de Telegram y a este dispositivo.\n\n"
-                + "Si crees que se trata de un error, escribe a soporte desde el botón de abajo. "
-                + "Solo el administrador puede retirar el bloqueo.");
+        String detailCopy = accessRestored
+                ? "El administrador restauró el acceso a la aplicación. Si el bloqueo se aplicó por error, puedes avisar al soporte desde aquí."
+                : "El administrador bloqueó el acceso a esta aplicación por un posible incumplimiento de las reglas de uso, incluida la prioridad de voz. El bloqueo se vincula a tu ID de Telegram y a este móvil. Si crees que fue un error, escribe al soporte desde aquí.";
+        TextView detail = bodyText(detailCopy);
         detail.setGravity(Gravity.CENTER);
-        page.addView(detail, margin(0, 0, 0, 24));
+        page.addView(detail, margin(0, 0, 0, 18));
 
         LinearLayout help = card();
-        help.addView(text("¿Necesitas ayuda?", 16, true));
-        help.addView(bodyText("El chat privado de soporte se abrirá con los datos de este móvil preparados para enviar."),
+        help.addView(text("Mensaje al bot de soporte", 16, true));
+        help.addView(bodyText("Escribe aquí. El mensaje aparecerá en la bandeja de soporte APK del bot, junto con tu ID de Telegram y el ID de este móvil; no se enviará al privado del administrador."),
                 margin(0, 6, 0, 0));
-        page.addView(help, margin(0, 0, 0, 18));
+        EditText supportInput = input("Describe brevemente el problema", android.text.InputType.TYPE_CLASS_TEXT
+                | android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE | android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
+        supportInput.setSingleLine(false);
+        supportInput.setMinLines(3);
+        supportInput.setMaxLines(6);
+        supportInput.setGravity(Gravity.TOP | Gravity.START);
+        help.addView(supportInput, margin(0, 10, 0, 0));
+        TextView supportStatus = bodyText("Máximo 2000 caracteres.");
+        help.addView(supportStatus, margin(0, 8, 0, 0));
+        page.addView(help, margin(0, 0, 0, 14));
 
-        Button support = primaryButton("✉  Escribir a soporte");
-        support.setOnClickListener(v -> openBannedSupportChat());
+        Button support = primaryButton("✉  Enviar mensaje al bot");
+        support.setOnClickListener(v -> sendAppSupportMessage(supportInput, supportStatus, support));
         page.addView(support, margin(0, 4, 0, 10));
 
-        Button signOut = secondaryButton("Cerrar sesión");
-        signOut.setOnClickListener(v -> confirmLogout());
-        page.addView(signOut, margin(0, 2, 0, 0));
+        if (accessRestored) {
+            Button continueButton = primaryButton("Continuar con la aplicación");
+            continueButton.setOnClickListener(v -> continueAfterUnban());
+            page.addView(continueButton, margin(0, 2, 0, 0));
+        } else {
+            Button signOut = secondaryButton("Cerrar sesión");
+            signOut.setOnClickListener(v -> confirmLogout());
+            page.addView(signOut, margin(0, 2, 0, 0));
+        }
 
-        TextView footer = bodyText("Tod4S3 Sync · Revisión de acceso");
+        TextView footer = bodyText("Tod4S3 Sync · Revisión de acceso APK");
         footer.setGravity(Gravity.CENTER);
         page.addView(footer, margin(0, 24, 0, 0));
         showPage(page, true);
     }
 
-    private void openBannedSupportChat() {
-        String message = "Hola, mi aplicación Tod4S3 Sync indica que mi acceso está bloqueado. "
-                + "¿Podrían revisar el caso? ID del dispositivo: " + deviceId();
-        Uri supportUri = Uri.parse("https://t.me/Niku_Blade?text=" + Uri.encode(message));
-        try {
-            Intent intent = new Intent(Intent.ACTION_VIEW, supportUri);
-            intent.setPackage("org.telegram.messenger");
-            startActivity(intent);
-        } catch (Exception telegramUnavailable) {
-            try {
-                Intent intent = new Intent(Intent.ACTION_VIEW, supportUri);
-                startActivity(intent);
-            } catch (Exception ignored) {
-                Toast.makeText(this, "No se pudo abrir el chat de soporte @Niku_Blade.", Toast.LENGTH_LONG).show();
-            }
+    private void sendAppSupportMessage(EditText supportInput, TextView supportStatus, Button sendButton) {
+        final String currentToken = token == null ? "" : token;
+        final String currentPairingCode = pendingPairingCode == null ? "" : pendingPairingCode;
+        final String currentDeviceId = deviceId();
+        final String message = supportInput.getText().toString().trim();
+        if (currentToken.isEmpty() && currentPairingCode.isEmpty()) {
+            supportStatus.setText("No hay un token ni un código temporal vigente. Solicita un código nuevo con /app en el bot y vuelve a probar.");
+            return;
         }
+        if (message.isEmpty() || message.length() > 2000) {
+            supportStatus.setText("Escribe un mensaje de 1 a 2000 caracteres.");
+            return;
+        }
+        sendButton.setEnabled(false);
+        supportStatus.setText("Enviando al inbox de soporte del bot…");
+        new Thread(() -> {
+            try {
+                JSONObject payload = new JSONObject().put("message", message);
+                if (currentToken.isEmpty()) {
+                    payload.put("code", currentPairingCode).put("device_id", currentDeviceId);
+                }
+                JSONObject result = request("POST", "/api/app/support", payload.toString(), currentToken);
+                String ticketId = result.optString("ticket_id", "");
+                runOnUiThread(() -> {
+                    sendButton.setEnabled(true);
+                    supportInput.setText("");
+                    supportStatus.setText("Mensaje recibido por el bot. Ticket: " + ticketId
+                            + ". El administrador lo verá en Usuarios APK → Mensajes de soporte.");
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    sendButton.setEnabled(true);
+                    String reason = e.getMessage() == null ? "error de conexión" : e.getMessage();
+                    supportStatus.setText("No se pudo enviar el mensaje: " + reason);
+                });
+            }
+        }, "app-support-send").start();
+    }
+
+    private void continueAfterUnban() {
+        if (appBanned) {
+            showBannedScreen();
+            return;
+        }
+        unbannedScreenVisible = false;
+        bannedScreenVisible = false;
+        resetDashboardReferencesForAccessTransition();
+        latestDeliveryRows = new JSONArray();
+        latestAppTaskRows = new JSONArray();
+        showHomeStep(true);
+        refreshDeliveries();
+        refreshAppTasks();
+        refreshAccountProfile();
     }
 
     private void logout() {
         final String oldToken = token == null ? "" : token;
-        appBanned = false;
+        invalidateAccessRequests();
         bannedScreenVisible = false;
+        unbannedScreenVisible = false;
         token = "";
         prefs.edit().remove("token").remove(PREF_SELECTED_PLAN)
                 .remove(PREF_ACTIVE_PREMIUM).remove(PREF_PREMIUM_VERIFIED)
@@ -2664,7 +2827,11 @@ public final class MainActivity extends Activity {
     private void pairDevice(View trigger) {
         if (pairingInFlight) return;
         final String code = codeInput.getText().toString().trim().toUpperCase(java.util.Locale.ROOT);
-        if (code.isEmpty()) { syncStatus.setText("Escribe el código recibido con /app."); return; }
+        if (code.isEmpty()) {
+            if (syncStatus != null) syncStatus.setText("Escribe el código recibido con /app.");
+            return;
+        }
+        pendingPairingCode = code;
         pairingInFlight = true;
         trigger.setEnabled(false);
         syncStatus.setText("Vinculando con el bot…");
@@ -2676,6 +2843,7 @@ public final class MainActivity extends Activity {
                 if (newToken.isEmpty()) throw new Exception("Código inválido o vencido");
                 prefs.edit().putString("token", newToken).apply();
                 token = newToken;
+                pendingPairingCode = "";
                 runOnUiThread(() -> {
                     pairingInFlight = false;
                     showPhoneStep(true);
@@ -2683,8 +2851,9 @@ public final class MainActivity extends Activity {
             } catch (Exception e) {
                 runOnUiThread(() -> {
                     pairingInFlight = false;
+                    if (appBanned) return;
                     trigger.setEnabled(true);
-                    syncStatus.setText("No se pudo vincular: " + e.getMessage());
+                    if (syncStatus != null) syncStatus.setText("No se pudo vincular: " + e.getMessage());
                 });
             }
         }).start();
@@ -3034,6 +3203,7 @@ public final class MainActivity extends Activity {
         final String current = token;
         if (current == null || current.isEmpty() || profileRefreshInFlight) return;
         profileRefreshInFlight = true;
+        final int profileAccessGeneration = appAccessGeneration;
         new Thread(() -> {
             try {
                 JSONObject profile = request("GET", "/api/app/profile", "", current);
@@ -3052,9 +3222,12 @@ public final class MainActivity extends Activity {
                         profileRefreshInFlight = false;
                         return;
                     }
-                    boolean accessRestored = appBanned;
-                    appBanned = false;
-                    bannedScreenVisible = false;
+                    int profileAccess = acceptProfileAccess(profileAccessGeneration);
+                    if (profileAccess < 0) {
+                        profileRefreshInFlight = false;
+                        return;
+                    }
+                    boolean accessRestored = profileAccess == 1;
                     premiumActive = newPremium;
                     premiumVerified = newPremiumVerified;
                     activePlan = newPlan;
@@ -3074,15 +3247,33 @@ public final class MainActivity extends Activity {
                     updateQuotaUsageCard();
                     updateFreeQuotaPanel();
                     if (accessRestored) {
-                        showHomeStep(true);
-                        refreshDeliveries();
-                        refreshAppTasks();
+                        showUnbannedScreen();
                     }
                 });
             } catch (Exception ignored) {
                 runOnUiThread(() -> profileRefreshInFlight = false);
             }
         }, "account-profile-refresh").start();
+    }
+
+    private synchronized int acceptProfileAccess(int requestGeneration) {
+        if (requestGeneration != appAccessGeneration) return -1;
+        if (!appBanned) return 0;
+        appBanned = false;
+        appAccessGeneration++;
+        return 1;
+    }
+
+    private synchronized boolean markAppBanned(int requestGeneration) {
+        if (requestGeneration != appAccessGeneration || appBanned) return false;
+        appAccessGeneration++;
+        appBanned = true;
+        return true;
+    }
+
+    private synchronized void invalidateAccessRequests() {
+        appAccessGeneration++;
+        appBanned = false;
     }
 
     private String accountPlanStatusText() {
@@ -3433,6 +3624,42 @@ public final class MainActivity extends Activity {
         return String.format(java.util.Locale.US, "%.2f MB", n / 1048576.0);
     }
 
+    private void notifyDownloadCompleted(String filename) {
+        handler.post(() -> {
+            String safeName = filename == null || filename.trim().isEmpty() ? "Archivo" : filename.trim();
+            Toast.makeText(this, "Descarga completada en Descargas: " + safeName, Toast.LENGTH_LONG).show();
+            if (Build.VERSION.SDK_INT >= 33
+                    && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                return;
+            }
+            NotificationManager manager = getSystemService(NotificationManager.class);
+            if (manager == null) return;
+            Intent openApp = new Intent(this, MainActivity.class);
+            openApp.setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+            PendingIntent pending = PendingIntent.getActivity(
+                    this, nextDownloadNotificationId,
+                    openApp, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+            Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                    ? new Notification.Builder(this, DOWNLOAD_NOTIFICATION_CHANNEL)
+                    : new Notification.Builder(this).setSound(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION))
+                            .setVibrate(new long[]{0, 180, 100, 180});
+            Notification notification = builder
+                    .setSmallIcon(R.mipmap.ic_launcher)
+                    .setContentTitle("Descarga completada")
+                    .setContentText(safeName + " está disponible en Descargas")
+                    .setCategory(Notification.CATEGORY_STATUS)
+                    .setVisibility(Notification.VISIBILITY_PRIVATE)
+                    .setAutoCancel(true)
+                    .setContentIntent(pending)
+                    .build();
+            try {
+                manager.notify(nextDownloadNotificationId++, notification);
+            } catch (SecurityException ignored) {
+                // El permiso puede haberse retirado entre la comprobación y el envío.
+            }
+        });
+    }
+
     private void startToDusDelivery(String taskId, String name, JSONArray parts, long expectedSize) {
         if (parts == null || parts.length() == 0) return;
         String key = downloadCacheKey(name, parts);
@@ -3548,7 +3775,7 @@ public final class MainActivity extends Activity {
                 toDusDownloadTasks.remove(task.key);
             }
             final String savedName = target.name;
-            runOnUiThread(() -> Toast.makeText(this, "Descarga completada en Descargas: " + savedName, Toast.LENGTH_LONG).show());
+            notifyDownloadCompleted(savedName);
         } catch (Exception e) {
             if (target != null) deletePublicDownload(target);
             if (!task.pauseRequested && !task.deleteRequested) {
@@ -4037,6 +4264,7 @@ public final class MainActivity extends Activity {
     }
 
     private JSONObject request(String method, String path, String body, String bearer) throws Exception {
+        final int requestAccessGeneration = appAccessGeneration;
         HttpURLConnection c = (HttpURLConnection) new URL(API_BASE + path).openConnection();
         c.setRequestMethod(method);
         c.setConnectTimeout(15_000);
@@ -4073,8 +4301,11 @@ public final class MainActivity extends Activity {
             detail = detail.replaceAll("[\\p{Cntrl}]+", " ").trim();
             if (detail.length() > 160) detail = detail.substring(0, 160) + "…";
             if (code == HttpURLConnection.HTTP_FORBIDDEN && "app_banned".equals(detail)) {
-                appBanned = true;
-                handler.post(this::showBannedScreen);
+                if (markAppBanned(requestAccessGeneration)) {
+                    handler.post(() -> {
+                        if (appBanned) showBannedScreen();
+                    });
+                }
             }
             throw new IOException("HTTP " + code + (detail.isEmpty() ? "" : ": " + detail));
         }
@@ -4083,6 +4314,7 @@ public final class MainActivity extends Activity {
 
     @Override protected void onDestroy() {
         handler.removeCallbacks(poller);
+        if (introVideoView != null) dismissIntroVideo(introVideoView);
         super.onDestroy();
     }
 }

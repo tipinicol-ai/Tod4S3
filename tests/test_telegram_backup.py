@@ -121,10 +121,12 @@ def test_encrypted_backup_round_trip_preserves_ban_unban_history_and_device_ids(
         token = sync_api.consume_pairing_code(sync_api.create_pairing_code(123456), device_id)
         assert token
         sync_api.ban_app_user(123456, admin_id=900)
+        support_ticket = sync_api.create_app_support_message(123456, device_id, "Solicito revisar mi bloqueo")
 
         encrypted_ban, _, _, _ = build_encrypted_backup(source, TOKEN)
         assert b"app_bans" not in encrypted_ban
         assert device_id.encode("ascii") not in encrypted_ban
+        assert b"app_support_messages" not in encrypted_ban
         banned_snapshot = decrypt_snapshot(encrypted_ban, TOKEN)
         restored_ban, _ = restore_snapshot(banned_snapshot, banned_target)
         assert restored_ban >= 1
@@ -149,6 +151,8 @@ def test_encrypted_backup_round_trip_preserves_ban_unban_history_and_device_ids(
                    for event in unbanned_json["app_ban_history"])
         assert all(event["device_ids"] == [device_id] for event in unbanned_json["app_ban_history"])
         assert unbanned_json["tokens"][next(iter(unbanned_json["tokens"]))]["device_id"] == device_id
+        assert unbanned_json["app_support_messages"][0]["id"] == support_ticket["id"]
+        assert unbanned_json["app_support_messages"][0]["message"] == "Solicito revisar mi bloqueo"
 
 
 class TelegramBackupFlowTests(unittest.IsolatedAsyncioTestCase):

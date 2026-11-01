@@ -5,6 +5,7 @@ import hashlib
 import copy
 import json
 import os
+import re
 import secrets
 import tempfile
 import threading
@@ -21,7 +22,8 @@ _TOKEN_TTL = 365 * 24 * 60 * 60
 
 def _default_state() -> dict[str, Any]:
     return {"pairings": {}, "tokens": {}, "deliveries": {}, "premium_activations": {},
-            "app_bans": {"users": {}, "devices": {}}, "app_ban_history": []}
+            "app_bans": {"users": {}, "devices": {}}, "app_ban_history": [],
+            "app_support_messages": []}
 
 
 def _read() -> dict[str, Any]:
@@ -95,6 +97,26 @@ def consume_pairing_code(code: str, device_id: str) -> str | None:
         state["pairings"].pop(code, None)
         _write(state)
         return token
+
+
+def support_identity_from_pairing(code: str, device_id: str) -> dict[str, Any] | None:
+    """Authenticate a support request from a valid, unconsumed app pairing code."""
+    code = str(code or "").strip().upper()
+    device_id = str(device_id or "").strip()[:128]
+    if not re.fullmatch(r"[0-9A-F]{8}", code) or not device_id or any(ord(char) < 32 for char in device_id):
+        return None
+    with _LOCK:
+        state = _read()
+        item = state.get("pairings", {}).get(code)
+        if not isinstance(item, dict) or int(item.get("expires_at", 0) or 0) <= int(time.time()):
+            return None
+        try:
+            user_id = int(item.get("user_id", 0))
+        except (TypeError, ValueError):
+            return None
+        if user_id <= 0:
+            return None
+        return {"user_id": user_id, "device_id": device_id}
 
 
 def revoke_token(token: str) -> bool:
@@ -642,3 +664,116 @@ def app_users_page(page: int = 0, page_size: int = 3) -> tuple[list[dict[str, An
         total = len(rows)
         selected = rows[page * page_size:(page + 1) * page_size]
         return selected, total
+
+
+def app_user_info(user_id: int) -> dict[str, Any]:
+    """Return APK-only access/device details for an exact Telegram ID lookup."""
+    user_id = int(user_id)
+    if user_id <= 0:
+        raise ValueError("invalid_user_id")
+    now = int(time.time())
+    user_key = str(user_id)
+    with _LOCK:
+        state = _read()
+        bans = state.get("app_bans", {})
+        bans = bans if isinstance(bans, dict) else {}
+        banned_users = bans.get("users", {})
+        banned_devices = bans.get("devices", {})
+        banned_users = banned_users if isinstance(banned_users, dict) else {}
+        banned_devices = banned_devices if isinstance(banned_devices, dict) else {}
+        device_ids: set[str] = set()
+        last_seen = 0
+        tokens = state.get("tokens", {})
+        if isinstance(tokens, dict):
+            for record in tokens.values():
+                if not isinstance(record, dict):
+                    continue
+                try:
+                    if int(record.get("user_id", 0)) != user_id:
+                        continue
+                    created = int(record.get("created_at", 0) or 0)
+                    seen = int(record.get("last_seen_at", created) or created)
+                except (TypeError, ValueError):
+                    continue
+                if created + _TOKEN_TTL <= now:
+                    continue
+                device_id = str(record.get("device_id", "")).strip()[:128]
+                if device_id:
+                    device_ids.add(device_id)
+                last_seen = max(last_seen, seen)
+        for device_id, record in banned_devices.items():
+            if isinstance(record, dict) and user_key in {str(owner) for owner in record.get("user_ids", [])}:
+                device_ids.add(str(device_id))
+        banned_device_ids = sorted(device_id for device_id in device_ids if device_id in banned_devices)
+        telegram_banned = user_key in banned_users
+        return {
+            "user_id": user_id,
+            "device_ids": sorted(device_ids),
+            "last_seen_at": last_seen,
+            "banned": telegram_banned or bool(banned_device_ids),
+            "telegram_banned": telegram_banned,
+            "banned_device_ids": banned_device_ids,
+            "registered": bool(device_ids or last_seen),
+        }
+
+
+def create_app_support_message(user_id: int, device_id: str, message: str) -> dict[str, Any]:
+    """Store an APK support ticket. Callers authenticate the app token first."""
+    user_id = int(user_id)
+    device_id = str(device_id or "").strip()[:128]
+    text = "".join(char for char in str(message or "") if char in "\n\t" or ord(char) >= 32 and ord(char) != 127).strip()
+    if user_id <= 0 or not device_id:
+        raise ValueError("invalid_support_identity")
+    if not text or len(text) > 2000:
+        raise ValueError("invalid_support_message")
+    now = int(time.time())
+    with _LOCK:
+        state = _read()
+        tickets = state.get("app_support_messages", [])
+        tickets = tickets if isinstance(tickets, list) else []
+        recent = sum(1 for item in tickets if isinstance(item, dict)
+                     and int(item.get("user_id", 0) or 0) == user_id
+                     and now - int(item.get("created_at", 0) or 0) < 3600)
+        if recent >= 5:
+            raise ValueError("support_rate_limited")
+        ticket_id = secrets.token_hex(6).upper()
+        ticket = {
+            "id": ticket_id,
+            "user_id": user_id,
+            "device_id": device_id,
+            "message": text,
+            "created_at": now,
+            "status": "open",
+        }
+        tickets.append(ticket)
+        state["app_support_messages"] = tickets[-5000:]
+        _write(state)
+        return copy.deepcopy(ticket)
+
+
+def app_support_messages_page(page: int = 0, page_size: int = 3) -> tuple[list[dict[str, Any]], int]:
+    """Return a newest-first support inbox for the Telegram bot's APK admin panel."""
+    page = max(0, int(page))
+    page_size = max(1, min(10, int(page_size)))
+    with _LOCK:
+        state = _read()
+        tickets = state.get("app_support_messages", [])
+        tickets = [copy.deepcopy(item) for item in tickets if isinstance(item, dict)] if isinstance(tickets, list) else []
+        tickets.sort(key=lambda item: (int(item.get("created_at", 0) or 0), str(item.get("id", ""))), reverse=True)
+        total = len(tickets)
+        return tickets[page * page_size:(page + 1) * page_size], total
+
+
+def app_support_message_by_id(ticket_id: str) -> dict[str, Any] | None:
+    ticket_id = str(ticket_id or "").strip().upper()
+    if not ticket_id:
+        return None
+    with _LOCK:
+        state = _read()
+        tickets = state.get("app_support_messages", [])
+        if not isinstance(tickets, list):
+            return None
+        for ticket in tickets:
+            if isinstance(ticket, dict) and str(ticket.get("id", "")).upper() == ticket_id:
+                return copy.deepcopy(ticket)
+    return None

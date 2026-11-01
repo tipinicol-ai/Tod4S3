@@ -86,3 +86,87 @@ def test_pairing_attempt_on_banned_device_returns_app_banned(monkeypatch):
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
+
+
+def test_banned_app_can_send_support_ticket_to_bot_inbox(monkeypatch):
+    identity = {"user_id": 12345, "device_id": "device-hash"}
+    monkeypatch.setattr(web_store.sync_api, "app_identity_for_token", lambda token: identity if token == "mobile-token" else None)
+    monkeypatch.setattr(
+        web_store.sync_api, "app_access_ban",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("support must remain available to banned users")),
+    )
+    created = []
+    monkeypatch.setattr(
+        web_store.sync_api, "create_app_support_message",
+        lambda user_id, device_id, message: (
+            created.append((user_id, device_id, message))
+            or {"id": "A1B2C3", "user_id": user_id, "device_id": device_id, "message": message}
+        ),
+    )
+    backup_reasons = []
+    web_store.configure_app_backup_notifier(backup_reasons.append)
+    server, thread = _server()
+    try:
+        status, payload = _request(server, "POST", "/api/app/support", {"message": "Quiero solicitar revisión"})
+        assert status == 201
+        assert payload == {"ok": True, "ticket_id": "A1B2C3"}
+        assert created == [(12345, "device-hash", "Quiero solicitar revisión")]
+        assert backup_reasons == ["mensaje de soporte APK"]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+        web_store.configure_app_backup_notifier(None)
+
+
+def test_banned_device_without_token_can_send_support_with_pairing_code(monkeypatch):
+    monkeypatch.setattr(web_store.sync_api, "app_identity_for_token", lambda _token: None)
+    monkeypatch.setattr(
+        web_store.sync_api, "support_identity_from_pairing",
+        lambda code, device: {"user_id": 54321, "device_id": device} if code == "A1B2C3D4" else None,
+    )
+    created = []
+    monkeypatch.setattr(
+        web_store.sync_api, "create_app_support_message",
+        lambda user_id, device_id, message: (
+            created.append((user_id, device_id, message))
+            or {"id": "TICKET2", "user_id": user_id, "device_id": device_id, "message": message}
+        ),
+    )
+    server, thread = _server()
+    try:
+        status, payload = _request(
+            server, "POST", "/api/app/support",
+            {"message": "No puedo entrar", "code": "A1B2C3D4", "device_id": "device-hash"},
+        )
+        assert status == 201
+        assert payload["ticket_id"] == "TICKET2"
+        assert created == [(54321, "device-hash", "No puedo entrar")]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_real_banned_pairing_code_creates_support_ticket_without_issuing_token(monkeypatch, tmp_path):
+    monkeypatch.setattr(web_store.sync_api, "STATE_FILE", tmp_path / "sync_app.json")
+    code = web_store.sync_api.create_pairing_code(24680)
+    device_id = "b" * 64
+    web_store.sync_api.ban_app_user(24680, admin_id=900)
+    server, thread = _server()
+    try:
+        status, payload = _request(
+            server, "POST", "/api/app/support",
+            {"message": "Solicito revisar el bloqueo", "code": code, "device_id": device_id},
+        )
+        assert status == 201
+        assert payload["ticket_id"]
+        assert web_store.sync_api.consume_pairing_code(code, device_id) is None
+        ticket = web_store.sync_api.app_support_message_by_id(payload["ticket_id"])
+        assert ticket["user_id"] == 24680
+        assert ticket["device_id"] == device_id
+        assert ticket["message"] == "Solicito revisar el bloqueo"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)

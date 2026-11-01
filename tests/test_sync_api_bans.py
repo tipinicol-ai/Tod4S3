@@ -69,3 +69,46 @@ def test_admin_owner_can_be_banned_from_apk_including_its_device(monkeypatch, tm
     result = sync_api.ban_app_user(900, admin_id=900)
     assert result["device_ids"] == [owner_device]
     assert sync_api.is_app_user_banned(900, owner_device) is True
+
+
+def test_lookup_by_telegram_id_returns_full_apk_device_and_ban_status(monkeypatch, tmp_path):
+    monkeypatch.setattr(sync_api, "STATE_FILE", tmp_path / "sync_app.json")
+    device_id = "7" * 64
+    assert sync_api.consume_pairing_code(sync_api.create_pairing_code(7100), device_id)
+    sync_api.ban_app_user(7100, admin_id=900)
+
+    info = sync_api.app_user_info(7100)
+    assert info["user_id"] == 7100
+    assert info["device_ids"] == [device_id]
+    assert info["banned"] is True
+    assert info["banned_device_ids"] == [device_id]
+    assert sync_api.app_user_info(7101)["banned"] is False
+
+
+def test_app_support_messages_are_ticketed_by_authenticated_identity_and_page_newest_first(monkeypatch, tmp_path):
+    monkeypatch.setattr(sync_api, "STATE_FILE", tmp_path / "sync_app.json")
+    device_id = "8" * 64
+    first = sync_api.create_app_support_message(8100, device_id, "El bloqueo parece un error")
+    monkeypatch.setattr(sync_api.time, "time", lambda: first["created_at"] + 1)
+    second = sync_api.create_app_support_message(8101, "9" * 64, "No me cargan los archivos")
+
+    page, total = sync_api.app_support_messages_page(0, 1)
+    assert total == 2
+    assert page[0]["id"] == second["id"]
+    assert page[0]["user_id"] == 8101
+    assert sync_api.app_support_message_by_id(first["id"])["device_id"] == device_id
+    saved = sync_api._read()
+    assert len(saved["app_support_messages"]) == 2
+
+
+def test_banned_user_can_authenticate_support_with_unconsumed_pairing_code(monkeypatch, tmp_path):
+    monkeypatch.setattr(sync_api, "STATE_FILE", tmp_path / "sync_app.json")
+    code = sync_api.create_pairing_code(81200)
+    device_id = "e" * 64
+    sync_api.ban_app_user(81200, admin_id=900)
+
+    assert sync_api.consume_pairing_code(code, device_id) is None
+    assert sync_api.support_identity_from_pairing(code, device_id) == {
+        "user_id": 81200,
+        "device_id": device_id,
+    }
