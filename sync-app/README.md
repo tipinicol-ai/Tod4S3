@@ -47,4 +47,4 @@ La interfaz incluye planes Premium dorados, iconos de Transfermóvil y saldo mó
 
 ## Tamaño del APK
 
-El APK se empaqueta a aproximadamente 10 MB para cumplir el tamaño solicitado. El archivo `app/src/main/assets/size_padding.dat` es relleno inerte, no se abre ni se ejecuta y no participa en ninguna función de la app; solo afecta al tamaño del paquete.
+El APK se empaqueta a aproximadamente 1.9 MB para cumplir el tamaño solicitado. El archivo `app/src/main/assets/size_padding.dat` es relleno inerte, no se abre ni se ejecuta y no participa en ninguna función de la app; solo afecta al tamaño del paquete.
