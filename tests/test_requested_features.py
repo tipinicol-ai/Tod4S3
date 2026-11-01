@@ -203,7 +203,8 @@ class RequestedFeatureTests(unittest.TestCase):
         menu_text = download_menu_text().lower()
         source_text = download_source_menu_text("s3").lower()
         prompt_text = download_prompt_text("url", "s3").lower()
-        self.assertIn("users/df", source_text)
+        self.assertNotIn("users/df", source_text)
+        self.assertNotIn("https://s3.todus.cu/stream", source_text)
         self.assertIn("ɴᴜʙᴇ ꜱ3", menu_text)
         for text in (prompt_text,):
             self.assertIn("ᴘᴜ́ʙʟɪᴄᴏ", text)

@@ -17,16 +17,21 @@ class FakeApplication:
 def test_android_cloud_clear_deduplicates_owned_urls_and_clears_records(monkeypatch):
     deleted = []
     cleared = []
-    monkeypatch.setattr(bot, "get_task_history", lambda user_id, limit: [
-        {"urls": ["https://s3.todus.cu/stream/users/df/42/a.bin"]},
-    ])
+    monkeypatch.setattr(bot, "all_task_history", lambda: {
+        "42": [{"urls": ["https://s3.todus.cu/stream/users/df/42/a.bin"]}],
+    })
+    monkeypatch.setattr(bot, "_load_json", lambda _path: {
+        "42": [{"urls": ["https://s3.todus.cu/stream/users/df/42/a.bin"]}],
+    })
     monkeypatch.setattr(bot.sync_api, "deliveries_for_user", lambda user_id: [
         {"parts": ["https://s3.todus.cu/stream/users/df/42/a.bin",
                     "https://s3.todus.cu/stream/users/df/42/b.bin"]},
     ])
     monkeypatch.setattr(bot, "delete_from_todus_s3", deleted.append)
-    monkeypatch.setattr(bot, "clear_task_history", lambda user_id: cleared.append(user_id) or True)
-    monkeypatch.setattr(bot.sync_api, "clear_deliveries_for_user", lambda user_id: 1)
+    monkeypatch.setattr(bot, "clear_task_history_if_unchanged",
+                        lambda user_id, expected_rows: cleared.append(user_id) or True)
+    monkeypatch.setattr(bot.sync_api, "clear_deliveries_for_user",
+                        lambda user_id, expected_rows=None: 1)
     monkeypatch.setattr(bot, "schedule_data_backup", lambda *args, **kwargs: None)
 
     result, status = asyncio.run(bot.sync_app_task_request(
@@ -44,16 +49,17 @@ def test_android_cloud_clear_deduplicates_owned_urls_and_clears_records(monkeypa
 
 def test_android_cloud_clear_keeps_history_when_any_delete_fails(monkeypatch):
     cleared = []
-    monkeypatch.setattr(bot, "get_task_history", lambda user_id, limit: [
-        {"urls": ["https://s3.todus.cu/stream/users/df/42/a.bin"]},
-    ])
+    monkeypatch.setattr(bot, "all_task_history", lambda: {
+        "42": [{"urls": ["https://s3.todus.cu/stream/users/df/42/a.bin"]}],
+    })
     monkeypatch.setattr(bot.sync_api, "deliveries_for_user", lambda user_id: [])
 
     def fail_delete(_url):
         raise RuntimeError("simulated delete failure")
 
     monkeypatch.setattr(bot, "delete_from_todus_s3", fail_delete)
-    monkeypatch.setattr(bot, "clear_task_history", lambda user_id: cleared.append(user_id) or True)
+    monkeypatch.setattr(bot, "clear_task_history_if_unchanged",
+                        lambda user_id, expected_rows: cleared.append(user_id) or True)
     monkeypatch.setattr(bot, "schedule_data_backup", lambda *args, **kwargs: None)
 
     result, status = asyncio.run(bot.sync_app_task_request(

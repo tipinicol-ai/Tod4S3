@@ -1,5 +1,9 @@
 import sync_api
 import web_store
+import json
+from http.server import ThreadingHTTPServer
+from threading import Thread
+from urllib.request import Request, urlopen
 
 
 def test_deliveries_only_return_tod4s3_bot_source(tmp_path, monkeypatch):
@@ -144,3 +148,45 @@ def test_delete_delivery_accepts_legacy_row_without_source(tmp_path, monkeypatch
     assert payload["deleted_parts"] == 1
     assert deleted == [url]
     assert sync_api._read()["deliveries"]["42"] == []
+
+
+def test_global_delivery_snapshot_clear_is_compare_and_clear_and_preserves_other_sources(tmp_path, monkeypatch):
+    monkeypatch.setattr(sync_api, "STATE_FILE", tmp_path / "sync_app.json")
+    sync_api.record_delivery(42, "task-1", "f", 1, ["https://s3.todus.cu/stream/users/tg_42/telegram/a.bin"])
+    state = sync_api._read()
+    state["deliveries"]["42"].append({"task_id": "other", "source": "other_source", "parts": ["private"]})
+    sync_api._write(state)
+    snapshot = sync_api.all_deliveries_snapshot()
+    assert sync_api.clear_all_deliveries(snapshot) == 1
+    assert sync_api.all_deliveries_snapshot() == {}
+    remaining = sync_api._read()["deliveries"]["42"]
+    assert remaining == [{"task_id": "other", "source": "other_source", "parts": ["private"]}]
+
+
+def test_delete_delivery_http_post_endpoint_with_bearer_token_is_mocked(tmp_path, monkeypatch):
+    monkeypatch.setattr(sync_api, "STATE_FILE", tmp_path / "sync_app.json")
+    monkeypatch.setattr(sync_api, "user_id_for_token", lambda token: 42 if token == "mobile" else None)
+    url = "https://s3.todus.cu/stream/users/tg_42/telegram/part.bin"
+    sync_api.record_delivery(42, "http-task", "f", 1, [url])
+    deleted = []
+    monkeypatch.setattr(web_store, "delete_from_todus_s3", deleted.append)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), web_store.StoreHandler)
+    worker = Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    request = Request(
+        f"http://127.0.0.1:{server.server_port}/api/app/deliveries/delete",
+        data=json.dumps({"task_id": "http-task"}).encode(),
+        headers={"Authorization": "Bearer mobile", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=3) as response:
+            assert response.status == 200
+            payload = json.loads(response.read())
+        assert payload["deleted_parts"] == 1
+        assert deleted == [url]
+        assert sync_api.deliveries_for_user(42) == []
+    finally:
+        server.shutdown()
+        server.server_close()
+        worker.join(timeout=2)

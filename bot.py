@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import html
 import ipaddress
 import json
@@ -44,8 +45,20 @@ from telegram.ext import (
     filters,
 )
 from telethon import TelegramClient, events
-from platform_downloads import download_platform_video, is_play_store_page, is_supported_platform_url
-from todus_s3_storage import TODUS_S3_BASE_URL, delete_from_todus_s3, upload_to_todus_s3
+from platform_downloads import (
+    DEFAULT_VIDEO_QUALITY,
+    SUPPORTED_VIDEO_QUALITIES,
+    download_platform_video,
+    is_play_store_page,
+    is_supported_platform_url,
+    normalize_video_quality,
+)
+from todus_s3_storage import (
+    TODUS_S3_BASE_URL,
+    delete_from_todus_s3,
+    upload_to_todus_s3,
+    user_object_key_from_url,
+)
 from telegram_backup import (
     BackupLayout,
     backup_to_telegram,
@@ -351,6 +364,7 @@ REFERRAL_START_BALANCE = 5
 REFERRAL_REWARD = 5
 USAGE_DATA_FILE = os.getenv("USAGE_DATA_FILE", str(DATA_DIR / "daily_usage.json"))
 HISTORY_DATA_FILE = os.getenv("HISTORY_DATA_FILE", str(DATA_DIR / "task_history.json"))
+_HISTORY_LOCK = threading.RLock()
 USERS_DATA_FILE = os.getenv("USERS_DATA_FILE", str(DATA_DIR / "users.json"))
 ADMIN_AUDIT_FILE = os.getenv("ADMIN_AUDIT_FILE", str(DATA_DIR / "admin_audit.json"))
 TODUS_USERS_FILE = os.getenv("TODUS_USERS_FILE", str(DATA_DIR / "todus_users.json"))
@@ -1271,13 +1285,14 @@ def release_data_quota_reservation(application: Application, user_id: int, task_
 def save_task_history(user_id: int, task_data: dict) -> None:
     """Guarda una entrada de historial para un usuario."""
     try:
-        data = _load_json(HISTORY_DATA_FILE)
-        user_history = data.get(str(user_id), [])
-        user_history.insert(0, task_data)  # Más reciente primero
-        # Mantener máximo 50 entradas por usuario
-        user_history = user_history[:50]
-        data[str(user_id)] = user_history
-        _save_json(HISTORY_DATA_FILE, data)
+        with _HISTORY_LOCK:
+            data = _load_json(HISTORY_DATA_FILE)
+            user_history = data.get(str(user_id), [])
+            user_history.insert(0, task_data)  # Más reciente primero
+            # Mantener máximo 50 entradas por usuario
+            user_history = user_history[:50]
+            data[str(user_id)] = user_history
+            _save_json(HISTORY_DATA_FILE, data)
     except Exception as e:
         log.error(f"Error guardando historial de {user_id}: {e}")
 
@@ -1285,11 +1300,12 @@ def save_task_history(user_id: int, task_data: dict) -> None:
 def get_task_history(user_id: int, limit: int = 10) -> list[dict]:
     """Obtiene el historial de tareas para un usuario."""
     try:
-        data = _load_json(HISTORY_DATA_FILE)
-        entries = data.get(str(user_id), [])
-        if not isinstance(entries, list):
-            return []
-        return [entry for entry in entries if isinstance(entry, dict)][:limit]
+        with _HISTORY_LOCK:
+            data = _load_json(HISTORY_DATA_FILE)
+            entries = data.get(str(user_id), [])
+            if not isinstance(entries, list):
+                return []
+            return copy.deepcopy([entry for entry in entries if isinstance(entry, dict)][:limit])
     except Exception as e:
         log.error(f"Error leyendo historial de {user_id}: {e}")
         return []
@@ -1298,17 +1314,18 @@ def get_task_history(user_id: int, limit: int = 10) -> list[dict]:
 def delete_task_history_entry(user_id: int, index: int) -> bool:
     """Borra solo el registro numerado; no elimina el archivo de ToDus."""
     try:
-        data = _load_json(HISTORY_DATA_FILE)
-        entries = data.get(str(user_id), [])
-        if not isinstance(entries, list) or index < 0 or index >= len(entries):
-            return False
-        entries.pop(index)
-        if entries:
-            data[str(user_id)] = entries
-        else:
-            data.pop(str(user_id), None)
-        _save_json(HISTORY_DATA_FILE, data)
-        return True
+        with _HISTORY_LOCK:
+            data = _load_json(HISTORY_DATA_FILE)
+            entries = data.get(str(user_id), [])
+            if not isinstance(entries, list) or index < 0 or index >= len(entries):
+                return False
+            entries.pop(index)
+            if entries:
+                data[str(user_id)] = entries
+            else:
+                data.pop(str(user_id), None)
+            _save_json(HISTORY_DATA_FILE, data)
+            return str(user_id) not in _load_json(HISTORY_DATA_FILE) or _load_json(HISTORY_DATA_FILE).get(str(user_id)) == entries
     except Exception as exc:
         log.error("Error borrando historial user=%s (%s)", user_id, type(exc).__name__)
         return False
@@ -1317,62 +1334,103 @@ def delete_task_history_entry(user_id: int, index: int) -> bool:
 def clear_task_history(user_id: int) -> bool:
     """Borra todos los registros del historial del usuario."""
     try:
-        data = _load_json(HISTORY_DATA_FILE)
-        existed = bool(data.pop(str(user_id), None))
-        if existed:
-            _save_json(HISTORY_DATA_FILE, data)
-        return existed
+        with _HISTORY_LOCK:
+            data = _load_json(HISTORY_DATA_FILE)
+            existed = bool(data.pop(str(user_id), None))
+            if existed:
+                _save_json(HISTORY_DATA_FILE, data)
+            return existed
     except Exception as exc:
         log.error("Error vaciando historial user=%s (%s)", user_id, type(exc).__name__)
         return False
 
 
 def all_task_history() -> dict[str, list[dict]]:
-    data = _load_json(HISTORY_DATA_FILE)
-    return data if isinstance(data, dict) else {}
+    with _HISTORY_LOCK:
+        data = _load_json(HISTORY_DATA_FILE)
+        return copy.deepcopy(data) if isinstance(data, dict) else {}
+
+
+def clear_task_history_if_unchanged(user_id: int, expected_rows: list[dict]) -> bool:
+    """Vacía el historial personal únicamente si coincide con el snapshot remoto borrado."""
+    key = str(int(user_id))
+    with _HISTORY_LOCK:
+        data = _load_json(HISTORY_DATA_FILE)
+        current = data.get(key, [])
+        if not isinstance(current, list) or current != expected_rows:
+            return False
+        if current:
+            data.pop(key, None)
+            _save_json(HISTORY_DATA_FILE, data)
+            return key not in _load_json(HISTORY_DATA_FILE)
+        return True
+
+
+def clear_all_task_history_if_unchanged(expected_data: dict[str, list[dict]]) -> int | None:
+    """Vacía el historial global solo si ninguna fila cambió desde el snapshot."""
+    with _HISTORY_LOCK:
+        current = _load_json(HISTORY_DATA_FILE)
+        if not isinstance(current, dict) or current != expected_data:
+            return None
+        affected = len(current)
+        if current:
+            _save_json(HISTORY_DATA_FILE, {})
+            if _load_json(HISTORY_DATA_FILE):
+                return None
+        return affected
 
 
 def expire_cloud_files() -> int:
     """Borra de ToDus los enlaces vencidos y conserva el registro como expirado."""
-    data = all_task_history()
-    now = datetime.now(timezone.utc)
-    removed = 0
-    changed = False
-    for entries in data.values():
-        if not isinstance(entries, list):
-            continue
-        for entry in entries:
-            if not isinstance(entry, dict) or not entry.get("expires_at") or not entry.get("urls"):
+    with _HISTORY_LOCK:
+        data = _load_json(HISTORY_DATA_FILE)
+        now = datetime.now(timezone.utc)
+        removed = 0
+        changed = False
+        for entries in data.values():
+            if not isinstance(entries, list):
                 continue
-            try:
-                if datetime.fromisoformat(entry["expires_at"]) > now:
+            for entry in entries:
+                if not isinstance(entry, dict) or not entry.get("expires_at") or not entry.get("urls"):
                     continue
-            except (TypeError, ValueError):
-                continue
-            urls = entry.get("urls", []) if isinstance(entry.get("urls"), list) else []
-            success = True
-            for url in urls:
                 try:
-                    delete_from_todus_s3(url)
-                except Exception:
-                    success = False
-                    log.warning("No se pudo expirar objeto %s", url)
-            if success:
-                entry["urls"] = []
-                entry["cloud_expired_at"] = now.isoformat()
-                removed += len(urls)
-                changed = True
-    if changed:
-        _save_json(HISTORY_DATA_FILE, data)
-    return removed
+                    if datetime.fromisoformat(entry["expires_at"]) > now:
+                        continue
+                except (TypeError, ValueError):
+                    continue
+                urls = entry.get("urls", []) if isinstance(entry.get("urls"), list) else []
+                success = True
+                for url in urls:
+                    try:
+                        delete_from_todus_s3(url)
+                    except Exception:
+                        success = False
+                        log.warning("No se pudo expirar objeto %s", url)
+                if success:
+                    entry["urls"] = []
+                    entry["cloud_expired_at"] = now.isoformat()
+                    removed += len(urls)
+                    changed = True
+        if changed:
+            _save_json(HISTORY_DATA_FILE, data)
+        return removed
 
 
-async def delete_history_entry_cloud(entry: dict) -> bool:
-    """Elimina todos los objetos de nube de una entrada antes de borrar su registro."""
-    urls = entry.get("urls", []) if isinstance(entry, dict) else []
-    urls = urls if isinstance(urls, list) else []
+def _user_owned_cloud_url(url: str, user_id: int) -> bool:
+    try:
+        user_object_key_from_url(url, user_id, object_prefix=S3_UPLOAD_PREFIX)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+async def delete_user_owned_cloud_urls(urls: list[str], user_id: int) -> bool:
+    urls = list(dict.fromkeys(url for url in urls if isinstance(url, str) and url))
     if not urls:
         return True
+    if any(not _user_owned_cloud_url(url, user_id) for url in urls):
+        log.warning("Se rechazó un borrado con URL ajena/no válida para user=%s", user_id)
+        return False
     results = await asyncio.gather(*(
         asyncio.to_thread(delete_from_todus_s3, url) for url in urls
     ), return_exceptions=True)
@@ -1419,36 +1477,181 @@ async def todus_message_cleanup_monitor(application: Application) -> None:
 def clear_all_task_history() -> int:
     """Borra el historial local de todos los usuarios y devuelve cuántos usuarios afectó."""
     try:
-        data = _load_json(HISTORY_DATA_FILE)
-        affected = len(data)
-        _save_json(HISTORY_DATA_FILE, {})
-        return affected
+        with _HISTORY_LOCK:
+            data = _load_json(HISTORY_DATA_FILE)
+            affected = len(data)
+            _save_json(HISTORY_DATA_FILE, {})
+            return affected if not _load_json(HISTORY_DATA_FILE) else 0
     except Exception as exc:
         log.error("Error borrando historial global (%s)", type(exc).__name__)
         return 0
 
 
-async def delete_all_cloud_files(application: Application) -> tuple[int, int, int]:
-    """Borra URLs registradas y completadas en memoria; devuelve (total, ok, fallos)."""
-    urls: set[str] = set()
-    for entries in all_task_history().values():
-        if not isinstance(entries, list):
-            continue
-        for entry in entries:
-            if isinstance(entry, dict) and isinstance(entry.get("urls"), list):
-                urls.update(str(url) for url in entry["urls"] if url)
-    manager = application.bot_data.get("task_queue")
-    jobs = getattr(manager, "jobs", {}) if manager else {}
-    for job in jobs.values() if isinstance(jobs, dict) else []:
-        urls.update(str(url) for url in getattr(job, "part_urls", {}).values() if url)
+async def clear_personal_cloud_history(user_id: int, application: Application | None = None) -> tuple[int, int, bool]:
+    """Borra nube e historial personal; nunca limpia stores si un DELETE falla."""
+    key = str(int(user_id))
+    history_snapshot = all_task_history().get(key, [])
+    if not isinstance(history_snapshot, list):
+        history_snapshot = []
+    history_snapshot = copy.deepcopy(history_snapshot)
+    delivery_snapshot = sync_api.deliveries_for_user(user_id)
+    manager = application.bot_data.get("task_queue") if application else None
+    done_jobs = []
+    job_snapshot: dict[str, dict] = {}
+    if manager is not None:
+        async with manager.lock:
+            done_jobs = [job for job in manager.jobs.values()
+                         if job.user_id == user_id and job.state == "done"]
+            for job in done_jobs:
+                parts = getattr(job, "part_urls", {})
+                if not isinstance(parts, dict) or any(not isinstance(url, str) or not url for url in parts.values()):
+                    return 0, 0, False
+                job_snapshot[job.task_id] = copy.deepcopy(parts)
+    urls: list[str] = []
+    for entry in history_snapshot:
+        if isinstance(entry, dict):
+            entry_urls = entry.get("urls", [])
+            if not isinstance(entry_urls, list) or any(not isinstance(url, str) or not url for url in entry_urls):
+                return 0, 0, False
+            urls.extend(entry_urls)
+    for row in delivery_snapshot:
+        parts = row.get("parts")
+        if not isinstance(parts, list) or any(not isinstance(url, str) or not url for url in parts):
+            return 0, 0, False
+        urls.extend(parts)
+    for job in done_jobs:
+        urls.extend(job_snapshot[job.task_id].values())
+    unique_urls = list(dict.fromkeys(urls))
+    if not all(_user_owned_cloud_url(url, user_id) for url in unique_urls):
+        return len(unique_urls), 0, False
     results = await asyncio.gather(*(
-        asyncio.to_thread(delete_from_todus_s3, url) for url in sorted(urls)
+        asyncio.to_thread(delete_from_todus_s3, url) for url in unique_urls
     ), return_exceptions=True)
     failed = sum(isinstance(result, Exception) for result in results)
-    for job in jobs.values() if isinstance(jobs, dict) else []:
-        if getattr(job, "state", "") == "done":
-            job.part_urls.clear()
-    return len(urls), len(urls) - failed, failed
+    if failed:
+        return len(unique_urls), len(unique_urls) - failed, False
+
+    def finish_personal_clear() -> bool:
+        with _HISTORY_LOCK, sync_api._LOCK:
+            current_history = _load_json(HISTORY_DATA_FILE)
+            if current_history.get(key, []) != history_snapshot:
+                return False
+            if sync_api.deliveries_for_user(user_id) != delivery_snapshot:
+                return False
+            if any(job.state != "done" or job.part_urls != job_snapshot.get(job.task_id)
+                   for job in done_jobs):
+                return False
+            rollback_history = copy.deepcopy(current_history)
+            if not clear_task_history_if_unchanged(user_id, history_snapshot):
+                return False
+            try:
+                if sync_api.clear_deliveries_for_user(user_id, expected_rows=delivery_snapshot) is None:
+                    _save_json(HISTORY_DATA_FILE, rollback_history)
+                    return False
+            except Exception:
+                _save_json(HISTORY_DATA_FILE, rollback_history)
+                log.exception("No se pudo completar clear personal de deliveries user=%s", user_id)
+                return False
+            for job in done_jobs:
+                job.part_urls.clear()
+            return True
+
+    if manager is not None:
+        async with manager.lock:
+            cleared = finish_personal_clear()
+    else:
+        cleared = finish_personal_clear()
+    if not cleared:
+        return len(unique_urls), len(unique_urls), False
+    return len(unique_urls), len(unique_urls), True
+
+
+async def clear_all_registered_cloud_files(application: Application) -> tuple[int, int, int, int]:
+    """Delete all recorded objects first, then compare-and-clear both stores and completed jobs."""
+    history_snapshot = all_task_history()
+    delivery_snapshot = sync_api.all_deliveries_snapshot()
+    manager = application.bot_data.get("task_queue")
+    jobs = getattr(manager, "jobs", {}) if manager else {}
+    jobs = jobs if isinstance(jobs, dict) else {}
+    job_snapshot = {
+        task_id: (job, copy.deepcopy(getattr(job, "part_urls", {})))
+        for task_id, job in jobs.items()
+        if getattr(job, "state", "") == "done"
+    }
+    owner_urls: list[tuple[str, int]] = []
+    for raw_user, entries in history_snapshot.items():
+        try:
+            user_id = int(raw_user)
+        except (TypeError, ValueError):
+            return 0, 0, 1, 0
+        for entry in entries if isinstance(entries, list) else []:
+            if isinstance(entry, dict):
+                entry_urls = entry.get("urls", [])
+                if not isinstance(entry_urls, list) or any(not isinstance(url, str) or not url for url in entry_urls):
+                    return 0, 0, 1, 0
+                owner_urls.extend((url, user_id) for url in entry_urls)
+    for raw_user, rows in delivery_snapshot.items():
+        try:
+            user_id = int(raw_user)
+        except (TypeError, ValueError):
+            return 0, 0, 1, 0
+        for row in rows:
+            parts = row.get("parts") if isinstance(row, dict) else None
+            if not isinstance(parts, list) or any(not isinstance(url, str) or not url for url in parts):
+                return 0, 0, 1, 0
+            owner_urls.extend((url, user_id) for url in parts)
+    for _, (job, parts) in job_snapshot.items():
+        user_id = getattr(job, "user_id", None)
+        if isinstance(user_id, bool) or not isinstance(user_id, int) or user_id <= 0:
+            if parts:
+                return 0, 0, 1, 0
+            continue
+        if not isinstance(parts, dict) or any(not isinstance(url, str) or not url for url in parts.values()):
+            return 0, 0, 1, 0
+        owner_urls.extend((url, user_id) for url in parts.values())
+
+    if any(not _user_owned_cloud_url(url, owner_id) for url, owner_id in owner_urls):
+        return len({url for url, _ in owner_urls}), 0, 1, 0
+    ordered_urls = sorted({url for url, _ in owner_urls})
+    results = await asyncio.gather(*(
+        asyncio.to_thread(delete_from_todus_s3, url) for url in ordered_urls
+    ), return_exceptions=True)
+    failed = sum(isinstance(result, Exception) for result in results)
+    if failed:
+        return len(ordered_urls), len(ordered_urls) - failed, failed, 0
+
+    # Keep all references if either persistent snapshot changed while DELETEs ran.
+    with _HISTORY_LOCK, sync_api._LOCK:
+        if not sync_api.all_deliveries_match_snapshot(delivery_snapshot):
+            return len(ordered_urls), len(ordered_urls), 1, 0
+        if _load_json(HISTORY_DATA_FILE) != history_snapshot:
+            return len(ordered_urls), len(ordered_urls), 1, 0
+        if any(getattr(job, "state", "") != "done" or
+               getattr(job, "part_urls", {}) != expected
+               for job, expected in job_snapshot.values()):
+            return len(ordered_urls), len(ordered_urls), 1, 0
+        affected = clear_all_task_history_if_unchanged(history_snapshot)
+        if affected is None:
+            return len(ordered_urls), len(ordered_urls), 1, 0
+        try:
+            removed_deliveries = sync_api.clear_all_deliveries(delivery_snapshot)
+            if removed_deliveries is None:
+                _save_json(HISTORY_DATA_FILE, history_snapshot)
+                return len(ordered_urls), len(ordered_urls), 1, 0
+        except Exception:
+            _save_json(HISTORY_DATA_FILE, history_snapshot)
+            log.exception("No se pudo completar el clear global de deliveries")
+            return len(ordered_urls), len(ordered_urls), 1, 0
+        for job, expected in job_snapshot.values():
+            if getattr(job, "state", "") == "done" and getattr(job, "part_urls", {}) == expected:
+                job.part_urls = {}
+    return len(ordered_urls), len(ordered_urls), 0, affected
+
+
+async def delete_all_cloud_files(application: Application) -> tuple[int, int, int]:
+    """Borra todos los objetos registrados; devuelve (total, ok, fallos)."""
+    total, deleted, failed, _ = await clear_all_registered_cloud_files(application)
+    return total, deleted, failed
 
 
 def reset_user_daily_usage(user_id: int) -> bool:
@@ -1583,19 +1786,20 @@ def admin_registered_users_keyboard(page: int = 0, page_size: int = ADMIN_USERS_
 def delete_task_history_by_task_id(user_id: int, task_id: str) -> bool:
     """Elimina del historial el registro de una tarea borrada de ToDus."""
     try:
-        data = _load_json(HISTORY_DATA_FILE)
-        entries = data.get(str(user_id), [])
-        if not isinstance(entries, list):
-            return False
-        kept = [entry for entry in entries if entry.get("task_id") != task_id]
-        if len(kept) == len(entries):
-            return False
-        if kept:
-            data[str(user_id)] = kept
-        else:
-            data.pop(str(user_id), None)
-        _save_json(HISTORY_DATA_FILE, data)
-        return True
+        with _HISTORY_LOCK:
+            data = _load_json(HISTORY_DATA_FILE)
+            entries = data.get(str(user_id), [])
+            if not isinstance(entries, list):
+                return False
+            kept = [entry for entry in entries if not isinstance(entry, dict) or entry.get("task_id") != task_id]
+            if len(kept) == len(entries):
+                return False
+            if kept:
+                data[str(user_id)] = kept
+            else:
+                data.pop(str(user_id), None)
+            _save_json(HISTORY_DATA_FILE, data)
+            return True
     except Exception as exc:
         log.error("Error borrando historial por task_id user=%s (%s)", user_id, type(exc).__name__)
         return False
@@ -2326,7 +2530,6 @@ def download_menu_text() -> str:
         "",
         "☁️ Nube S3: se sube el",
         "archivo y recibes el enlace.",
-        f"Destino: {{mono:{S3_UPLOAD_URL}}}",
         "",
         "📲 Modo ToDus: conserva",
         "la entrega normal a tu",
@@ -2349,24 +2552,47 @@ def download_source_menu_text(delivery_mode: str) -> str:
         ])
     return card("☁️ ɴᴜʙᴇ ꜱ3", [
         "Destino elegido: nube S3.",
-        "Los archivos se guardan en:",
-        f"{{mono:{S3_UPLOAD_URL}}}",
         "",
         "Ahora elige si vas a",
         "enviar un archivo o enlace.",
     ])
 
 
-def download_source_keyboard() -> InlineKeyboardMarkup:
+def download_quality_label(value: str | int | None) -> str:
+    return f"{normalize_video_quality(value)}p"
+
+
+def download_quality_menu_text(selected: str) -> str:
+    return card("🎞 ᴄᴀʟɪᴅᴀᴅ ᴅᴇ ᴠíᴅᴇᴏ", [
+        f"Límite seleccionado: {download_quality_label(selected)}.",
+        "El bot elegirá la mejor calidad disponible hasta ese límite y guardará el vídeo en MP4.",
+        "Solo aplica a videos públicos compatibles; un enlace directo de archivo se entrega sin convertir.",
+    ])
+
+
+def download_quality_keyboard(selected: str) -> InlineKeyboardMarkup:
+    rows = [[
+        btn(
+            ("✓ " if quality == normalize_video_quality(selected) else "") + f"Hasta {quality}p · MP4",
+            callback_data=f"download:quality:{quality}",
+        )
+    ] for quality in SUPPORTED_VIDEO_QUALITIES]
+    rows.append([btn("⬅️ Volver", callback_data="download:quality:back")])
+    return InlineKeyboardMarkup(rows)
+
+
+def download_source_keyboard(selected_quality: str = DEFAULT_VIDEO_QUALITY) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [btn("📁 Telegram", callback_data="download:telegram"),
          btn("🔗 Enlace", callback_data="download:url")],
+        [btn(f"🎞 Calidad de video: {download_quality_label(selected_quality)}", callback_data="download:quality")],
         [btn("⬅️ Cambiar destino", callback_data="downloads"),
          btn("🏠 ɪɴɪᴄɪᴏ", callback_data="home")],
     ])
 
 
-def download_prompt_text(source: str, delivery_mode: str | None = None) -> str:
+def download_prompt_text(source: str, delivery_mode: str | None = None,
+                         video_quality: str = DEFAULT_VIDEO_QUALITY) -> str:
     mode = delivery_mode or DELIVERY_MODE
     delivery_note = []
     if mode == "todus":
@@ -2397,6 +2623,9 @@ def download_prompt_text(source: str, delivery_mode: str | None = None) -> str:
             "",
             "Hasta 20 enlaces en",
             "un mensaje.",
+            "",
+            f"Video público: hasta {download_quality_label(video_quality)} en MP4.",
+            "Archivos directos se entregan sin conversión.",
             *delivery_note,
         ])
 
@@ -3272,6 +3501,9 @@ async def enqueue_transfer(update: Update, context: ContextTypes.DEFAULT_TYPE, *
     selected_mode = (getattr(context, "user_data", {}) or {}).get("download_delivery_mode")
     if selected_mode not in {"s3", "todus"}:
         selected_mode = None
+    selected_quality = normalize_video_quality(
+        (getattr(context, "user_data", {}) or {}).get("download_video_quality", DEFAULT_VIDEO_QUALITY)
+    )
     placeholder = await message.reply_text(
         card("⏳ ᴇɴ ᴄᴏʟᴀ", ["Esperando turno..."]),
     )
@@ -3279,6 +3511,7 @@ async def enqueue_transfer(update: Update, context: ContextTypes.DEFAULT_TYPE, *
         user_id=user.id, chat_id=message.chat_id, source_kind=source_kind,
         source_message=message, status_message=placeholder, source_url=source_url,
         delivery_mode=selected_mode,
+        video_quality=selected_quality,
         username=f"@{user.username}" if user.username else None,
         display_name=getattr(user, "full_name", None),
         compress_after_download=compress_after_download,
@@ -3336,7 +3569,7 @@ async def process_task(job: TransferTask, application: Application) -> None:
         if temp_path is None or not temp_path.exists() or not job.download_complete:
             job.set_state("downloading")
             await _edit_task_status(job, card("📥 ᴅᴇꜱᴄᴀʀɢᴀɴᴅᴏ", [
-                "Iniciando descarga...",
+                f"Iniciando descarga (videos hasta {download_quality_label(job.video_quality)})...",
             ]))
             if job.source_kind == "url":
                 source_url = job.source_url or ""
@@ -3374,6 +3607,7 @@ async def process_task(job: TransferTask, application: Application) -> None:
                             platform_dir,
                             max_bytes=max_bytes,
                             max_duration_seconds=seconds,
+                            video_quality=job.video_quality,
                             progress_hook=platform_progress,
                             is_cancelled=lambda: job.cancel_requested,
                         )
@@ -4852,8 +5086,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             return
 
         if query.data == "admin:cloud_all_yes":
-            total, deleted, failed = await delete_all_cloud_files(context.application)
-            affected = clear_all_task_history() if failed == 0 else 0
+            total, deleted, failed, affected = await clear_all_registered_cloud_files(context.application)
             if failed == 0:
                 schedule_data_backup(context.application, "borrado global de archivos de nube")
             await edit_query_message_text(query.message,
@@ -4882,11 +5115,18 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             return
 
         if query.data == "admin:all_history_confirm":
-            total_entries = sum(len(entries) for entries in all_task_history().values() if isinstance(entries, list))
+            history_rows = all_task_history()
+            total_entries = sum(len(entries) for entries in history_rows.values() if isinstance(entries, list))
+            delivery_rows = sync_api.all_deliveries_snapshot()
+            total_deliveries = sum(len(rows) for rows in delivery_rows.values())
+            manager = context.application.bot_data.get("task_queue")
+            jobs = getattr(manager, "jobs", {}) if manager else {}
+            completed_jobs = sum(1 for job in jobs.values() if getattr(job, "state", "") == "done") if isinstance(jobs, dict) else 0
             await edit_query_message_text(query.message,
                 card("⚠️ ʙᴏʀʀᴀᴅᴏ ɢʟᴏʙᴀʟ", [
-                    f"Se eliminarán {total_entries} registros",
-                    "y sus archivos de ToDus S3.",
+                    f"Se eliminarán {total_entries} historiales,",
+                    f"{total_deliveries} entregas de app y {completed_jobs} tareas completas,",
+                    "junto con sus archivos de ToDus S3.",
                     "",
                     "Esta acción no se puede deshacer.",
                 ]),
@@ -4898,27 +5138,16 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             return
 
         if query.data == "admin:all_history_yes":
-            snapshot = all_task_history()
-            deleted_cloud = 0
-            for entries in snapshot.values():
-                if not isinstance(entries, list):
-                    continue
-                for entry in entries:
-                    urls = entry.get("urls", []) if isinstance(entry, dict) else []
-                    for url in urls if isinstance(urls, list) else []:
-                        try:
-                            await asyncio.to_thread(delete_from_todus_s3, url)
-                            deleted_cloud += 1
-                        except Exception:
-                            log.warning("No se pudo borrar objeto global %s", url)
-            affected = clear_all_task_history()
-            schedule_data_backup(context.application, "borrado global de historial")
+            total, deleted, failed, affected = await clear_all_registered_cloud_files(context.application)
+            if not failed:
+                schedule_data_backup(context.application, "borrado global de historial")
             await edit_query_message_text(query.message,
-                card("✅ ʜɪꜱᴛᴏʀɪᴀʟ ʙᴏʀʀᴀᴅᴏ", [
-                    f"Usuarios afectados: {affected}",
-                    f"Enlaces eliminados de ToDus: {deleted_cloud}",
+                card("⚠️ ʙᴏʀʀᴀᴅᴏ ᴘᴀʀᴄɪᴀʟ" if failed else "✅ ʜɪꜱᴛᴏʀɪᴀʟ ʙᴏʀʀᴀᴅᴏ", [
+                    f"Usuarios afectados: {affected}" if not failed else "El historial se conservó para reintentar.",
+                    f"Enlaces eliminados: {deleted} de {total}",
+                    f"Fallos: {failed}",
                     "",
-                    "El historial local quedó vacío.",
+                    "El historial local quedó vacío." if not failed else "Corrige el almacenamiento y vuelve a intentarlo.",
                 ]),
                 reply_markup=InlineKeyboardMarkup([[btn("⬅️ ᴘᴀɴᴇʟ ᴀᴅᴍɪɴ", callback_data="admin:back")]]),
             )
@@ -4930,25 +5159,27 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             entries = get_task_history(target_id, 50)
             if 0 <= index < len(entries):
                 entry = entries[index]
-                for url in entry.get("urls", []) if isinstance(entry.get("urls"), list) else []:
-                    try:
-                        await asyncio.to_thread(delete_from_todus_s3, url)
-                    except Exception:
-                        log.warning("No se pudo borrar objeto admin %s", url)
+                task_id = entry.get("task_id")
+                delivery = sync_api.delivery_for_user(target_id, task_id) if task_id else None
+                urls = entry.get("urls", []) if isinstance(entry.get("urls"), list) else []
+                parts = delivery.get("parts", []) if isinstance(delivery, dict) else []
+                if not await delete_user_owned_cloud_urls(urls + parts, target_id):
+                    await query.answer(sc("No se pudo confirmar el borrado remoto; se conservó el registro."), show_alert=True)
+                    return
+                if delivery and not sync_api.remove_delivery_for_user(target_id, task_id, delivery):
+                    await query.answer(sc("La entrega cambió; se conservó el historial."), show_alert=True)
+                    return
                 delete_task_history_entry(target_id, index)
             await edit_query_message_text(query.message, admin_user_history_text(target_id), reply_markup=admin_user_history_keyboard(target_id))
             return
 
         if query.data.startswith("admin:histclear:"):
             target_id = int(query.data.split(":")[-1])
-            entries = get_task_history(target_id, 50)
-            for entry in entries:
-                for url in entry.get("urls", []) if isinstance(entry.get("urls"), list) else []:
-                    try:
-                        await asyncio.to_thread(delete_from_todus_s3, url)
-                    except Exception:
-                        log.warning("No se pudo borrar objeto admin %s", url)
-            clear_task_history(target_id)
+            total, deleted, ok = await clear_personal_cloud_history(target_id)
+            if not ok:
+                await query.answer(sc("No se pudo confirmar el borrado remoto; el historial se conservó."), show_alert=True)
+                return
+            schedule_data_backup(context.application, "borrado de historial personal desde admin")
             await edit_query_message_text(query.message, admin_user_history_text(target_id), reply_markup=admin_user_history_keyboard(target_id))
             return
 
@@ -5248,7 +5479,39 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await edit_query_message_text(
             query.message,
             download_source_menu_text(delivery_mode),
-            reply_markup=download_source_keyboard(),
+            reply_markup=download_source_keyboard(
+                context.user_data.get("download_video_quality", DEFAULT_VIDEO_QUALITY)
+            ),
+        )
+        return
+
+    if query.data == "download:quality":
+        selected_quality = normalize_video_quality(
+            context.user_data.get("download_video_quality", DEFAULT_VIDEO_QUALITY)
+        )
+        await edit_query_message_text(
+            query.message,
+            download_quality_menu_text(selected_quality),
+            reply_markup=download_quality_keyboard(selected_quality),
+        )
+        return
+
+    if query.data.startswith("download:quality:"):
+        selected_quality = query.data.rsplit(":", 1)[-1]
+        delivery_mode = context.user_data.get("download_delivery_mode") or DELIVERY_MODE
+        if selected_quality == "back":
+            selected_quality = normalize_video_quality(
+                context.user_data.get("download_video_quality", DEFAULT_VIDEO_QUALITY)
+            )
+        elif selected_quality in SUPPORTED_VIDEO_QUALITIES:
+            context.user_data["download_video_quality"] = selected_quality
+        else:
+            await query.answer(sc("Calidad no válida."), show_alert=True)
+            return
+        await edit_query_message_text(
+            query.message,
+            download_source_menu_text(delivery_mode),
+            reply_markup=download_source_keyboard(selected_quality),
         )
         return
 
@@ -5257,7 +5520,11 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         delivery_mode = context.user_data.get("download_delivery_mode") or DELIVERY_MODE
         await edit_query_message_text(
             query.message,
-            download_prompt_text(source, delivery_mode),
+            download_prompt_text(
+                source,
+                delivery_mode,
+                context.user_data.get("download_video_quality", DEFAULT_VIDEO_QUALITY),
+            ),
             reply_markup=download_prompt_keyboard(user.id, delivery_mode),
         )
         return
@@ -5350,17 +5617,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await query.answer(sc("Ese historial ya no existe"), show_alert=True)
             return
         urls = entry.get("urls", []) if isinstance(entry.get("urls", []), list) else []
-        if not urls:
-            delete_task_history_entry(user.id, index)
-            schedule_data_backup(context.application, "borrado de historial")
-            await edit_query_message_text(query.message, card("✅ ʜɪꜱᴛᴏʀɪᴀʟ ʙᴏʀʀᴀᴅᴏ", ["No había archivos para borrar."]), reply_markup=home_keyboard())
+        task_id = entry.get("task_id")
+        delivery = sync_api.delivery_for_user(user.id, task_id) if task_id else None
+        parts = delivery.get("parts", []) if isinstance(delivery, dict) else []
+        if not await delete_user_owned_cloud_urls(urls + parts, user.id):
+            await query.answer(sc("No se pudo confirmar el borrado remoto; el historial sigue intacto."), show_alert=True)
             return
-        results = await asyncio.gather(*(
-            asyncio.to_thread(delete_from_todus_s3, url) for url in urls
-        ), return_exceptions=True)
-        failed = [result for result in results if isinstance(result, Exception)]
-        if failed:
-            await query.answer(sc("No se pudo borrar todo de ToDus"), show_alert=True)
+        if delivery and not sync_api.remove_delivery_for_user(user.id, task_id, delivery):
+            await query.answer(sc("La entrega cambió; el historial sigue intacto."), show_alert=True)
             return
         delete_task_history_entry(user.id, index)
         schedule_data_backup(context.application, "borrado de archivo")
@@ -5405,11 +5669,19 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if index < 0 or index >= len(entries):
             await query.answer(sc("Ese registro ya no existe"), show_alert=True)
             return
-        if not await delete_history_entry_cloud(entries[index]):
+        entry = entries[index]
+        task_id = entry.get("task_id")
+        delivery = sync_api.delivery_for_user(user.id, task_id) if task_id else None
+        urls = entry.get("urls", []) if isinstance(entry.get("urls"), list) else []
+        parts = delivery.get("parts", []) if isinstance(delivery, dict) else []
+        if not await delete_user_owned_cloud_urls(urls + parts, user.id):
             await query.answer(
                 sc("No se pudo borrar el archivo de la nube; el historial sigue intacto."),
                 show_alert=True,
             )
+            return
+        if delivery and not sync_api.remove_delivery_for_user(user.id, task_id, delivery):
+            await query.answer(sc("La entrega cambió; se conservó el historial."), show_alert=True)
             return
         if not delete_task_history_entry(user.id, index):
             await query.answer(sc("El historial cambió; inténtalo otra vez."), show_alert=True)
@@ -5451,11 +5723,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     if query.data == "history:clear:yes":
-        entries = get_task_history(user.id, 50)
-        results = await asyncio.gather(*(
-            delete_history_entry_cloud(entry) for entry in entries
-        ))
-        if not all(results):
+        total, deleted, cleared = await clear_personal_cloud_history(user.id, context.application)
+        if not cleared:
             await edit_query_message_text(query.message,
                 card("⚠️ ɴᴏ ꜱᴇ ᴘᴜᴅᴏ ʙᴏʀʀᴀʀ", [
                     "Algunos archivos siguen en la nube.",
@@ -5468,7 +5737,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 ]),
             )
             return
-        clear_task_history(user.id)
         schedule_data_backup(context.application, "borrado total del historial")
         await edit_query_message_text(query.message,
             card("✅ ʜɪꜱᴛᴏʀɪᴀʟ ʙᴏʀʀᴀᴅᴏ", ["El historial ha sido borrado con éxito."]),
@@ -5545,19 +5813,31 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 await query.answer(sc("Solo archivos subidos"), show_alert=True)
                 return
             urls = list(job.part_urls.items())
+            url_values = [url for _, url in urls]
+            delivery = sync_api.delivery_for_user(user.id, job.task_id)
+            delivery_parts = delivery.get("parts", []) if isinstance(delivery, dict) else []
+            history_rows = all_task_history().get(str(user.id), [])
+            history_parts = [
+                part for entry in history_rows if isinstance(entry, dict)
+                and entry.get("task_id") == job.task_id
+                for part in (entry.get("urls", []) if isinstance(entry.get("urls"), list) else [])
+                if isinstance(part, str) and part
+            ]
+            all_urls = list(dict.fromkeys(
+                url_values + (delivery_parts if isinstance(delivery_parts, list) else []) + history_parts
+            ))
+            if not all(_user_owned_cloud_url(url, user.id) for url in all_urls):
+                await query.answer(sc("La URL no pertenece a tu espacio de nube; no se borró nada."), show_alert=True)
+                return
             results = await asyncio.gather(*(
                 asyncio.to_thread(delete_from_todus_s3, url)
-                for _, url in urls
+                for url in all_urls
             ), return_exceptions=True)
-            failed = [
-                (index, result) for (index, _), result in zip(urls, results)
-                if isinstance(result, Exception)
-            ]
-            if failed:
-                for (index, _), result in zip(urls, results):
-                    if not isinstance(result, Exception):
-                        job.part_urls.pop(index, None)
+            if any(isinstance(result, Exception) for result in results):
                 await query.answer(sc("No se pudieron borrar todas las partes; inténtalo otra vez."), show_alert=True)
+                return
+            if delivery and not sync_api.remove_delivery_for_user(user.id, job.task_id, delivery):
+                await query.answer(sc("La entrega cambió durante el borrado; conserva sus referencias e inténtalo otra vez."), show_alert=True)
                 return
             job.part_urls.clear()
             job.set_state("cancelled")
@@ -6494,28 +6774,51 @@ async def sync_app_task_request(application: Application, action: str, user_id: 
                                 payload: dict) -> tuple[dict, int]:
     """Acciones de cola solicitadas por un dispositivo emparejado."""
     if action == "clear_cloud":
-        entries = get_task_history(user_id, 50)
+        history_snapshot = all_task_history()
+        entries = history_snapshot.get(str(user_id), [])
+        if not isinstance(entries, list):
+            entries = []
+        entries = copy.deepcopy(entries)
         deliveries = sync_api.deliveries_for_user(user_id)
         manager: FairTaskQueue | None = application.bot_data.get("task_queue")
         done_jobs = []
+        job_parts_snapshot = {}
         if manager is not None:
             async with manager.lock:
                 done_jobs = [job for job in manager.jobs.values()
                              if job.user_id == user_id and job.state == "done"]
-        urls = {
-            str(url)
-            for entry in entries
-            if isinstance(entry, dict) and isinstance(entry.get("urls"), list)
-            for url in entry["urls"] if url
-        }
+                job_parts_snapshot = {job.task_id: copy.deepcopy(job.part_urls) for job in done_jobs}
+        urls = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            entry_urls = entry.get("urls", [])
+            if not isinstance(entry_urls, list) or any(not isinstance(url, str) or not url for url in entry_urls):
+                return {"ok": False, "error": "invalid_cloud_object",
+                        "message": "Hay una referencia de nube no válida; no se borraron los registros."}, 409
+            urls.extend(entry_urls)
         for row in deliveries:
             parts = row.get("parts", []) if isinstance(row, dict) else []
-            if isinstance(parts, list):
-                urls.update(str(url) for url in parts if url)
+            if not isinstance(parts, list) or any(not isinstance(url, str) or not url for url in parts):
+                return {"ok": False, "error": "invalid_cloud_object",
+                        "message": "Hay una referencia de nube no válida; no se borraron los registros."}, 409
+            urls.extend(parts)
         for job in done_jobs:
-            urls.update(str(url) for url in getattr(job, "part_urls", {}).values() if url)
+            parts = getattr(job, "part_urls", {})
+            if not isinstance(parts, dict) or any(not isinstance(url, str) or not url for url in parts.values()):
+                return {"ok": False, "error": "invalid_cloud_object",
+                        "message": "Hay una referencia de nube no válida; no se borraron los registros."}, 409
+            urls.extend(parts.values())
+        urls = list(dict.fromkeys(urls))
+        if any(not _user_owned_cloud_url(url, user_id) for url in urls):
+            return {
+                "ok": False,
+                "error": "invalid_cloud_object",
+                "message": "Hay una referencia de nube que no pertenece a esta cuenta; no se borraron los registros.",
+            }, 409
+        ordered_urls = sorted(urls)
         results = await asyncio.gather(*(
-            asyncio.to_thread(delete_from_todus_s3, url) for url in sorted(urls)
+            asyncio.to_thread(delete_from_todus_s3, url) for url in ordered_urls
         ), return_exceptions=True)
         failed = sum(isinstance(result, Exception) for result in results)
         if failed:
@@ -6523,19 +6826,45 @@ async def sync_app_task_request(application: Application, action: str, user_id: 
                 "ok": False,
                 "error": "cloud_delete_failed",
                 "message": "Algunos archivos siguen en la nube; no se borró el historial para poder reintentar.",
-                "deleted_files": len(urls) - failed,
+                "deleted_files": len(ordered_urls) - failed,
                 "failed_files": failed,
             }, 502
-        clear_task_history(user_id)
-        sync_api.clear_deliveries_for_user(user_id)
-        if manager is not None and done_jobs:
-            async with manager.lock:
+        def finish_personal_clear() -> bool:
+            with _HISTORY_LOCK, sync_api._LOCK:
+                if _load_json(HISTORY_DATA_FILE) != history_snapshot:
+                    return False
+                if sync_api.deliveries_for_user(user_id) != deliveries:
+                    return False
+                if any(job.state != "done" or job.part_urls != job_parts_snapshot.get(job.task_id)
+                       for job in done_jobs):
+                    return False
+                if not clear_task_history_if_unchanged(user_id, entries):
+                    return False
+                try:
+                    if sync_api.clear_deliveries_for_user(user_id, expected_rows=deliveries) is None:
+                        _save_json(HISTORY_DATA_FILE, history_snapshot)
+                        return False
+                except Exception:
+                    _save_json(HISTORY_DATA_FILE, history_snapshot)
+                    log.exception("No se pudo completar cloud/clear user=%s", user_id)
+                    return False
                 for job in done_jobs:
-                    if job.user_id == user_id and job.state == "done":
-                        job.part_urls.clear()
-        if urls or entries:
+                    job.part_urls.clear()
+                return True
+
+        if manager is not None:
+            async with manager.lock:
+                cleared = finish_personal_clear()
+        else:
+            cleared = finish_personal_clear()
+        if not cleared:
+            return {
+                "ok": False, "error": "cloud_state_changed",
+                "message": "El historial, las entregas o las tareas cambiaron durante el borrado; conserva sus registros para reintentar.",
+            }, 409
+        if ordered_urls or entries or deliveries:
             schedule_data_backup(application, "vaciado personal de archivos de nube desde Android")
-        return {"ok": True, "deleted_files": len(urls),
+        return {"ok": True, "deleted_files": len(ordered_urls),
                 "deleted_records": len(entries) + len(deliveries)}, 200
 
     manager: FairTaskQueue = application.bot_data["task_queue"]

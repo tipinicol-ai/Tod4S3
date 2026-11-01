@@ -11,6 +11,8 @@ from urllib.parse import urlsplit
 
 log = logging.getLogger(__name__)
 PLATFORM_SHORTLINK_HOSTS = {"fb.watch", "vm.tiktok.com", "vt.tiktok.com"}
+SUPPORTED_VIDEO_QUALITIES = ("1080", "720", "480", "360")
+DEFAULT_VIDEO_QUALITY = "720"
 PLATFORM_HOST_HINTS = {
     "facebook.com", "fb.watch", "youtube.com", "youtu.be", "instagram.com",
     "tiktok.com", "twitter.com", "x.com", "reddit.com", "twitch.tv",
@@ -54,12 +56,28 @@ def _safe_media_name(value: str, fallback: str) -> str:
     return (cleaned[:160] or fallback)
 
 
+def normalize_video_quality(value: str | int | None) -> str:
+    """Return a supported maximum video height; unknown values use 720p."""
+    quality = str(value or DEFAULT_VIDEO_QUALITY).strip().lower().removesuffix("p")
+    return quality if quality in SUPPORTED_VIDEO_QUALITIES else DEFAULT_VIDEO_QUALITY
+
+
+def _format_selector(video_quality: str) -> str:
+    height = int(normalize_video_quality(video_quality))
+    return (
+        f"bestvideo[height<={height}][ext=mp4]+bestaudio[ext=m4a]/"
+        f"best[height<={height}][ext=mp4]/"
+        f"bestvideo[height<={height}]+bestaudio/best[height<={height}]"
+    )
+
+
 def _cnv_youtube_download(
     url: str,
     folder: Path,
     *,
     max_bytes: int | None,
     max_duration_seconds: int,
+    video_quality: str = DEFAULT_VIDEO_QUALITY,
     progress_hook=None,
     is_cancelled=None,
 ) -> Path:
@@ -87,7 +105,7 @@ def _cnv_youtube_download(
     body = {
         "link": url,
         "format": "mp4",
-        "videoQuality": "720",
+        "videoQuality": normalize_video_quality(video_quality),
         "filenameStyle": "pretty",
     }
     converted = requests.post(
@@ -207,6 +225,7 @@ def download_platform_video(
     *,
     max_bytes: int | None,
     max_duration_seconds: int = 24 * 60 * 60,
+    video_quality: str = DEFAULT_VIDEO_QUALITY,
     progress_hook=None,
     is_cancelled=None,
 ) -> tuple[Path, str, int]:
@@ -225,6 +244,7 @@ def download_platform_video(
     if not is_supported_platform_url(url):
         raise ValueError("La plataforma de este enlace no está soportada por yt-dlp.")
     _check_public_dns_target(url)
+    selected_quality = normalize_video_quality(video_quality)
 
     folder = Path(output_dir)
     folder.mkdir(parents=True, exist_ok=True)
@@ -242,6 +262,7 @@ def download_platform_video(
                 folder,
                 max_bytes=max_bytes,
                 max_duration_seconds=max_duration_seconds,
+                video_quality=selected_quality,
                 progress_hook=progress_hook,
                 is_cancelled=is_cancelled,
             )
@@ -272,7 +293,7 @@ def download_platform_video(
     base_options = {
         # Prefer MP4 where available, but retain the platform's best video if it
         # only offers another format. ffmpeg merges separate video/audio streams.
-        "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/bestvideo+bestaudio/best",
+        "format": _format_selector(selected_quality),
         "merge_output_format": "mp4",
         "outtmpl": str(folder / "%(title).160B [%(id)s].%(ext)s"),
         "noplaylist": True,

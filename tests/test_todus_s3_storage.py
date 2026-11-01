@@ -100,3 +100,21 @@ def test_upload_adds_unique_suffix_in_user_folder_when_name_exists(tmp_path: Pat
     assert decoded_path.startswith("/stream/users/df/73421/archivo_")
     assert decoded_path.endswith(".bin")
     assert decoded_path != "/stream/users/df/73421/archivo.bin"
+
+
+def test_encoded_object_key_round_trips_through_url_and_delete(monkeypatch):
+    key = "users/df/42/¡video% final (1).mp4"
+    url = f"{S3_BASE}/{storage.quote(key, safe='/')}"
+    assert storage.object_key_from_url(url) == key
+    seen = []
+
+    class Response:
+        status_code = 204
+
+    monkeypatch.setattr(storage.requests, "delete", lambda target, **_kwargs: seen.append(("delete", target)) or Response())
+    monkeypatch.setattr(storage.requests, "head", lambda target, **_kwargs: seen.append(("head", target)) or SimpleNamespace(status_code=404))
+
+    storage.delete_from_todus_s3(url)
+
+    assert seen[0] == ("delete", f"{S3_BASE}/{storage.quote(key, safe='/')}")
+    assert "%25%20final%20%281%29.mp4" in seen[0][1]

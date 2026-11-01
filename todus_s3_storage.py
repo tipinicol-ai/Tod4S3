@@ -9,7 +9,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 import requests
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, quote, unquote_to_bytes, urlencode, urlsplit, urlunsplit
 
 
 TODUS_S3_BASE_URL = "https://s3.todus.cu/stream"
@@ -27,10 +27,71 @@ class ToDusS3UploadCancelled(ToDusS3UploadError):
     """La subida se canceló antes de completarse."""
 
 
+def object_key_from_url(url: str, *, base_url: str = TODUS_S3_BASE_URL) -> str:
+    """Translate a public ToDus object URL into its decoded storage object key."""
+    if not isinstance(url, str) or not isinstance(base_url, str):
+        raise ValueError("La URL del objeto no es válida.")
+    try:
+        parsed = urlsplit(url)
+        base = urlsplit(base_url)
+        if (parsed.scheme.lower() != "https" or base.scheme.lower() != "https"
+                or not parsed.hostname or not base.hostname
+                or parsed.hostname.lower() != base.hostname.lower()
+                or parsed.port != base.port
+                or parsed.username is not None or parsed.password is not None
+                or parsed.query or parsed.fragment):
+            raise ValueError("La URL no pertenece al almacenamiento ToDus configurado.")
+    except ValueError as exc:
+        raise ValueError("La URL no pertenece al almacenamiento ToDus configurado.") from exc
+    base_path = base.path.rstrip("/")
+    path_prefix = f"{base_path}/" if base_path else "/"
+    if not parsed.path.startswith(path_prefix):
+        raise ValueError("La URL no pertenece al almacenamiento ToDus configurado.")
+    encoded_key = parsed.path[len(path_prefix):]
+    if not encoded_key or re.search(r"%(?![0-9A-Fa-f]{2})", encoded_key):
+        raise ValueError("La clave del objeto no es válida.")
+    decoded_segments = []
+    for segment in encoded_key.split("/"):
+        try:
+            decoded = unquote_to_bytes(segment).decode("utf-8", errors="strict")
+        except UnicodeDecodeError as exc:
+            raise ValueError("La clave del objeto no es válida.") from exc
+        if (decoded in {"", ".", ".."} or "/" in decoded or "\\" in decoded
+                or any(ord(char) < 32 or ord(char) == 127 for char in decoded)):
+            raise ValueError("La clave del objeto no es válida.")
+        decoded_segments.append(decoded)
+    return "/".join(decoded_segments)
+
+
+def user_object_key_from_url(
+    url: str,
+    user_id: int,
+    *,
+    object_prefix: str = "users/df",
+    base_url: str = TODUS_S3_BASE_URL,
+) -> str:
+    """Return the object key only when it lies in this user's current or legacy namespace."""
+    if isinstance(user_id, bool) or int(user_id) <= 0:
+        raise ValueError("El ID de usuario no es válido.")
+    key = object_key_from_url(url, base_url=base_url)
+    prefixes = []
+    if object_prefix:
+        normalized = str(object_prefix).strip("/")
+        parts = normalized.split("/")
+        if not parts or any(part in {"", ".", ".."} or not re.fullmatch(r"[A-Za-z0-9._-]+", part)
+                            for part in parts):
+            raise ValueError("El prefijo de almacenamiento no es válido.")
+        prefixes.append(f"{normalized}/{int(user_id)}/")
+    prefixes.append(f"users/tg_{int(user_id)}/telegram/")
+    if not any(key.startswith(prefix) and key[len(prefix):] for prefix in prefixes):
+        raise ValueError("El objeto no pertenece a este usuario.")
+    return key
+
+
 def delete_from_todus_s3(url: str, *, timeout_seconds: int = 60, base_url: str = TODUS_S3_BASE_URL) -> None:
     """Elimina y verifica un objeto previamente subido por este bot."""
-    if not url.startswith(base_url.rstrip("/") + "/"):
-        raise ValueError("La URL no pertenece al almacenamiento ToDus configurado.")
+    object_key = object_key_from_url(url, base_url=base_url)
+    object_url = f"{base_url.rstrip('/')}/{quote(object_key, safe='/')}"
     timeout = max(10, int(timeout_seconds))
     headers = {
         "User-Agent": "JK-Telegram-Bot/1.0",
@@ -38,7 +99,7 @@ def delete_from_todus_s3(url: str, *, timeout_seconds: int = 60, base_url: str =
         "Pragma": "no-cache",
     }
     try:
-        response = requests.delete(url, timeout=timeout, headers=headers)
+        response = requests.delete(object_url, timeout=timeout, headers=headers)
     except requests.RequestException as exc:
         raise ToDusS3UploadError(f"No se pudo conectar con ToDus S3 ({type(exc).__name__}).") from exc
     if response.status_code not in {200, 204, 404}:
@@ -47,7 +108,7 @@ def delete_from_todus_s3(url: str, *, timeout_seconds: int = 60, base_url: str =
     # Un DELETE aceptado no garantiza que una CDN o caché ya haya dejado de
     # servir el objeto. Consultamos una URL con query aleatoria para saltar la
     # caché y no damos por terminado el borrado mientras siga respondiendo.
-    parts = urlsplit(url)
+    parts = urlsplit(object_url)
     query = dict(parse_qsl(parts.query, keep_blank_values=True))
     query["hard_delete_check"] = uuid.uuid4().hex
     verify_url = urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))

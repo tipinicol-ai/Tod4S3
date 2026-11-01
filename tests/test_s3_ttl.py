@@ -21,14 +21,14 @@ def test_selected_s3_tasks_get_a_fixed_12_hour_storage_duration():
 
 
 def test_cloud_expiration_deletes_s3_objects_after_the_saved_expiry():
-    url = "https://s3.todus.cu/stream/users/df/20261030-random/telegram_file.bin"
+    url = "https://s3.todus.cu/stream/users/df/1/telegram_file.bin"
     entry = {
         "expires_at": (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat(),
         "urls": [url],
     }
     history = {"1": [entry]}
 
-    with patch.object(bot, "all_task_history", return_value=history), \
+    with patch.object(bot, "_load_json", return_value=history), \
          patch.object(bot, "delete_from_todus_s3") as delete_file, \
          patch.object(bot, "_save_json") as save_history:
         deleted = bot.expire_cloud_files()

@@ -78,30 +78,10 @@ def _validated_delivery_url(url: str, user_id: int) -> bool:
     if not isinstance(url, str) or not url:
         return False
     try:
-        parsed = urlsplit(url)
-        base = urlsplit(todus_s3_storage.TODUS_S3_BASE_URL)
-        if (parsed.scheme != "https" or base.scheme != "https"
-                or not parsed.hostname or not base.hostname
-                or parsed.hostname.lower() != base.hostname.lower()
-                or parsed.port != base.port
-                or parsed.username is not None or parsed.password is not None
-                or parsed.query or parsed.fragment):
-            return False
-    except ValueError:
+        prefix = os.getenv("TODUS_S3_UPLOAD_PREFIX", "users/df").strip("/") or "users/df"
+        todus_s3_storage.user_object_key_from_url(url, user_id, object_prefix=prefix)
+    except (TypeError, ValueError):
         return False
-    base_path = base.path.rstrip("/")
-    expected_prefix = f"{base_path}/users/tg_{int(user_id)}/telegram/"
-    if not parsed.path.startswith(expected_prefix):
-        return False
-    remainder = parsed.path[len(expected_prefix):]
-    if not remainder:
-        return False
-    # Prevent encoded separators and traversal segments from changing the key
-    # interpreted by the storage service after URL decoding.
-    for segment in remainder.split("/"):
-        decoded = unquote(segment)
-        if decoded in {"", ".", ".."} or "/" in decoded or "\\" in decoded:
-            return False
     return True
 
 
@@ -129,8 +109,9 @@ def delete_delivery_for_token(token: str, task_id: str) -> tuple[dict, int]:
     if any(not _validated_delivery_url(url, user_id) for url in parts):
         return {"ok": False, "error": "invalid_delivery_url",
                 "message": "La entrega contiene una URL que no pertenece al espacio ToDus de este usuario."}, 409
+    unique_parts = list(dict.fromkeys(parts))
     try:
-        for url in parts:
+        for url in unique_parts:
             delete_from_todus_s3(url)
     except Exception:
         # Do not expose storage responses, URLs, credentials, or exception text.
@@ -139,7 +120,7 @@ def delete_delivery_for_token(token: str, task_id: str) -> tuple[dict, int]:
     if not sync_api.remove_delivery_for_user(user_id, task_id, row):
         return {"ok": False, "error": "delivery_changed",
                 "message": "La entrega cambió durante el borrado; la fila se conserva."}, 409
-    return {"ok": True, "task_id": task_id, "deleted_parts": len(parts)}, 200
+    return {"ok": True, "task_id": task_id, "deleted_parts": len(unique_parts)}, 200
 
 
 def _safe_site_origin(handler: "StoreHandler") -> str:

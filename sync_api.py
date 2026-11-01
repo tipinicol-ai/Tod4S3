@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import copy
 import json
 import os
 import secrets
@@ -165,18 +166,91 @@ def deliveries_for_user(user_id: int) -> list[dict[str, Any]]:
                 and row.get("source", "tod4s3_bot") == "tod4s3_bot"]
 
 
-def clear_deliveries_for_user(user_id: int) -> int:
-    """Remove only bot-created delivery rows for one user after remote deletion."""
+def all_deliveries_snapshot() -> dict[str, list[dict[str, Any]]]:
+    """Snapshot de las filas del bot en todos los namespaces de usuario."""
+    with _LOCK:
+        state = _read()
+        result: dict[str, list[dict[str, Any]]] = {}
+        deliveries = state.get("deliveries", {})
+        if not isinstance(deliveries, dict):
+            return result
+        for user_key, rows in deliveries.items():
+            if not isinstance(rows, list):
+                continue
+            selected = [copy.deepcopy(row) for row in rows if isinstance(row, dict)
+                        and row.get("source", "tod4s3_bot") == "tod4s3_bot"]
+            if selected:
+                result[str(user_key)] = selected
+        return result
+
+
+def all_deliveries_match_snapshot(expected_rows: dict[str, list[dict[str, Any]]]) -> bool:
+    """Comprueba que las filas del bot no cambiaron desde el snapshot."""
+    with _LOCK:
+        state = _read()
+        current: dict[str, list[dict[str, Any]]] = {}
+        deliveries = state.get("deliveries", {})
+        if isinstance(deliveries, dict):
+            for user_key, rows in deliveries.items():
+                if not isinstance(rows, list):
+                    continue
+                selected = [row for row in rows if isinstance(row, dict)
+                            and row.get("source", "tod4s3_bot") == "tod4s3_bot"]
+                if selected:
+                    current[str(user_key)] = selected
+        return current == expected_rows
+
+
+def clear_all_deliveries(expected_rows: dict[str, list[dict[str, Any]]]) -> int | None:
+    """Borra solo filas del bot si el snapshot global sigue intacto; None indica concurrencia."""
+    with _LOCK:
+        state = _read()
+        deliveries = state.get("deliveries", {})
+        if not isinstance(deliveries, dict):
+            deliveries = {}
+            state["deliveries"] = deliveries
+        current: dict[str, list[dict[str, Any]]] = {}
+        for user_key, rows in deliveries.items():
+            if not isinstance(rows, list):
+                continue
+            selected = [row for row in rows if isinstance(row, dict)
+                        and row.get("source", "tod4s3_bot") == "tod4s3_bot"]
+            if selected:
+                current[str(user_key)] = selected
+        if current != expected_rows:
+            return None
+        removed = sum(len(rows) for rows in current.values())
+        if not removed:
+            return 0
+        for user_key, rows in list(deliveries.items()):
+            kept = [row for row in rows if not (
+                isinstance(row, dict) and row.get("source", "tod4s3_bot") == "tod4s3_bot"
+            )] if isinstance(rows, list) else rows
+            if kept:
+                deliveries[user_key] = kept
+            else:
+                deliveries.pop(user_key, None)
+        _write(state)
+        return removed
+
+
+def clear_deliveries_for_user(user_id: int,
+                              expected_rows: list[dict[str, Any]] | None = None) -> int | None:
+    """Remove only unchanged bot rows; return None if rows changed since remote deletion."""
     with _LOCK:
         state = _read()
         key = str(int(user_id))
         rows = state["deliveries"].get(key, [])
         if not isinstance(rows, list):
             return 0
+        bot_rows = [row for row in rows if isinstance(row, dict)
+                    and row.get("source", "tod4s3_bot") == "tod4s3_bot"]
+        if expected_rows is not None and bot_rows != expected_rows:
+            return None
         kept = [row for row in rows if not (
             isinstance(row, dict) and row.get("source", "tod4s3_bot") == "tod4s3_bot"
         )]
-        removed = len(rows) - len(kept)
+        removed = len(bot_rows)
         if removed:
             if kept:
                 state["deliveries"][key] = kept
