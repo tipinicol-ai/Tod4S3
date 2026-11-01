@@ -50,7 +50,7 @@ El estado Premium se vuelve a consultar al abrir/volver a la app y cada 15 segun
 
 ## Estado
 
-La versión 1.2.8 muestra los planes antes de la primera elección y los guarda dentro del menú ☰ después de seleccionar; incluye planes Premium dorados, iconos de Transfermóvil y saldo móvil, foto de Telegram en el avatar cuando el servicio la proporciona, menú de cuenta y pestañas «Todos», «Activas» y «Completadas». Las descargas por enlace aparecen en «Activas» con progreso y controles para pausar, reanudar o eliminar la tarea y sus temporales. Los cambios de pantalla instalan el contenido inmediatamente y animan la entrada, sin esperar una animación de salida. No incorpora textos de otra aplicación ni botones de repositorio. El APK conserva el relleno inerte para quedar cerca de 1.9 MB.
+La versión 1.2.9 muestra los planes antes de la primera elección y los guarda dentro del menú ☰ después de seleccionar; los nombres indican «Premium 15 días», «Premium 20 días» y «Premium 30 días». Incluye iconos de Transfermóvil y saldo móvil, foto de Telegram en el avatar y en el encabezado de Ajustes cuando el servicio la proporciona, menú de cuenta y pestañas «Todos», «Activas» y «Completadas». Ajustes se desplaza verticalmente para recorrer sus secciones. Las descargas por enlace aparecen en «Activas» con progreso y controles para pausar, reanudar o eliminar la tarea y sus temporales. No incorpora textos de otra aplicación ni botones de repositorio. El APK conserva el relleno inerte para quedar cerca de 1.9 MB.
 
 
 ## Tamaño del APK

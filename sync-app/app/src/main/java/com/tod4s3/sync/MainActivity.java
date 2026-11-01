@@ -1386,11 +1386,19 @@ public final class MainActivity extends Activity {
     }
 
     private void showSettings(boolean animated) {
+        boolean preserveScroll = !viewingDashboard && !showingPlansPage && currentPage != null;
+        int previousScrollY = appScroll.getScrollY();
         viewingDashboard = false;
         LinearLayout page = new LinearLayout(this);
         page.setOrientation(LinearLayout.VERTICAL);
         page.setPadding(dp(16), dp(14), dp(16), dp(30));
-        page.addView(sectionHeader("Ajustes"));
+        LinearLayout header = sectionHeader("Ajustes");
+        if (token != null && !token.isEmpty()) {
+            LinearLayout.LayoutParams avatarLayout = new LinearLayout.LayoutParams(dp(56), dp(56));
+            avatarLayout.setMargins(dp(8), 0, 0, 0);
+            header.addView(accountMenuButton(), avatarLayout);
+        }
+        page.addView(header);
 
         addSettingsHeading(page, "APARIENCIA");
         LinearLayout appearance = card();
@@ -1531,6 +1539,7 @@ public final class MainActivity extends Activity {
         page.addView(appInfo);
         page.addView(infoCard("Privacidad", "La app solo consulta las entregas del bot vinculado y las tareas que tú envías desde este formulario. No lee chats privados ni envía tu contraseña de ToDus."), margin(0, 12, 0, 0));
         showPage(page, animated);
+        appScroll.post(() -> appScroll.scrollTo(0, preserveScroll ? previousScrollY : 0));
     }
 
     private long directorySize(File directory) {
@@ -2317,7 +2326,7 @@ public final class MainActivity extends Activity {
         page.setVisibility(View.VISIBLE);
         page.setAlpha(animated ? 0f : 1f);
         page.setTranslationY(animated ? dp(12) : 0f);
-        appScroll.addView(page);
+        appScroll.addView(page, new FrameLayout.LayoutParams(-1, -2));
         if (animated) {
             page.animate().alpha(1f).translationY(0f).setDuration(180)
                     .setInterpolator(new DecelerateInterpolator()).start();
