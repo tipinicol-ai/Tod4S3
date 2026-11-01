@@ -2324,20 +2324,17 @@ public final class MainActivity extends Activity {
             appRoot.removeView(dashboardFab);
             dashboardFab = null;
         }
-        Runnable install = () -> {
-            currentPage = page;
-            appScroll.removeAllViews();
-            appScroll.addView(page);
-            page.setAlpha(0f);
-            page.setTranslationY(dp(12));
-            page.animate().alpha(1f).translationY(0f).setDuration(240)
+        if (currentPage != null) currentPage.animate().cancel();
+        page.animate().cancel();
+        appScroll.removeAllViews();
+        currentPage = page;
+        page.setVisibility(View.VISIBLE);
+        page.setAlpha(animated ? 0f : 1f);
+        page.setTranslationY(animated ? dp(12) : 0f);
+        appScroll.addView(page);
+        if (animated) {
+            page.animate().alpha(1f).translationY(0f).setDuration(180)
                     .setInterpolator(new DecelerateInterpolator()).start();
-        };
-        if (animated && currentPage != null) {
-            currentPage.animate().alpha(0f).translationY(-dp(8)).setDuration(120)
-                    .withEndAction(install).start();
-        } else {
-            install.run();
         }
     }
 

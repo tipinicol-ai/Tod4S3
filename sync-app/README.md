@@ -4,7 +4,7 @@ Cliente Android de Tod4S3 con configuración por pasos. La aplicación no lee ch
 
 ## Planes y solicitudes Premium
 
-Al abrir por primera vez, la app muestra la opción Gratis y las ofertas Premium publicadas en la web. Para solicitar Premium, el usuario indica su nombre y método de pago en la app; **Abrir chat directo** abre el chat de `@Niku_Blade` en Telegram con el texto de solicitud preparado. La captura del comprobante se adjunta desde esa conversación, sin pasar por el selector de destinatarios de Telegram. La activación sigue siendo manual.
+Cada vez que se abre la app, muestra la opción Gratis y las ofertas Premium. Después de elegir un plan, se continúa con la app; la selección puede volver a abrirse desde la pantalla de planes. Para solicitar Premium, el usuario indica su nombre y método de pago en la app; **Abrir chat directo** abre el chat de `@Niku_Blade` en Telegram con el texto de solicitud preparado. La captura del comprobante se adjunta desde esa conversación, sin pasar por el selector de destinatarios de Telegram. La activación sigue siendo manual.
 
 La app ya no muestra una tarjeta del Compresor Premium. La herramienta sigue disponible desde el bot de Telegram, que comprueba el plan antes de procesar archivos. La app no sube archivos al compresor.
 
@@ -50,7 +50,7 @@ El estado Premium se vuelve a consultar al abrir/volver a la app y cada 15 segun
 
 ## Estado
 
-La versión 1.2.6 incluye planes Premium dorados, iconos de Transfermóvil y saldo móvil, foto de Telegram en el avatar cuando el servicio la proporciona, transiciones, menú de cuenta y pestañas «Todos», «Activas» y «Completadas». No incorpora textos de otra aplicación ni botones de repositorio. El APK final conserva el relleno inerte para quedar cerca de 1.9 MB.
+La versión 1.2.7 muestra los planes en cada apertura e incluye planes Premium dorados, iconos de Transfermóvil y saldo móvil, foto de Telegram en el avatar cuando el servicio la proporciona, menú de cuenta y pestañas «Todos», «Activas» y «Completadas». Las descargas por enlace aparecen en «Activas» con progreso y controles funcionales para pausar, reanudar o eliminar la tarea y sus temporales. Los cambios de pantalla instalan el contenido inmediatamente y animan la entrada, sin esperar una animación de salida. No incorpora textos de otra aplicación ni botones de repositorio. El APK final conserva el relleno inerte para quedar cerca de 1.9 MB.
 
 
 ## Tamaño del APK
