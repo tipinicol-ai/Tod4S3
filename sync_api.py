@@ -21,7 +21,7 @@ _TOKEN_TTL = 365 * 24 * 60 * 60
 
 def _default_state() -> dict[str, Any]:
     return {"pairings": {}, "tokens": {}, "deliveries": {}, "premium_activations": {},
-            "app_bans": {"users": {}, "devices": {}}}
+            "app_bans": {"users": {}, "devices": {}}, "app_ban_history": []}
 
 
 def _read() -> dict[str, Any]:
@@ -516,13 +516,24 @@ def ban_app_user(user_id: int, admin_id: int = 0) -> dict[str, Any]:
         bans["users"] = users
         bans["devices"] = devices
         state["app_bans"] = bans
+        history = state.get("app_ban_history", [])
+        history = history if isinstance(history, list) else []
+        history.append({
+            "action": "ban",
+            "user_id": user_id,
+            "device_ids": sorted(device_ids),
+            "at": now,
+            "admin_id": admin_id,
+        })
+        state["app_ban_history"] = history[-5000:]
         _write(state)
         return {"user_id": user_id, "device_ids": sorted(device_ids), "banned_at": now}
 
 
-def unban_app_user(user_id: int) -> dict[str, Any]:
+def unban_app_user(user_id: int, admin_id: int = 0) -> dict[str, Any]:
     """Remove this Telegram ban and its device associations, preserving shared bans."""
     user_id = int(user_id)
+    admin_id = int(admin_id or 0)
     if user_id <= 0:
         raise ValueError("invalid_user_id")
     user_key = str(user_id)
@@ -557,6 +568,16 @@ def unban_app_user(user_id: int) -> dict[str, Any]:
             bans["users"] = users
             bans["devices"] = devices
             state["app_bans"] = bans
+            history = state.get("app_ban_history", [])
+            history = history if isinstance(history, list) else []
+            history.append({
+                "action": "unban",
+                "user_id": user_id,
+                "device_ids": sorted(affected),
+                "at": int(time.time()),
+                "admin_id": admin_id,
+            })
+            state["app_ban_history"] = history[-5000:]
             _write(state)
         return {"user_id": user_id, "changed": changed, "device_ids": sorted(affected)}
 

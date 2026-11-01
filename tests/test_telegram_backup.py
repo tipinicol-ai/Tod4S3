@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, Mock, patch
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 import bot as telegram_bot
+import sync_api
 from telegram_backup import (
     BACKUP_FILENAME,
     BackupError,
@@ -102,47 +103,52 @@ def make_layout(root: Path) -> BackupLayout:
     return BackupLayout.from_paths(data_dir, auth_dir, states)
 
 
-def test_encrypted_backup_round_trip_preserves_app_bans_and_device_ids():
+def test_encrypted_backup_round_trip_preserves_ban_unban_history_and_device_ids(monkeypatch):
     with tempfile.TemporaryDirectory() as temp:
         root = Path(temp)
         source = make_layout(root / "source")
-        target = make_layout(root / "target")
+        banned_target = make_layout(root / "target-banned")
+        unbanned_target = make_layout(root / "target-unbanned")
         device_id = "e" * 64
-        banned_state = {
-            "pairings": {},
-            "tokens": {"token-digest": {
-                "user_id": 123456,
-                "device_id": device_id,
-                "created_at": 1800000000,
-            }},
-            "deliveries": {},
-            "premium_activations": {},
-            "app_bans": {
-                "users": {"123456": {"banned_at": 1800000010, "banned_by": 900}},
-                "devices": {device_id: {
-                    "user_ids": ["123456"],
-                    "banned_at": 1800000010,
-                    "banned_by": 900,
-                }},
-            },
-        }
         source_state = root / "source" / "sync_app.json"
-        target_state = root / "target" / "sync_app.json"
-        source_state.write_text(json.dumps(banned_state), encoding="utf-8")
+        banned_state = root / "target-banned" / "sync_app.json"
+        unbanned_state = root / "target-unbanned" / "sync_app.json"
         source.state_files["sync_app.json"] = source_state
-        target.state_files["sync_app.json"] = target_state
+        banned_target.state_files["sync_app.json"] = banned_state
+        unbanned_target.state_files["sync_app.json"] = unbanned_state
+        monkeypatch.setattr(sync_api, "STATE_FILE", source_state)
 
-        encrypted, _, _, _ = build_encrypted_backup(source, TOKEN)
-        assert b"app_bans" not in encrypted
-        assert device_id.encode("ascii") not in encrypted
-        snapshot = decrypt_snapshot(encrypted, TOKEN)
-        restored, _ = restore_snapshot(snapshot, target)
+        token = sync_api.consume_pairing_code(sync_api.create_pairing_code(123456), device_id)
+        assert token
+        sync_api.ban_app_user(123456, admin_id=900)
 
-        assert restored >= 1
-        restored_json = json.loads(target_state.read_text(encoding="utf-8"))
-        assert restored_json["app_bans"]["users"]["123456"]["banned_by"] == 900
-        assert device_id in restored_json["app_bans"]["devices"]
-        assert restored_json["tokens"]["token-digest"]["device_id"] == device_id
+        encrypted_ban, _, _, _ = build_encrypted_backup(source, TOKEN)
+        assert b"app_bans" not in encrypted_ban
+        assert device_id.encode("ascii") not in encrypted_ban
+        banned_snapshot = decrypt_snapshot(encrypted_ban, TOKEN)
+        restored_ban, _ = restore_snapshot(banned_snapshot, banned_target)
+        assert restored_ban >= 1
+        banned_json = json.loads(banned_state.read_text(encoding="utf-8"))
+        assert banned_json["app_bans"]["users"]["123456"]["banned_by"] == 900
+        assert device_id in banned_json["app_bans"]["devices"]
+        assert banned_json["app_ban_history"][-1]["action"] == "ban"
+
+        sync_api.unban_app_user(123456, admin_id=900)
+        encrypted_unban, _, _, _ = build_encrypted_backup(source, TOKEN)
+        assert b"app_ban_history" not in encrypted_unban
+        assert device_id.encode("ascii") not in encrypted_unban
+        unbanned_snapshot = decrypt_snapshot(encrypted_unban, TOKEN)
+        restored_unban, _ = restore_snapshot(unbanned_snapshot, unbanned_target)
+
+        assert restored_unban >= 1
+        unbanned_json = json.loads(unbanned_state.read_text(encoding="utf-8"))
+        assert unbanned_json["app_bans"]["users"] == {}
+        assert unbanned_json["app_bans"]["devices"] == {}
+        assert [event["action"] for event in unbanned_json["app_ban_history"]] == ["ban", "unban"]
+        assert all(event["user_id"] == 123456 and event["admin_id"] == 900
+                   for event in unbanned_json["app_ban_history"])
+        assert all(event["device_ids"] == [device_id] for event in unbanned_json["app_ban_history"])
+        assert unbanned_json["tokens"][next(iter(unbanned_json["tokens"]))]["device_id"] == device_id
 
 
 class TelegramBackupFlowTests(unittest.IsolatedAsyncioTestCase):

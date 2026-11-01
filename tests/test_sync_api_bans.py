@@ -35,10 +35,16 @@ def test_unban_removes_only_that_users_device_association(monkeypatch, tmp_path)
     for user_id in (42001, 42002):
         sync_api.ban_app_user(user_id, admin_id=900)
 
-    result = sync_api.unban_app_user(42001)
+    result = sync_api.unban_app_user(42001, admin_id=900)
     assert result["changed"] is True
     assert sync_api.is_app_user_banned(42001) is False
     assert sync_api.is_app_user_banned(77777, device_id) is True
+
+    saved = sync_api._read()
+    assert [event["action"] for event in saved["app_ban_history"]] == ["ban", "ban", "unban"]
+    assert saved["app_ban_history"][-1]["user_id"] == 42001
+    assert saved["app_ban_history"][-1]["admin_id"] == 900
+    assert saved["app_ban_history"][-1]["device_ids"] == [device_id]
 
     sync_api.unban_app_user(42002)
     assert sync_api.is_app_user_banned(77777, device_id) is False

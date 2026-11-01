@@ -5087,7 +5087,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     notice = f"Telegram ID {target_id} y {device_count} móvil(es) vinculados bloqueados."
                     backup_reason = "baneo de usuario de la APK"
                 else:
-                    result = sync_api.unban_app_user(target_id)
+                    result = sync_api.unban_app_user(target_id, admin_id=user.id)
                     device_count = len(result.get("device_ids", []))
                     notice = f"Baneo retirado para Telegram ID {target_id}; se liberaron {device_count} huella(s) asociada(s)."
                     backup_reason = "desbaneo de usuario de la APK"
