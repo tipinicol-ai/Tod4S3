@@ -13,6 +13,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 import bot as telegram_bot
 from telegram_backup import (
     BACKUP_FILENAME,
+    BackupError,
     BackupFormatError,
     BackupLayout,
     BackupSizeError,
@@ -191,6 +192,47 @@ class TelegramBackupFlowTests(unittest.IsolatedAsyncioTestCase):
                 '{"restored":true}',
             )
 
+    async def test_restore_accepts_pinned_backup_document_without_filename_or_caption(self):
+        with tempfile.TemporaryDirectory() as temp:
+            source_layout = make_layout(Path(temp) / "source")
+            source_layout.state_files["user_plans.json"].write_text('{"restored":true}', encoding="utf-8")
+            encrypted, _snapshot, _size, _count = build_encrypted_backup(source_layout, TOKEN)
+            bot = FakeTelegramBackupBot()
+            uploaded = await bot.send_document(-100123, io.BytesIO(encrypted), BACKUP_FILENAME, "backup")
+            bot.pinned = SimpleNamespace(
+                message_id=uploaded.message_id,
+                document=SimpleNamespace(file_id=uploaded.document.file_id),
+                caption=None,
+            )
+            target_layout = make_layout(Path(temp) / "target")
+
+            restored, _restored_bytes = await restore_from_telegram(
+                bot, TOKEN, "-100123", target_layout
+            )
+
+            self.assertGreater(restored, 0)
+            self.assertEqual(
+                target_layout.state_files["user_plans.json"].read_text(encoding="utf-8"),
+                '{"restored":true}',
+            )
+
+    async def test_new_backup_is_not_reported_successful_when_telegram_cannot_pin_it(self):
+        class CannotPinBot(FakeTelegramBackupBot):
+            async def pin_chat_message(self, **_kwargs):
+                raise PermissionError("bot has no pin permission")
+
+        with tempfile.TemporaryDirectory() as temp:
+            layout = make_layout(Path(temp))
+            layout.state_files["user_plans.json"].write_text("{}", encoding="utf-8")
+            bot = CannotPinBot()
+
+            with self.assertRaisesRegex(BackupError, "no permitió fijar"):
+                await backup_to_telegram(bot, TOKEN, "-100123", layout)
+
+            self.assertEqual(len(bot.sent), 1)
+            self.assertIsNone(bot.pinned)
+            self.assertFalse((layout.data_dir / ".telegram_backup_message_id").exists())
+
     def test_empty_auth_folder_is_valid_if_application_state_exists(self):
         with tempfile.TemporaryDirectory() as temp:
             layout = make_layout(Path(temp))
@@ -282,7 +324,7 @@ class RestoreBeforeMtprotoTests(unittest.IsolatedAsyncioTestCase):
 
             async def fake_restore(*_args, **_kwargs):
                 events.append("restore")
-                return 0, 0
+                return 0, 0, False
 
             async def fake_backup(*_args, **_kwargs):
                 events.append("backup")
@@ -333,6 +375,60 @@ class RestoreBeforeMtprotoTests(unittest.IsolatedAsyncioTestCase):
                 self.assertLess(events.index("restore"), events.index("start_mtproto"))
                 self.assertLess(events.index("start_mtproto"), len(events) - 1)
                 self.assertEqual(events[-1], "backup")
+                await telegram_bot.post_shutdown(app)
+
+    async def test_post_init_preserves_existing_backup_when_restore_writes_nothing(self):
+        with tempfile.TemporaryDirectory() as temp:
+            layout = make_layout(Path(temp))
+            events = []
+
+            async def fake_restore(*_args, **_kwargs):
+                events.append("restore")
+                return 0, 0, True
+
+            async def fake_backup(*_args, **_kwargs):
+                events.append("backup")
+                return True
+
+            async def idle_backup(*_args, **_kwargs):
+                await asyncio.sleep(3600)
+
+            class FakeClient:
+                async def start(self, **_kwargs):
+                    pass
+
+                def add_event_handler(self, *_args):
+                    pass
+
+                async def catch_up(self):
+                    pass
+
+                def is_connected(self):
+                    return False
+
+            fake_bot = SimpleNamespace(
+                token=TOKEN,
+                get_me=AsyncMock(return_value=SimpleNamespace(username="test_bot")),
+                set_my_commands=AsyncMock(),
+            )
+            app = SimpleNamespace(bot=fake_bot, bot_data={"task_queue": None})
+            with patch.dict(
+                "os.environ",
+                {
+                    "TELEGRAM_BACKUP_CHAT_ID": "-100123",
+                    "TELEGRAM_API_ID": "12345",
+                    "TELEGRAM_API_HASH": "fake-hash",
+                },
+            ), patch.object(telegram_bot, "telegram_backup_layout", return_value=layout), patch.object(
+                telegram_bot, "TELEGRAM_AUTH_DIR", layout.auth_dir
+            ), patch.object(telegram_bot, "restore_from_telegram", side_effect=fake_restore), patch.object(
+                telegram_bot, "backup_to_telegram", side_effect=fake_backup
+            ), patch.object(telegram_bot, "periodic_backup", side_effect=idle_backup), patch.object(
+                telegram_bot, "TelegramClient", return_value=FakeClient()
+            ):
+                await telegram_bot.post_init(app)
+                self.assertTrue(app.bot_data["telegram_backup_hold"])
+                self.assertEqual(events, ["restore"])
                 await telegram_bot.post_shutdown(app)
 
 

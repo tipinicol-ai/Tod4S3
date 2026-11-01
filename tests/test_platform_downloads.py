@@ -103,6 +103,41 @@ class PlatformDownloadTests(unittest.TestCase):
         ydl.extract_info.assert_called_once()
         progress.assert_called_once_with(4, 8)
 
+    def test_audio_only_uses_best_audio_and_converts_to_mp3(self):
+        with tempfile.TemporaryDirectory() as folder:
+            output = Path(folder) / "platform-download"
+            ydl = MagicMock()
+            captured = {}
+            ydl_class = MagicMock()
+            ydl_class.return_value.__enter__.return_value = ydl
+
+            def fake_extract(_url, download=True):
+                self.assertTrue(download)
+                captured.update(ydl_class.call_args.args[0])
+                (output / "clip.mp3").write_bytes(b"audio")
+
+            ydl.extract_info.side_effect = fake_extract
+            with patch("platform_downloads._check_public_dns_target"), patch.object(
+                yt_dlp, "YoutubeDL", ydl_class
+            ):
+                path, name, size = download_platform_video(
+                    "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                    output,
+                    max_bytes=1024,
+                    audio_only=True,
+                    audio_quality="320",
+                )
+
+        self.assertEqual((path.name, name, size), ("clip.mp3", "clip.mp3", 5))
+        self.assertEqual(captured["format"], "bestaudio/best")
+        self.assertEqual(captured["postprocessors"], [{
+            "key": "FFmpegExtractAudio",
+            "preferredcodec": "mp3",
+            "preferredquality": "320",
+        }])
+        self.assertNotIn("merge_output_format", captured)
+        ydl.extract_info.assert_called_once()
+
     def test_login_required_is_rejected_without_loading_cookies_after_public_fallbacks(self):
         with tempfile.TemporaryDirectory() as folder:
             output = Path(folder) / "platform-download"

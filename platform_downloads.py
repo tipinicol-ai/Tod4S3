@@ -13,6 +13,8 @@ log = logging.getLogger(__name__)
 PLATFORM_SHORTLINK_HOSTS = {"fb.watch", "vm.tiktok.com", "vt.tiktok.com"}
 SUPPORTED_VIDEO_QUALITIES = ("1080", "720", "480", "360")
 DEFAULT_VIDEO_QUALITY = "720"
+SUPPORTED_AUDIO_QUALITIES = ("320", "192", "128")
+DEFAULT_AUDIO_QUALITY = "192"
 PLATFORM_HOST_HINTS = {
     "facebook.com", "fb.watch", "youtube.com", "youtu.be", "instagram.com",
     "tiktok.com", "twitter.com", "x.com", "reddit.com", "twitch.tv",
@@ -60,6 +62,12 @@ def normalize_video_quality(value: str | int | None) -> str:
     """Return a supported maximum video height; unknown values use 720p."""
     quality = str(value or DEFAULT_VIDEO_QUALITY).strip().lower().removesuffix("p")
     return quality if quality in SUPPORTED_VIDEO_QUALITIES else DEFAULT_VIDEO_QUALITY
+
+
+def normalize_audio_quality(value: str | int | None) -> str:
+    """Return a supported MP3 bitrate in kbps; unknown values use 192 kbps."""
+    quality = str(value or DEFAULT_AUDIO_QUALITY).strip().lower().removesuffix("kbps")
+    return quality if quality in SUPPORTED_AUDIO_QUALITIES else DEFAULT_AUDIO_QUALITY
 
 
 def _format_selector(video_quality: str) -> str:
@@ -226,10 +234,12 @@ def download_platform_video(
     max_bytes: int | None,
     max_duration_seconds: int = 24 * 60 * 60,
     video_quality: str = DEFAULT_VIDEO_QUALITY,
+    audio_only: bool = False,
+    audio_quality: str = DEFAULT_AUDIO_QUALITY,
     progress_hook=None,
     is_cancelled=None,
 ) -> tuple[Path, str, int]:
-    """Download one public video through yt-dlp and return (path, name, size).
+    """Download public media through yt-dlp and return (path, name, size).
 
     The caller owns and must remove output_dir after uploading the returned file.
     Only publicly accessible content is supported. This function never loads
@@ -245,6 +255,7 @@ def download_platform_video(
         raise ValueError("La plataforma de este enlace no está soportada por yt-dlp.")
     _check_public_dns_target(url)
     selected_quality = normalize_video_quality(video_quality)
+    selected_audio_quality = normalize_audio_quality(audio_quality)
 
     folder = Path(output_dir)
     folder.mkdir(parents=True, exist_ok=True)
@@ -255,7 +266,7 @@ def download_platform_video(
     # públicos. El conversor público cnv.cx resuelve el video en su propia
     # red y sigue funcionando, así que se intenta primero y yt-dlp queda
     # como respaldo.
-    if is_youtube_url(url):
+    if is_youtube_url(url) and not audio_only:
         try:
             cnv_path = _cnv_youtube_download(
                 url,
@@ -285,16 +296,12 @@ def download_platform_video(
             raise DownloadError("Descarga cancelada.")
         downloaded = int(data.get("downloaded_bytes") or 0)
         if max_bytes and downloaded > max_bytes:
-            raise DownloadError(f"El vídeo supera el límite de {max_bytes} bytes.")
+            raise DownloadError(f"El archivo supera el límite de {max_bytes} bytes.")
         if progress_hook and data.get("status") == "downloading":
             total = int(data.get("total_bytes") or data.get("total_bytes_estimate") or 0)
             progress_hook(downloaded, total)
 
     base_options = {
-        # Prefer MP4 where available, but retain the platform's best video if it
-        # only offers another format. ffmpeg merges separate video/audio streams.
-        "format": _format_selector(selected_quality),
-        "merge_output_format": "mp4",
         "outtmpl": str(folder / "%(title).160B [%(id)s].%(ext)s"),
         "noplaylist": True,
         "socket_timeout": 30,
@@ -313,6 +320,17 @@ def download_platform_video(
         # resolver firmas y formatos. Docker instala Node.js y yt-dlp-ejs.
         "js_runtimes": {"node": {}},
     }
+    if audio_only:
+        base_options["format"] = "bestaudio/best"
+        base_options["postprocessors"] = [{
+            "key": "FFmpegExtractAudio",
+            "preferredcodec": "mp3",
+            "preferredquality": selected_audio_quality,
+        }]
+    else:
+        # Prefer MP4; ffmpeg merges separate video/audio streams where needed.
+        base_options["format"] = _format_selector(selected_quality)
+        base_options["merge_output_format"] = "mp4"
     if max_bytes:
         base_options["max_filesize"] = max_bytes
     try:
@@ -364,7 +382,7 @@ def download_platform_video(
         if path.is_file() and not path.name.endswith((".part", ".ytdl"))
     ]
     if not candidates:
-        raise ValueError("La plataforma no produjo ningún archivo de vídeo descargable.")
+        raise ValueError("La plataforma no produjo ningún archivo descargable.")
     if len(candidates) > 1:
         # No playlists are requested; choose the largest completed media object
         # if a site happens to leave a sidecar behind despite disabled metadata.
@@ -374,5 +392,5 @@ def download_platform_video(
     if size <= 0:
         raise ValueError("La plataforma devolvió un archivo vacío.")
     if max_bytes and size > max_bytes:
-        raise ValueError(f"El vídeo supera el límite de {max_bytes} bytes.")
+        raise ValueError(f"El archivo supera el límite de {max_bytes} bytes.")
     return video_path, video_path.name, size

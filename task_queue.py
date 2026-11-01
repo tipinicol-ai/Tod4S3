@@ -34,6 +34,8 @@ class TransferTask:
     cancel_requested: bool = False
     delivery_mode: str | None = None
     video_quality: str = "720"
+    audio_only: bool = False
+    audio_quality: str = "192"
     submission_source: str = "telegram"
 
     def set_state(self, state: str) -> None:

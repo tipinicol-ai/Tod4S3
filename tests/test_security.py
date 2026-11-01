@@ -133,7 +133,8 @@ class TelegramCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(sc("🏠 inicio"), [button.text for button in buttons])
         text = download_menu_text()
         self.assertIn("ᴄᴇɴᴛʀᴏ ᴅᴇ ᴅᴇꜱᴄᴀʀɢᴀꜱ", text)
-        self.assertIn("users/df", download_source_menu_text("s3"))
+        self.assertNotIn("users/df", download_source_menu_text("s3"))
+        self.assertNotIn("https://s3.todus.cu/stream/users/df/", download_source_menu_text("s3"))
         self.assertTrue(any("📁" in button.text for button in source_buttons))
         self.assertTrue(any("🔗" in button.text for button in source_buttons))
 

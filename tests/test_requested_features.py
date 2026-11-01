@@ -2,7 +2,7 @@ import unittest
 import tempfile
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 from pathlib import Path
 
 from bot import (
@@ -24,6 +24,9 @@ from bot import (
     download_prompt_text,
     download_source_keyboard,
     download_source_menu_text,
+    handle_text,
+    platform_format_keyboard,
+    platform_format_prompt_text,
     link_txt_filename,
     main_keyboard,
     apply_referral,
@@ -211,6 +214,26 @@ class RequestedFeatureTests(unittest.TestCase):
             self.assertIn("ᴠɪᴅᴇᴏ", text)
             self.assertIn("ᴜʀʟ ᴅɪʀᴇᴄᴛᴀ", text)
             self.assertIn("ɴᴏ ɴᴇᴄᴇꜱɪᴛᴀꜱ ᴅᴇꜱᴄᴀʀɢᴀʀʟᴏ", text)
+
+    def test_video_quality_and_audio_choices_are_shown_after_pasting_platform_link(self):
+        source_callbacks = [
+            button.callback_data
+            for row in download_source_keyboard().inline_keyboard
+            for button in row
+        ]
+        format_callbacks = [
+            button.callback_data
+            for row in platform_format_keyboard().inline_keyboard
+            for button in row
+        ]
+        prompt = platform_format_prompt_text(1).lower()
+        self.assertFalse(any("quality" in callback or "format" in callback for callback in source_callbacks))
+        self.assertIn("platform:format:video:1080", format_callbacks)
+        self.assertIn("platform:format:video:720", format_callbacks)
+        self.assertIn("platform:format:audio:320", format_callbacks)
+        self.assertIn("platform:format:audio:192", format_callbacks)
+        self.assertIn("platform:format:audio:128", format_callbacks)
+        self.assertIn("ᴍᴘ3", prompt)
 
     def test_ready_result_has_only_download_copy_and_convert_actions(self):
         url = "https://files.example/app.apk"
@@ -669,3 +692,39 @@ class TxtCallbackTests(unittest.IsolatedAsyncioTestCase):
         context.bot.send_document.assert_awaited_once()
         self.assertFalse(job.txt_generating)
         self.assertFalse(hasattr(job, "txt_url"))
+
+
+class PlatformFormatFlowTests(unittest.IsolatedAsyncioTestCase):
+    async def test_pasted_platform_link_prompts_format_before_enqueue(self):
+        url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+        user = SimpleNamespace(id=812345, username="ana", full_name="Ana Pérez")
+        chat = SimpleNamespace(type="private")
+        message = SimpleNamespace(
+            text=url,
+            chat_id=user.id,
+            reply_text=AsyncMock(),
+        )
+        update = SimpleNamespace(
+            effective_message=message,
+            effective_user=user,
+            effective_chat=chat,
+        )
+        context = SimpleNamespace(
+            user_data={"download_delivery_mode": "s3"},
+            application=SimpleNamespace(bot_data={"allowed_users": set()}),
+        )
+
+        with patch("bot.is_private_update", return_value=True), patch(
+            "bot.ensure_membership", new=AsyncMock(return_value=True)
+        ), patch("bot.require_todus_number", new=AsyncMock(return_value=True)), patch(
+            "bot.is_supported_platform_url", return_value=True
+        ), patch("bot.enqueue_transfer", new_callable=AsyncMock) as enqueue:
+            await handle_text(update, context)
+
+        enqueue.assert_not_awaited()
+        self.assertEqual(context.user_data["pending_platform_download"]["urls"], [url])
+        self.assertEqual(context.user_data["pending_platform_download"]["delivery_mode"], "s3")
+        message.reply_text.assert_awaited_once()
+        buttons = all_buttons(message.reply_text.call_args.kwargs["reply_markup"])
+        self.assertIn("platform:format:video:1080", [button.callback_data for button in buttons])
+        self.assertIn("platform:format:audio:320", [button.callback_data for button in buttons])

@@ -577,17 +577,22 @@ async def restore_from_telegram(
     layout: BackupLayout,
     *,
     logger: logging.Logger | None = None,
-) -> tuple[int, int]:
+    return_found: bool = False,
+) -> tuple[int, int] | tuple[int, int, bool]:
     logger = logger or logging.getLogger(__name__)
+
+    def result(files: int, restored_bytes: int, found: bool):
+        return (files, restored_bytes, found) if return_found else (files, restored_bytes)
+
     chat_id = _parse_chat_id(backup_chat_id)
     if chat_id is None:
-        return 0, 0
+        return result(0, 0, False)
     try:
         chat = await bot.get_chat(chat_id)
-        pinned = _pinned_backup(chat)
+        pinned = _pinned_backup(chat) or _pinned_document_candidate(chat)
         if pinned is None:
             logger.info("No hay una copia fijada de Telegram para restaurar.")
-            return 0, 0
+            return result(0, 0, False)
         snapshot = await _download_message(bot, pinned, bot_token)
         restored, restored_bytes = restore_snapshot(snapshot, layout)
         _write_message_pointer(layout, getattr(pinned, "message_id", 0))
@@ -600,7 +605,7 @@ async def restore_from_telegram(
             restored,
             restored_bytes,
         )
-        return restored, restored_bytes
+        return result(restored, restored_bytes, True)
     except BackupError as exc:
         logger.error("No se pudo restaurar la copia de Telegram: %s", exc)
         raise
@@ -627,17 +632,18 @@ async def backup_to_telegram(
     old_message = None
     old_message_id = None
     previous_snapshot = None
-    fallback_pinned_candidate = False
+    old_message_was_pinned = False
     try:
         try:
             chat = await bot.get_chat(chat_id)
             old_message = _pinned_backup(chat)
+            old_message_was_pinned = old_message is not None
             if old_message is None:
                 # Algunas respuestas de Bot API no conservan file_name/caption.
                 # El mensaje fijado con documento sigue siendo el candidato único;
                 # la validación cifrada posterior decidirá si es nuestro respaldo.
                 old_message = _pinned_document_candidate(chat)
-                fallback_pinned_candidate = old_message is not None
+                old_message_was_pinned = old_message is not None
             old_message_id = (
                 getattr(old_message, "message_id", None)
                 if old_message is not None
@@ -651,19 +657,21 @@ async def backup_to_telegram(
         except Exception as exc:
             # No crear otra copia si no se puede consultar el mensaje existente.
             # Un reintento posterior editará la copia única cuando Telegram responda.
-            old_message = None
             old_message_id = _read_message_pointer(layout)
             if not old_message_id:
                 logger.error("No se pudo localizar la copia anterior (%s); se cancela sin publicar otra.", type(exc).__name__)
                 raise BackupError("No se pudo localizar la copia existente; no se creará otra.") from exc
+            old_message = _message_with_id(old_message_id)
+            old_message_was_pinned = False
             logger.warning("No se pudo leer el mensaje fijado (%s); se reintentará editar message_id=%s.", type(exc).__name__, old_message_id)
         if old_message is not None:
             try:
                 previous_snapshot = await _download_message(bot, old_message, bot_token)
             except BackupError as exc:
-                logger.warning("La copia fijada anterior no se pudo validar (%s); se conserva.", type(exc).__name__)
-                if fallback_pinned_candidate:
-                    raise BackupError("El mensaje fijado no es una copia válida; se conserva sin modificar.") from exc
+                # Si conocemos un mensaje anterior, nunca lo sobrescribimos sin
+                # haber podido leer y validar su contenido cifrado primero.
+                logger.warning("La copia anterior no se pudo validar (%s); se conserva sin modificar.", type(exc).__name__)
+                raise BackupError("No se pudo validar la copia anterior; se conserva sin modificar.") from exc
 
         encrypted, snapshot, total_bytes, file_count = build_encrypted_backup(
             layout,
@@ -735,11 +743,22 @@ async def backup_to_telegram(
         except Exception as exc:
             pin_error = exc
             logger.error(
-                "Telegram no permitió fijar la copia message_id=%s (%s); "
-                "se conservará una sola copia sin fijarla.",
+                "Telegram no confirmó la fijación de la copia message_id=%s (%s).",
                 uploaded_id,
                 type(exc).__name__,
             )
+        if pin_error is not None and not (
+            old_message_was_pinned and old_message_id == uploaded_id
+        ):
+            # Una copia nueva sin fijar no será encontrada por la restauración.
+            # No borres ni reemplaces la copia anterior si Telegram no confirma
+            # la fijación; elimina el documento nuevo si la API lo permite.
+            if old_message_id != uploaded_id and hasattr(bot, "delete_message"):
+                try:
+                    await bot.delete_message(chat_id=chat_id, message_id=uploaded_id)
+                except Exception as cleanup_exc:
+                    logger.warning("No se pudo limpiar el documento sin fijar (%s).", type(cleanup_exc).__name__)
+            raise BackupError("Telegram no permitió fijar la copia; la copia anterior se conserva.") from pin_error
         old_id_to_remove = getattr(old_message, "message_id", None) if old_message is not None else old_message_id
         if old_id_to_remove and old_id_to_remove != uploaded_id:
             try:
@@ -749,7 +768,7 @@ async def backup_to_telegram(
         _write_message_pointer(layout, uploaded_id)
         logger.info(
             "Copia Telegram validada%s: message_id=%s auth_path=%s archivos=%d bytes=%d",
-            " y fijada" if pin_error is None else " (sin fijar)",
+            " y fijada" if pin_error is None or (old_message_was_pinned and old_message_id == uploaded_id) else " (sin fijar)",
             uploaded_id,
             layout.auth_dir,
             file_count,
@@ -773,10 +792,13 @@ async def periodic_backup(
     interval_seconds: int = 6 * 60 * 60,
     lock: asyncio.Lock | None = None,
     logger: logging.Logger | None = None,
+    should_run=None,
 ) -> None:
     logger = logger or logging.getLogger(__name__)
     while True:
         await asyncio.sleep(interval_seconds)
+        if should_run is not None and not should_run():
+            continue
         try:
             if lock is None:
                 await backup_to_telegram(bot, bot_token, backup_chat_id, layout, logger=logger)

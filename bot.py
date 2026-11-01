@@ -46,11 +46,14 @@ from telegram.ext import (
 )
 from telethon import TelegramClient, events
 from platform_downloads import (
+    DEFAULT_AUDIO_QUALITY,
     DEFAULT_VIDEO_QUALITY,
+    SUPPORTED_AUDIO_QUALITIES,
     SUPPORTED_VIDEO_QUALITIES,
     download_platform_video,
     is_play_store_page,
     is_supported_platform_url,
+    normalize_audio_quality,
     normalize_video_quality,
 )
 from todus_s3_storage import (
@@ -2562,37 +2565,38 @@ def download_quality_label(value: str | int | None) -> str:
     return f"{normalize_video_quality(value)}p"
 
 
-def download_quality_menu_text(selected: str) -> str:
-    return card("🎞 ᴄᴀʟɪᴅᴀᴅ ᴅᴇ ᴠíᴅᴇᴏ", [
-        f"Límite seleccionado: {download_quality_label(selected)}.",
-        "El bot elegirá la mejor calidad disponible hasta ese límite y guardará el vídeo en MP4.",
-        "Solo aplica a videos públicos compatibles; un enlace directo de archivo se entrega sin convertir.",
+def platform_format_prompt_text(link_count: int) -> str:
+    return card("🎞 ᴇʟɪɢᴇ ᴇʟ ꜰᴏʀᴍᴀᴛᴏ", [
+        f"Enlace{'s' if link_count != 1 else ''} recibido{'s' if link_count != 1 else ''}.",
+        "Elige calidad de video o solo audio.",
+        "La opción se aplicará a todos los enlaces compatibles de este mensaje.",
+        "Video: MP4 · Audio: MP3 (128, 192 o 320 kbps).",
     ])
 
 
-def download_quality_keyboard(selected: str) -> InlineKeyboardMarkup:
-    rows = [[
-        btn(
-            ("✓ " if quality == normalize_video_quality(selected) else "") + f"Hasta {quality}p · MP4",
-            callback_data=f"download:quality:{quality}",
-        )
-    ] for quality in SUPPORTED_VIDEO_QUALITIES]
-    rows.append([btn("⬅️ Volver", callback_data="download:quality:back")])
-    return InlineKeyboardMarkup(rows)
+def platform_format_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [btn("🎞 1080p MP4", callback_data="platform:format:video:1080"),
+         btn("🎞 720p MP4", callback_data="platform:format:video:720")],
+        [btn("🎞 480p MP4", callback_data="platform:format:video:480"),
+         btn("🎞 360p MP4", callback_data="platform:format:video:360")],
+        [btn("🎧 MP3 · 320 kbps", callback_data="platform:format:audio:320"),
+         btn("🎧 MP3 · 192 kbps", callback_data="platform:format:audio:192")],
+        [btn("🎧 MP3 · 128 kbps", callback_data="platform:format:audio:128")],
+        [btn("❌ Cancelar", callback_data="platform:format:cancel")],
+    ])
 
 
-def download_source_keyboard(selected_quality: str = DEFAULT_VIDEO_QUALITY) -> InlineKeyboardMarkup:
+def download_source_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [btn("📁 Telegram", callback_data="download:telegram"),
          btn("🔗 Enlace", callback_data="download:url")],
-        [btn(f"🎞 Calidad de video: {download_quality_label(selected_quality)}", callback_data="download:quality")],
         [btn("⬅️ Cambiar destino", callback_data="downloads"),
          btn("🏠 ɪɴɪᴄɪᴏ", callback_data="home")],
     ])
 
 
-def download_prompt_text(source: str, delivery_mode: str | None = None,
-                         video_quality: str = DEFAULT_VIDEO_QUALITY) -> str:
+def download_prompt_text(source: str, delivery_mode: str | None = None) -> str:
     mode = delivery_mode or DELIVERY_MODE
     delivery_note = []
     if mode == "todus":
@@ -2624,7 +2628,7 @@ def download_prompt_text(source: str, delivery_mode: str | None = None,
             "Hasta 20 enlaces en",
             "un mensaje.",
             "",
-            f"Video público: hasta {download_quality_label(video_quality)} en MP4.",
+            "En videos compatibles, al pegar el enlace podrás elegir la calidad o solo audio MP3.",
             "Archivos directos se entregan sin conversión.",
             *delivery_note,
         ])
@@ -3494,16 +3498,22 @@ async def _edit_task_status(job: TransferTask, text: str) -> None:
 
 async def enqueue_transfer(update: Update, context: ContextTypes.DEFAULT_TYPE, *,
                            source_kind: str, source_url: str | None = None,
-                           compress_after_download: bool = False) -> None:
+                           compress_after_download: bool = False,
+                           delivery_mode: str | None = None,
+                           video_quality: str | int | None = None,
+                           audio_only: bool = False,
+                           audio_quality: str | int | None = None) -> None:
     message, user = update.effective_message, update.effective_user
     if not message or not user:
         return
-    selected_mode = (getattr(context, "user_data", {}) or {}).get("download_delivery_mode")
+    selected_mode = delivery_mode or (getattr(context, "user_data", {}) or {}).get("download_delivery_mode")
     if selected_mode not in {"s3", "todus"}:
         selected_mode = None
     selected_quality = normalize_video_quality(
+        video_quality if video_quality is not None else
         (getattr(context, "user_data", {}) or {}).get("download_video_quality", DEFAULT_VIDEO_QUALITY)
     )
+    selected_audio_quality = normalize_audio_quality(audio_quality)
     placeholder = await message.reply_text(
         card("⏳ ᴇɴ ᴄᴏʟᴀ", ["Esperando turno..."]),
     )
@@ -3512,6 +3522,8 @@ async def enqueue_transfer(update: Update, context: ContextTypes.DEFAULT_TYPE, *
         source_message=message, status_message=placeholder, source_url=source_url,
         delivery_mode=selected_mode,
         video_quality=selected_quality,
+        audio_only=audio_only,
+        audio_quality=selected_audio_quality,
         username=f"@{user.username}" if user.username else None,
         display_name=getattr(user, "full_name", None),
         compress_after_download=compress_after_download,
@@ -3569,7 +3581,8 @@ async def process_task(job: TransferTask, application: Application) -> None:
         if temp_path is None or not temp_path.exists() or not job.download_complete:
             job.set_state("downloading")
             await _edit_task_status(job, card("📥 ᴅᴇꜱᴄᴀʀɢᴀɴᴅᴏ", [
-                f"Iniciando descarga (videos hasta {download_quality_label(job.video_quality)})...",
+                f"Iniciando descarga de audio MP3 ({job.audio_quality} kbps)..." if job.audio_only else
+                f"Iniciando descarga de video (hasta {download_quality_label(job.video_quality)} MP4)...",
             ]))
             if job.source_kind == "url":
                 source_url = job.source_url or ""
@@ -3608,6 +3621,8 @@ async def process_task(job: TransferTask, application: Application) -> None:
                             max_bytes=max_bytes,
                             max_duration_seconds=seconds,
                             video_quality=job.video_quality,
+                            audio_only=job.audio_only,
+                            audio_quality=job.audio_quality,
                             progress_hook=platform_progress,
                             is_cancelled=lambda: job.cancel_requested,
                         )
@@ -4538,13 +4553,16 @@ async def backup_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         context.application.bot_data["telegram_backup_lock"] = lock
     try:
         async with lock:
-            await backup_to_telegram(
+            saved = await backup_to_telegram(
                 context.bot,
                 getattr(context.bot, "token", ""),
                 chat_id,
                 layout,
                 logger=log,
             )
+            if not saved:
+                raise RuntimeError("El backup no confirmó guardado.")
+        context.application.bot_data["telegram_backup_hold"] = False
         await message.reply_text(sc("✅ Respaldo cifrado enviado y validado."))
     except Exception as exc:
         log.warning("Prueba manual de respaldo fallida (%s).", type(exc).__name__)
@@ -5470,48 +5488,79 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if query.data == "downloads":
         context.user_data.pop("download_delivery_mode", None)
+        context.user_data.pop("pending_platform_download", None)
         await edit_query_message_text(query.message, download_menu_text(), reply_markup=download_menu_keyboard())
         return
 
     if query.data in {"download:mode:s3", "download:mode:todus"}:
         delivery_mode = query.data.rsplit(":", 1)[-1]
         context.user_data["download_delivery_mode"] = delivery_mode
+        context.user_data.pop("pending_platform_download", None)
         await edit_query_message_text(
             query.message,
             download_source_menu_text(delivery_mode),
-            reply_markup=download_source_keyboard(
-                context.user_data.get("download_video_quality", DEFAULT_VIDEO_QUALITY)
-            ),
+            reply_markup=download_source_keyboard(),
         )
         return
 
-    if query.data == "download:quality":
-        selected_quality = normalize_video_quality(
-            context.user_data.get("download_video_quality", DEFAULT_VIDEO_QUALITY)
-        )
-        await edit_query_message_text(
-            query.message,
-            download_quality_menu_text(selected_quality),
-            reply_markup=download_quality_keyboard(selected_quality),
-        )
-        return
-
-    if query.data.startswith("download:quality:"):
-        selected_quality = query.data.rsplit(":", 1)[-1]
-        delivery_mode = context.user_data.get("download_delivery_mode") or DELIVERY_MODE
-        if selected_quality == "back":
-            selected_quality = normalize_video_quality(
-                context.user_data.get("download_video_quality", DEFAULT_VIDEO_QUALITY)
+    if query.data.startswith("platform:format:"):
+        choice = query.data.removeprefix("platform:format:")
+        pending = context.user_data.get("pending_platform_download")
+        if choice == "cancel":
+            context.user_data.pop("pending_platform_download", None)
+            await query.answer()
+            await edit_query_message_text(
+                query.message,
+                card("❌ ᴅᴇꜱᴄᴀʀɢᴀ ᴄᴀɴᴄᴇʟᴀᴅᴀ", ["No se encolaron los enlaces."]),
+                reply_markup=home_keyboard(),
             )
-        elif selected_quality in SUPPORTED_VIDEO_QUALITIES:
-            context.user_data["download_video_quality"] = selected_quality
-        else:
-            await query.answer(sc("Calidad no válida."), show_alert=True)
             return
+        if not isinstance(pending, dict) or not pending.get("urls"):
+            await query.answer(sc("La selección venció. Pega de nuevo el enlace."), show_alert=True)
+            return
+        audio_only = choice.startswith("audio:")
+        selected_quality = DEFAULT_VIDEO_QUALITY
+        selected_audio_quality = DEFAULT_AUDIO_QUALITY
+        if audio_only:
+            selected_audio_quality = choice.split(":", 1)[1]
+            if selected_audio_quality not in SUPPORTED_AUDIO_QUALITIES:
+                await query.answer(sc("Calidad de audio no válida."), show_alert=True)
+                return
+        else:
+            if not choice.startswith("video:"):
+                await query.answer(sc("Formato no válido."), show_alert=True)
+                return
+            selected_quality = choice.split(":", 1)[1]
+            if selected_quality not in SUPPORTED_VIDEO_QUALITIES:
+                await query.answer(sc("Calidad no válida."), show_alert=True)
+                return
+        urls = [url for url in pending.get("urls", []) if isinstance(url, str)]
+        if not urls:
+            context.user_data.pop("pending_platform_download", None)
+            await query.answer(sc("No hay enlaces pendientes."), show_alert=True)
+            return
+        context.user_data.pop("pending_platform_download", None)
+        await query.answer()
+        for source_url in urls:
+            await enqueue_transfer(
+                update,
+                context,
+                source_kind="url",
+                source_url=source_url,
+                compress_after_download=bool(pending.get("compress")),
+                delivery_mode=pending.get("delivery_mode"),
+                video_quality=selected_quality,
+                audio_only=audio_only,
+                audio_quality=selected_audio_quality,
+            )
+        context.user_data.pop("download_delivery_mode", None)
         await edit_query_message_text(
             query.message,
-            download_source_menu_text(delivery_mode),
-            reply_markup=download_source_keyboard(selected_quality),
+            card("✅ ꜰᴏʀᴍᴀᴛᴏ ᴇʟᴇɢɪᴅᴏ", [
+                "Se procesó la selección.",
+                "Revisa los mensajes de cola de cada enlace.",
+            ]),
+            reply_markup=home_keyboard(),
         )
         return
 
@@ -5520,11 +5569,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         delivery_mode = context.user_data.get("download_delivery_mode") or DELIVERY_MODE
         await edit_query_message_text(
             query.message,
-            download_prompt_text(
-                source,
-                delivery_mode,
-                context.user_data.get("download_video_quality", DEFAULT_VIDEO_QUALITY),
-            ),
+            download_prompt_text(source, delivery_mode),
             reply_markup=download_prompt_keyboard(user.id, delivery_mode),
         )
         return
@@ -6339,12 +6384,31 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if compress_mode and not (is_owner(user.id) or get_user_plan(user.id) == "premium"):
         await message.reply_text(sc("El Compresor Premium es exclusivo de Premium."))
         return
-    for source_url in source_urls:
-        await enqueue_transfer(
-            update, context, source_kind="url", source_url=source_url,
-            compress_after_download=compress_mode,
-        )
     if source_urls:
+        context.user_data.pop("pending_platform_download", None)
+        platform_urls = []
+        for source_url in source_urls:
+            if await asyncio.to_thread(is_supported_platform_url, source_url):
+                platform_urls.append(source_url)
+            else:
+                await enqueue_transfer(
+                    update,
+                    context,
+                    source_kind="url",
+                    source_url=source_url,
+                    compress_after_download=compress_mode,
+                    delivery_mode=delivery_mode,
+                )
+        if platform_urls:
+            context.user_data["pending_platform_download"] = {
+                "urls": platform_urls,
+                "delivery_mode": delivery_mode,
+                "compress": compress_mode,
+            }
+            await message.reply_text(
+                platform_format_prompt_text(len(platform_urls)),
+                reply_markup=platform_format_keyboard(),
+            )
         context.user_data.pop("download_delivery_mode", None)
 
 
@@ -6456,6 +6520,9 @@ def schedule_data_backup(application: Application, reason: str = "cambio de dato
     current = application.bot_data.get("telegram_backup_pending_task")
     if not backup_chat_id or layout is None:
         return
+    if application.bot_data.get("telegram_backup_hold"):
+        log.warning("Respaldo automático pausado para no sustituir una copia no restaurada; cambio=%s. Ejecuta /backup tras revisar el estado.", reason)
+        return
     async def run() -> None:
         lock = application.bot_data.get("telegram_backup_lock")
         if lock is None:
@@ -6512,34 +6579,44 @@ async def post_init(application: Application) -> None:
 
     # Restaurar datos antes de abrir la sesión MTProto de Telegram.
     if backup_chat_id:
+        restored_files = 0
+        restore_found = False
+        restore_failed = False
         try:
-            restored_files, restored_bytes = await restore_from_telegram(
+            restored_files, restored_bytes, restore_found = await restore_from_telegram(
                 application.bot,
                 getattr(application.bot, "token", ""),
                 backup_chat_id,
                 backup_layout,
                 logger=log,
+                return_found=True,
             )
             log.info("Restauración inicial terminada: archivos=%d bytes=%d", restored_files, restored_bytes)
         except Exception as exc:
+            restore_failed = True
             log.warning("Se continúa sin restaurar la copia Telegram (%s).", type(exc).__name__)
         persist_todus_bot_phone()
-        for attempt in range(1, 4):
-            try:
-                await backup_to_telegram(
-                    application.bot,
-                    getattr(application.bot, "token", ""),
-                    backup_chat_id,
-                    backup_layout,
-                    logger=log,
-                )
-                log.info("Copia inicial publicada y fijada en el intento %d.", attempt)
-                break
-            except Exception as exc:
-                # Un deploy puede arrancar mientras Telegram aún no responde.
-                log.warning("No se creó la copia inicial (intento %d/3, %s).", attempt, type(exc).__name__)
-                if attempt < 3:
-                    await asyncio.sleep(5)
+        backup_hold = restore_failed or (restore_found and restored_files == 0)
+        application.bot_data["telegram_backup_hold"] = backup_hold
+        if backup_hold:
+            log.error("Se pausó el reemplazo automático del backup porque no se restauró ningún archivo o la comprobación falló. Revisa el estado y ejecuta /backup para confirmar manualmente.")
+        else:
+            for attempt in range(1, 4):
+                try:
+                    await backup_to_telegram(
+                        application.bot,
+                        getattr(application.bot, "token", ""),
+                        backup_chat_id,
+                        backup_layout,
+                        logger=log,
+                    )
+                    log.info("Copia inicial publicada y fijada en el intento %d.", attempt)
+                    break
+                except Exception as exc:
+                    # Un deploy puede arrancar mientras Telegram aún no responde.
+                    log.warning("No se creó la copia inicial (intento %d/3, %s).", attempt, type(exc).__name__)
+                    if attempt < 3:
+                        await asyncio.sleep(5)
         backup_interval = env_int("TELEGRAM_BACKUP_INTERVAL_SECONDS", 300, minimum=30)
         application.bot_data["telegram_backup_task"] = asyncio.create_task(
             periodic_backup(
@@ -6550,6 +6627,7 @@ async def post_init(application: Application) -> None:
                 interval_seconds=backup_interval,
                 lock=application.bot_data["telegram_backup_lock"],
                 logger=log,
+                should_run=lambda: not application.bot_data.get("telegram_backup_hold", False),
             )
         )
 
@@ -6578,7 +6656,7 @@ async def post_init(application: Application) -> None:
         BotCommand("backup", sc("probar respaldo")),
     ])
     log.info("Comandos del bot registrados correctamente")
-    if backup_chat_id:
+    if backup_chat_id and not application.bot_data.get("telegram_backup_hold"):
         try:
             await backup_to_telegram(
                 application.bot,
@@ -6629,7 +6707,7 @@ async def post_init(application: Application) -> None:
         log.info("MTProto listo")
         # El respaldo anterior al arranque garantiza restauración previa; esta copia
         # posterior captura también la sesión SQLite que MTProto acaba de abrir.
-        if backup_chat_id:
+        if backup_chat_id and not application.bot_data.get("telegram_backup_hold"):
             try:
                 await backup_to_telegram(
                     application.bot,
@@ -6701,7 +6779,7 @@ async def post_shutdown(application: Application) -> None:
         await mtproto_client.disconnect()
     backup_layout = application.bot_data.get("telegram_backup_layout")
     backup_chat_id = configured_backup_chat_id()
-    if backup_layout and backup_chat_id:
+    if backup_layout and backup_chat_id and not application.bot_data.get("telegram_backup_hold"):
         try:
             await backup_to_telegram(
                 application.bot,
