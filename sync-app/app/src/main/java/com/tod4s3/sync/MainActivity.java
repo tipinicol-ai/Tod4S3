@@ -261,7 +261,17 @@ public final class MainActivity extends Activity {
         appRoot.addView(appScroll, new FrameLayout.LayoutParams(-1, -1));
         setContentView(appRoot);
         applySystemBarTheme();
-        showPlansStep(false);
+        if (prefs.getString(PREF_SELECTED_PLAN, "").isEmpty()) {
+            showPlansStep(false);
+        } else if (token == null || token.isEmpty()) {
+            showBotStep(false);
+        } else if (prefs.getBoolean(PREF_TODUS_PIN_REQUESTED, false)) {
+            showPinStep(false);
+        } else if (!todusPhone.isEmpty() && !todusPassword.isEmpty()) {
+            showHomeStep(false);
+        } else {
+            showPhoneStep(false);
+        }
     }
 
     private void showPlansStep(boolean animated) {
@@ -281,9 +291,9 @@ public final class MainActivity extends Activity {
 
         page.addView(text("Planes Premium", 20, true), margin(0, 4, 0, 4));
         page.addView(bodyText("Descargas sin límite mientras el plan esté activo."), margin(0, 0, 0, 10));
-        page.addView(planOffer("Premium 15", "15 días · 250 CUP", "Descargas sin límite y entrega directa por ToDus.", "Premium 15 días · 250 CUP"), margin(0, 0, 0, 10));
-        page.addView(planOffer("Premium 20", "20 días · 300 CUP", "Descargas sin límite durante 20 días.", "Premium 20 días · 300 CUP"), margin(0, 0, 0, 10));
-        page.addView(planOffer("Premium 30", "30 días · 500 CUP", "Un mes completo de descargas sin límite.", "Premium 30 días · 500 CUP"), margin(0, 0, 0, 10));
+        page.addView(planOffer("Premium 15 días", "250 CUP", "Descargas sin límite y entrega directa por ToDus.", "Premium 15 días · 250 CUP"), margin(0, 0, 0, 10));
+        page.addView(planOffer("Premium 20 días", "300 CUP", "Descargas sin límite durante 20 días.", "Premium 20 días · 300 CUP"), margin(0, 0, 0, 10));
+        page.addView(planOffer("Premium 30 días", "500 CUP", "Un mes completo de descargas sin límite.", "Premium 30 días · 500 CUP"), margin(0, 0, 0, 10));
         LinearLayout paymentMethods = new LinearLayout(this);
         paymentMethods.setOrientation(LinearLayout.HORIZONTAL);
         paymentMethods.addView(paymentMethodChip(R.drawable.transfermovil_payment, "Transfermóvil"), new LinearLayout.LayoutParams(0, -2, 1f));
@@ -572,7 +582,6 @@ public final class MainActivity extends Activity {
         page.setOrientation(LinearLayout.VERTICAL);
         page.setPadding(dp(14), dp(12), dp(14), dp(24));
         page.addView(dashboardToolbar(), margin(0, 0, 0, 0));
-        if ("all".equals(filter)) page.addView(premiumPlansBanner(), margin(0, 10, 0, 0));
         page.addView(dashboardTabs(), margin(0, 12, 0, 0));
         View tabDivider = new View(this);
         tabDivider.setBackgroundColor(borderColor());
@@ -593,30 +602,6 @@ public final class MainActivity extends Activity {
                 refreshAccountProfile();
             }, animated ? 260L : 0L);
         }
-    }
-
-    private LinearLayout premiumPlansBanner() {
-        LinearLayout banner = new LinearLayout(this);
-        banner.setOrientation(LinearLayout.HORIZONTAL);
-        banner.setGravity(Gravity.CENTER_VERTICAL);
-        banner.setPadding(dp(14), dp(10), dp(10), dp(10));
-        banner.setBackground(roundRect(Color.rgb(35, 31, 23), 18, Color.rgb(143, 111, 48)));
-        LinearLayout copy = new LinearLayout(this);
-        copy.setOrientation(LinearLayout.VERTICAL);
-        TextView title = text(premiumActive ? "Premium activo" : "Planes Premium", 16, true);
-        title.setTextColor(premiumActive ? Color.rgb(126, 230, 190) : Color.rgb(255, 221, 141));
-        copy.addView(title);
-        TextView subtitle = bodyText(premiumActive ? accountPlanStatusText() : "Precios, duración y opciones de pago");
-        subtitle.setTextSize(12);
-        copy.addView(subtitle, margin(0, 3, 0, 0));
-        banner.addView(copy, new LinearLayout.LayoutParams(0, -2, 1f));
-        Button viewPlans = goldButton("Ver planes");
-        viewPlans.setTextSize(12);
-        viewPlans.setMinHeight(dp(40));
-        viewPlans.setPadding(dp(10), dp(3), dp(10), dp(3));
-        viewPlans.setOnClickListener(v -> showPlansStep(true));
-        banner.addView(viewPlans, margin(dp(8), 0, 0, 0));
-        return banner;
     }
 
     private LinearLayout dashboardToolbar() {
@@ -1294,6 +1279,7 @@ public final class MainActivity extends Activity {
             }
             else showAccountMenu(v);
         });
+        addDrawerRow(content, popup, "★", "Planes y ofertas", "Ver opciones y precios", () -> showPlansStep(true));
         addDrawerRow(content, popup, "▣", "Archivos en la Nube", "Entregas del bot", () -> showDashboard("all", true));
         if (token != null && !token.isEmpty()) {
             addDrawerRow(content, popup, "☁", "Vaciar mi nube", "Eliminar mis archivos de nube", this::confirmClearMyCloud);
