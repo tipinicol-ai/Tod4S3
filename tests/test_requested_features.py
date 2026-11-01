@@ -63,6 +63,23 @@ def all_buttons(markup):
 
 
 class RequestedFeatureTests(unittest.TestCase):
+    def test_android_plans_screen_has_return_route_and_visible_active_plan(self):
+        source = (Path(__file__).resolve().parents[1]
+                 / "sync-app/app/src/main/java/com/tod4s3/sync/MainActivity.java").read_text()
+        plans = source.split("private void showPlansStep", 1)[1].split("private LinearLayout planOffer", 1)[0]
+        self.assertIn("← Volver a mis archivos", plans)
+        self.assertIn("planStatus = statusText(accountPlanStatusText())", plans)
+        self.assertIn("dashboardPlanStatusText = bodyText(accountPlanStatusText())", source)
+        self.assertIn("viewingDashboard = false;", plans)
+
+    def test_android_todus_auth_has_recoverable_pin_and_validation_watchdogs(self):
+        source = (Path(__file__).resolve().parents[1]
+                 / "sync-app/app/src/main/java/com/tod4s3/sync/MainActivity.java").read_text()
+        self.assertIn("handler.postDelayed(timeout, 32_000L)", source)
+        self.assertIn("handler.postDelayed(timeout, 65_000L)", source)
+        self.assertIn("toDusPinRequestGeneration++", source)
+        self.assertIn("toDusValidationGeneration++", source)
+
     def test_admin_user_section_exposes_premium_status_lookup_by_telegram_id(self):
         callbacks = [button.callback_data for button in all_buttons(admin_section_keyboard("users"))]
         self.assertIn("admin:premium_status", callbacks)

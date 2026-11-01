@@ -52,7 +52,7 @@ El estado Premium y la cuota se vuelven a consultar al abrir/volver a la app y c
 
 ## Estado
 
-La versión 1.4.1 mantiene las funciones anteriores, integra las acciones Premium en cada oferta y coloca la barra de cuota dentro de la tarjeta Gratis, con máximo 100 %. Evita reconstruir la pantalla al alternar ToDus/Activas/Completadas. Añade borrado seguro de entregas ToDus con IDs de mensaje registrados y mantiene el borrado S3 con validación de propietario. Las tareas de enlaces directos permanecen separadas y el historial local en «Completadas». Ajustes se desplaza verticalmente para recorrer sus secciones. El APK conserva el relleno inerte para quedar cerca de 1.9 MB.
+La versión 1.4.2 mantiene las funciones anteriores, integra las acciones Premium en cada oferta y coloca la barra de cuota dentro de la tarjeta Gratis, con máximo 100 %. Ofrece «Volver a mis archivos» al inicio de Planes, muestra el plan activo en Planes y en el dashboard, y evita que una actualización de perfil reemplace la pantalla abierta. La solicitud de PIN y la validación ToDus tienen tiempos máximos, reintentos recuperables y protección ante respuestas tardías. Evita reconstruir la pantalla al alternar ToDus/Activas/Completadas. Añade borrado seguro de entregas ToDus con IDs de mensaje registrados y mantiene el borrado S3 con validación de propietario. Las tareas de enlaces directos permanecen separadas y el historial local en «Completadas». Ajustes se desplaza verticalmente para recorrer sus secciones. El APK conserva el relleno inerte para quedar cerca de 1.9 MB.
 
 
 ## Tamaño del APK

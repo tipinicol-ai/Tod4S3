@@ -124,8 +124,8 @@ final class ToDusAuth {
     private static byte[] post(String endpoint, byte[] payload) throws Exception {
         HttpURLConnection connection = (HttpURLConnection) new URL(AUTH_BASE + endpoint).openConnection();
         connection.setRequestMethod("POST");
-        connection.setConnectTimeout(20_000);
-        connection.setReadTimeout(30_000);
+        connection.setConnectTimeout(12_000);
+        connection.setReadTimeout(18_000);
         connection.setDoOutput(true);
         connection.setRequestProperty("User-Agent", "ToDus " + AUTH_VERSION_NAME + " Auth");
         connection.setRequestProperty("Content-Type", "application/x-protobuf");

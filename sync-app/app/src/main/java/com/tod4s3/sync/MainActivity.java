@@ -121,6 +121,7 @@ public final class MainActivity extends Activity {
     private TextView todusSessionStatusText;
     private String todusSessionStatusMessage = "No hay una sesión ToDus guardada.";
     private TextView planStatus;
+    private TextView dashboardPlanStatusText;
     private LinearLayout freeQuotaPanel;
     private ProgressBar freeQuotaPanelProgress;
     private TextView freeQuotaPanelUsage;
@@ -143,6 +144,9 @@ public final class MainActivity extends Activity {
     private boolean pairingInFlight;
     private boolean toDusPinRequestInFlight;
     private boolean toDusValidationInFlight;
+    private volatile int toDusPinRequestGeneration;
+    private volatile int toDusValidationGeneration;
+    private final Object toDusAuthAttemptLock = new Object();
     private boolean deliveryRefreshInFlight;
     private boolean appTaskRefreshInFlight;
     private boolean viewingDashboard;
@@ -166,6 +170,7 @@ public final class MainActivity extends Activity {
     private final java.util.LinkedHashMap<String, ToDusDownloadTask> toDusDownloadTasks = new java.util.LinkedHashMap<>();
     private int activeDirectLinkJobs;
     private String dashboardFilter = "all";
+    private String planReturnFilter = "all";
     private String dashboardSearch = "";
     private boolean sortOldestFirst;
     private JSONArray latestDeliveryRows = new JSONArray();
@@ -298,8 +303,27 @@ public final class MainActivity extends Activity {
     }
 
     private void showPlansStep(boolean animated) {
+        if (token != null && !token.isEmpty() && !showingPlansPage) {
+            planReturnFilter = viewingDashboard ? dashboardFilter : "all";
+        }
         showingPlansPage = true;
+        viewingDashboard = false;
+        dashboardItemsBox = null;
+        deliveriesBox = null;
+        quotaUsageBox = null;
+        dashboardPlanStatusText = null;
         LinearLayout page = createStepPage(0, "Elige tu plan", "Empieza gratis. Los planes Premium son opcionales.");
+        if (token != null && !token.isEmpty()) {
+            Button returnToApp = secondaryButton("← Volver a mis archivos");
+            returnToApp.setOnClickListener(v -> {
+                if (prefs.getBoolean(PREF_TODUS_PIN_REQUESTED, false)) showPinStep(true);
+                else showDashboard(planReturnFilter, true);
+                refreshAccountProfile();
+            });
+            page.addView(returnToApp, margin(0, 12, 0, 8));
+        }
+        planStatus = statusText(accountPlanStatusText());
+        page.addView(planStatus, margin(0, 4, 0, 14));
         LinearLayout free = card();
         TextView freeTag = text("RECOMENDADO PARA EMPEZAR", 11, true);
         freeTag.setTextColor(Color.rgb(99, 230, 216));
@@ -332,14 +356,8 @@ public final class MainActivity extends Activity {
         paymentMethods.addView(paymentMethodChip(R.drawable.saldo_movil_payment, "Saldo móvil"), balanceChipLayout);
         page.addView(paymentMethods, margin(0, 5, 0, 10));
         page.addView(bodyText("Los pagos se coordinan por Transfermóvil o saldo móvil. La activación de Premium es manual."), margin(0, 6, 0, 0));
-        planStatus = statusText(accountPlanStatusText());
-        page.addView(planStatus, margin(0, 8, 0, 0));
-        if (!prefs.getString(PREF_SELECTED_PLAN, "").isEmpty()) {
-            Button returnToApp = secondaryButton("Volver a mis entregas");
-            returnToApp.setOnClickListener(v -> continueToApp());
-            page.addView(returnToApp, margin(0, 12, 0, 0));
-        }
         showPage(page, animated);
+        if (token != null && !token.isEmpty()) refreshAccountProfile();
     }
 
     private LinearLayout planOffer(String name, String price, String detail, String purchasePlan) {
@@ -611,6 +629,9 @@ public final class MainActivity extends Activity {
 
     private void showBotStep(boolean animated) {
         showingPlansPage = false;
+        viewingDashboard = false;
+        dashboardItemsBox = null;
+        deliveriesBox = null;
         LinearLayout page = createStepPage(1, "Vincula tu bot", "Un código de un solo uso conecta esta app con tus entregas de Tod4S3.");
         LinearLayout box = card();
         box.addView(text("Conecta tu cuenta", 18, true));
@@ -630,6 +651,9 @@ public final class MainActivity extends Activity {
 
     private void showPhoneStep(boolean animated) {
         showingPlansPage = false;
+        viewingDashboard = false;
+        dashboardItemsBox = null;
+        deliveriesBox = null;
         LinearLayout page = createStepPage(2, "Tu número de ToDus", "Te enviaremos un código para confirmar que la cuenta es tuya.");
         LinearLayout box = card();
         box.addView(text("¿A qué número lo enviamos?", 18, true));
@@ -653,6 +677,9 @@ public final class MainActivity extends Activity {
 
     private void showPinStep(boolean animated) {
         showingPlansPage = false;
+        viewingDashboard = false;
+        dashboardItemsBox = null;
+        deliveriesBox = null;
         LinearLayout page = createStepPage(3, "Confirma tu número", "Escribe el código que ToDus envió a tu cuenta.");
         LinearLayout box = card();
         box.addView(text("Código de verificación", 18, true));
@@ -727,6 +754,9 @@ public final class MainActivity extends Activity {
         status.setTextSize(12);
         dashboardStatusText = status;
         page.addView(status, margin(2, 12, 2, 0));
+        dashboardPlanStatusText = bodyText(accountPlanStatusText());
+        dashboardPlanStatusText.setTextSize(11);
+        page.addView(dashboardPlanStatusText, margin(2, 5, 2, 0));
         quotaUsageBox = new LinearLayout(this);
         quotaUsageBox.setOrientation(LinearLayout.VERTICAL);
         page.addView(quotaUsageBox, margin(0, 9, 0, 0));
@@ -2595,29 +2625,65 @@ public final class MainActivity extends Activity {
             if (todusStatus != null) todusStatus.setText("Escribe tu número ToDus.");
             return;
         }
-        toDusPinRequestInFlight = true;
+        final LinearLayout requestPage = currentPage;
+        final int generation;
+        synchronized (toDusAuthAttemptLock) {
+            toDusPinRequestInFlight = true;
+            generation = ++toDusPinRequestGeneration;
+        }
         trigger.setEnabled(false);
         if (todusStatus != null) todusStatus.setText("Solicitando código a ToDus…");
+        final Runnable timeout = () -> {
+            synchronized (toDusAuthAttemptLock) {
+                if (generation != toDusPinRequestGeneration || !toDusPinRequestInFlight) return;
+                toDusPinRequestGeneration++;
+                toDusPinRequestInFlight = false;
+            }
+            trigger.setEnabled(true);
+            if (currentPage == requestPage && todusStatus != null) {
+                todusStatus.setText("ToDus tardó demasiado en responder. La app sigue funcionando; revisa la conexión y vuelve a intentarlo.");
+            }
+        };
+        handler.postDelayed(timeout, 32_000L);
         new Thread(() -> {
             try {
                 String normalizedPhone = ToDusAuth.requestPin(phone);
-                putEncrypted(PREF_TODUS_PHONE, normalizedPhone);
-                todusPhone = normalizedPhone;
-                prefs.edit().putBoolean(PREF_TODUS_PIN_REQUESTED, true).apply();
+                synchronized (toDusAuthAttemptLock) {
+                    if (generation != toDusPinRequestGeneration) return;
+                    putEncrypted(PREF_TODUS_PHONE, normalizedPhone);
+                    todusPhone = normalizedPhone;
+                    prefs.edit().putBoolean(PREF_TODUS_PIN_REQUESTED, true).apply();
+                }
                 runOnUiThread(() -> {
-                    toDusPinRequestInFlight = false;
+                    handler.removeCallbacks(timeout);
+                    synchronized (toDusAuthAttemptLock) {
+                        if (generation != toDusPinRequestGeneration) return;
+                        toDusPinRequestInFlight = false;
+                    }
                     trigger.setEnabled(true);
-                    showPinStep(true);
-                    if (todusStatus != null) todusStatus.setText("Código solicitado. Usa el PIN más reciente que recibas.");
+                    if (currentPage == requestPage) {
+                        showPinStep(true);
+                        if (todusStatus != null) todusStatus.setText("Código solicitado. Usa el PIN más reciente que recibas.");
+                    } else {
+                        Toast.makeText(this, "PIN solicitado. Vuelve al paso de autenticación para introducirlo.", Toast.LENGTH_LONG).show();
+                    }
                 });
             } catch (Exception e) {
                 runOnUiThread(() -> {
-                    toDusPinRequestInFlight = false;
+                    handler.removeCallbacks(timeout);
+                    synchronized (toDusAuthAttemptLock) {
+                        if (generation != toDusPinRequestGeneration) return;
+                        toDusPinRequestInFlight = false;
+                    }
                     trigger.setEnabled(true);
-                    if (todusStatus != null) todusStatus.setText("No se pudo solicitar el código: " + e.getMessage());
+                    if (currentPage == requestPage && todusStatus != null) {
+                        todusStatus.setText("No se pudo solicitar el código: " + e.getMessage());
+                    } else {
+                        Toast.makeText(this, "No se pudo solicitar el PIN. Puedes volver a intentarlo desde ToDus.", Toast.LENGTH_LONG).show();
+                    }
                 });
             }
-        }).start();
+        }, "todus-pin-request").start();
     }
 
     private void validateToDusPin(View trigger) {
@@ -2632,33 +2698,70 @@ public final class MainActivity extends Activity {
             if (todusStatus != null) todusStatus.setText("Escribe el código recibido por ToDus.");
             return;
         }
-        toDusValidationInFlight = true;
+        final LinearLayout validationPage = currentPage;
+        final int generation;
+        synchronized (toDusAuthAttemptLock) {
+            toDusValidationInFlight = true;
+            generation = ++toDusValidationGeneration;
+        }
         trigger.setEnabled(false);
         if (todusStatus != null) todusStatus.setText("Validando el código e iniciando sesión…");
+        final Runnable timeout = () -> {
+            synchronized (toDusAuthAttemptLock) {
+                if (generation != toDusValidationGeneration || !toDusValidationInFlight) return;
+                toDusValidationGeneration++;
+                toDusValidationInFlight = false;
+            }
+            trigger.setEnabled(true);
+            if (currentPage == validationPage && todusStatus != null) {
+                todusStatus.setText("La autenticación tardó demasiado y se detuvo en esta pantalla. Comprueba tu conexión e inténtalo otra vez.");
+            }
+        };
+        handler.postDelayed(timeout, 65_000L);
         new Thread(() -> {
             try {
                 ToDusAuth.Session session = ToDusAuth.validateAndLogin(phone, pin);
-                putEncrypted(PREF_TODUS_PHONE, session.phone);
-                putEncrypted(PREF_TODUS_PASSWORD, session.password);
-                putEncrypted(PREF_TODUS_TOKEN, session.token);
-                todusPhone = session.phone;
-                todusPassword = session.password;
-                todusToken = session.token;
-                prefs.edit().putBoolean(PREF_TODUS_PIN_REQUESTED, false).apply();
+                synchronized (toDusAuthAttemptLock) {
+                    if (generation != toDusValidationGeneration) return;
+                    putEncrypted(PREF_TODUS_PHONE, session.phone);
+                    putEncrypted(PREF_TODUS_PASSWORD, session.password);
+                    putEncrypted(PREF_TODUS_TOKEN, session.token);
+                    todusPhone = session.phone;
+                    todusPassword = session.password;
+                    todusToken = session.token;
+                    prefs.edit().putBoolean(PREF_TODUS_PIN_REQUESTED, false).apply();
+                }
                 runOnUiThread(() -> {
-                    toDusValidationInFlight = false;
-                    showHomeStep(true);
-                    setToDusSessionStatus("Sesión ToDus conectada correctamente.");
-                    if (syncStatus != null) syncStatus.setText("Sesión iniciada. Tus credenciales quedaron cifradas.");
+                    handler.removeCallbacks(timeout);
+                    synchronized (toDusAuthAttemptLock) {
+                        if (generation != toDusValidationGeneration) return;
+                        toDusValidationInFlight = false;
+                    }
+                    trigger.setEnabled(true);
+                    if (currentPage == validationPage) {
+                        showHomeStep(true);
+                        setToDusSessionStatus("Sesión ToDus conectada correctamente.");
+                        if (syncStatus != null) syncStatus.setText("Sesión iniciada. Tus credenciales quedaron cifradas.");
+                    } else {
+                        Toast.makeText(this, "Sesión ToDus conectada. Vuelve a tus archivos para continuar.", Toast.LENGTH_LONG).show();
+                    }
                 });
             } catch (Exception e) {
                 runOnUiThread(() -> {
-                    toDusValidationInFlight = false;
+                    handler.removeCallbacks(timeout);
+                    synchronized (toDusAuthAttemptLock) {
+                        if (generation != toDusValidationGeneration) return;
+                        toDusValidationInFlight = false;
+                    }
                     trigger.setEnabled(true);
-                    if (todusStatus != null) todusStatus.setText("No se pudo iniciar sesión en ToDus: " + e.getMessage());
+                    if (currentPage == validationPage && todusStatus != null) {
+                        todusStatus.setText("No se pudo iniciar sesión en ToDus: " + e.getMessage());
+                    } else {
+                        Toast.makeText(this, "No se pudo iniciar sesión en ToDus. Vuelve al paso de autenticación e inténtalo de nuevo.", Toast.LENGTH_LONG).show();
+                    }
                 });
             }
-        }).start();
+        }, "todus-pin-validation").start();
     }
 
     private void restoreToDusSession() {
@@ -2874,9 +2977,6 @@ public final class MainActivity extends Activity {
                         profileRefreshInFlight = false;
                         return;
                     }
-                    boolean changed = premiumActive != newPremium || premiumVerified != newPremiumVerified
-                            || !activePlan.equals(newPlan)
-                            || !premiumExpiresAt.equals(newExpiry);
                     premiumActive = newPremium;
                     premiumVerified = newPremiumVerified;
                     activePlan = newPlan;
@@ -2892,11 +2992,9 @@ public final class MainActivity extends Activity {
                             .putString(PREF_ACTIVE_PLAN, activePlan)
                             .putString("active_plan_expires_v1", premiumExpiresAt).apply();
                     if (planStatus != null) planStatus.setText(accountPlanStatusText());
+                    if (dashboardPlanStatusText != null) dashboardPlanStatusText.setText(accountPlanStatusText());
                     updateQuotaUsageCard();
                     updateFreeQuotaPanel();
-                    if (changed && viewingDashboard && "all".equals(dashboardFilter)) {
-                        showDashboard(dashboardFilter, false);
-                    }
                 });
             } catch (Exception ignored) {
                 runOnUiThread(() -> profileRefreshInFlight = false);
