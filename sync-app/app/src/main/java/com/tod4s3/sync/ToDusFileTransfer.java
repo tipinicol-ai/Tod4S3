@@ -6,10 +6,13 @@ import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.HttpURLConnection;
 import java.net.SocketTimeoutException;
+import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.util.regex.Matcher;
@@ -18,10 +21,11 @@ import java.util.regex.Pattern;
 import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
 
-/** Native ToDus download flow: XMPP URL resolution followed by authenticated parallel HTTP Range requests. */
+/** Native ToDus download flow: XMPP URL resolution followed by authenticated HTTP GET. */
 final class ToDusFileTransfer {
     private static final String XMPP_HOST = "im.todus.cu";
     private static final int XMPP_PORT = 1756;
+    private static final String VERSION_NAME = "2.1.2";
     private static final int SOCKET_TIMEOUT_MS = 15_000;
     private static final SecureRandom RANDOM = new SecureRandom();
     private static final String ALPHANUMERIC = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
@@ -45,7 +49,7 @@ final class ToDusFileTransfer {
         String accessToken = token == null ? "" : token.trim();
         if (accessToken.isEmpty()) throw new IOException("Conecta tu cuenta ToDus antes de descargar.");
         String realUrl = resolveRealUrl(accessToken, sharedUrl);
-        downloadHttp(accessToken, sharedUrl, realUrl, destination, previousBytes, progressCallback);
+        downloadHttp(accessToken, realUrl, destination, previousBytes, progressCallback);
     }
 
     private static String resolveRealUrl(String token, String sharedUrl) throws Exception {
@@ -94,10 +98,96 @@ final class ToDusFileTransfer {
         }
     }
 
-    private static void downloadHttp(String token, String sharedUrl, String realUrl, File destination,
-                                    long previousBytes, ProgressCallback progressCallback) throws Exception {
-        ParallelRangeDownloader.download(token, realUrl, sharedUrl, destination, previousBytes,
-                progressCallback == null ? null : progressCallback::onProgress);
+    private static void downloadHttp(String token, String realUrl, File destination, long previousBytes,
+                                     ProgressCallback progressCallback) throws Exception {
+        for (int attempt = 0; attempt < 2; attempt++) {
+            boolean sendBearer = attempt == 0;
+            HttpURLConnection connection = (HttpURLConnection) new URL(realUrl).openConnection();
+            connection.setConnectTimeout(20_000);
+            connection.setReadTimeout(60_000);
+            connection.setInstanceFollowRedirects(true);
+            connection.setUseCaches(false);
+            connection.setRequestProperty("User-Agent", "ToDus " + VERSION_NAME + " HTTP-Download");
+            if (sendBearer) connection.setRequestProperty("Authorization", "Bearer " + token);
+            connection.setRequestProperty("Accept", "*/*");
+            connection.setRequestProperty("Accept-Encoding", "gzip");
+            try {
+                int status = connection.getResponseCode();
+                if (status < 200 || status >= 300) {
+                    String detail = readErrorBody(connection);
+                    if (sendBearer && status == 400 && isMultipleAuthenticationError(detail)) continue;
+                    if (status == 403) {
+                        throw new IOException("ToDus rechazó el acceso al archivo (HTTP 403)" + detail);
+                    }
+                    throw new IOException("El servidor ToDus respondió HTTP " + status + " al descargar" + detail);
+                }
+                File parent = destination.getParentFile();
+                if (parent != null && !parent.exists() && !parent.mkdirs()) {
+                    throw new IOException("No se pudo preparar el almacenamiento temporal.");
+                }
+                InputStream response = connection.getInputStream();
+                boolean gzip = "gzip".equalsIgnoreCase(connection.getContentEncoding());
+                long responseLength = contentLength(connection);
+                long totalBytes = !gzip && responseLength >= 0 ? previousBytes + responseLength : 0L;
+                if (gzip) {
+                    response = new java.util.zip.GZIPInputStream(response);
+                }
+                try (InputStream input = response; FileOutputStream output = new FileOutputStream(destination)) {
+                    byte[] buffer = new byte[64 * 1024];
+                    int count;
+                    long transferred = 0L;
+                    if (progressCallback != null) progressCallback.onProgress(previousBytes, totalBytes);
+                    while ((count = input.read(buffer)) != -1) {
+                        output.write(buffer, 0, count);
+                        transferred += count;
+                        if (progressCallback != null) {
+                            progressCallback.onProgress(previousBytes + transferred, totalBytes);
+                        }
+                    }
+                }
+                return;
+            } finally {
+                connection.disconnect();
+            }
+        }
+        throw new IOException("No se pudo completar la descarga de ToDus.");
+    }
+
+    private static long contentLength(HttpURLConnection connection) {
+        try {
+            return Long.parseLong(connection.getHeaderField("Content-Length"));
+        } catch (Exception ignored) {
+            return -1L;
+        }
+    }
+
+    private static boolean isMultipleAuthenticationError(String detail) {
+        String lower = detail == null ? "" : detail.toLowerCase(java.util.Locale.US);
+        return lower.contains("multiple authentication") || lower.contains("multiple auth types");
+    }
+
+    private static String readErrorBody(HttpURLConnection connection) {
+        InputStream error = connection.getErrorStream();
+        if (error == null) return "";
+        try (InputStream input = error; ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            byte[] buffer = new byte[256];
+            while (output.size() < 1024) {
+                int count = input.read(buffer, 0, Math.min(buffer.length, 1024 - output.size()));
+                if (count < 0) break;
+                output.write(buffer, 0, count);
+            }
+            String detail = new String(output.toByteArray(), StandardCharsets.UTF_8)
+                    .replaceAll("<[^>]{0,500}>", " ")
+                    .replaceAll("(?i)https?://[^\\s\\\"'<>]+", "[enlace oculto]")
+                    .replaceAll("[\\p{Cntrl}&&[^\\t\\n]]", " ")
+                    .replaceAll("\\s+", " ")
+                    .trim();
+            if (detail.isEmpty()) return "";
+            if (detail.length() > 180) detail = detail.substring(0, 180);
+            return ": " + detail;
+        } catch (Exception ignored) {
+            return "";
+        }
     }
 
     private static String readUntilAny(SSLSocket socket, String... markers) throws IOException {

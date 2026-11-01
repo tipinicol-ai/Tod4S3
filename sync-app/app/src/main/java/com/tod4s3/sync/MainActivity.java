@@ -133,8 +133,10 @@ public final class MainActivity extends Activity {
     private boolean appTaskRefreshInFlight;
     private boolean viewingDashboard;
     private final Object downloadConcurrencyLock = new Object();
-    private final java.util.Set<String> activeDownloadKeys = new java.util.HashSet<>();
     private int activeDownloadJobs;
+    private final Object directLinkDownloadLock = new Object();
+    private final java.util.Set<String> activeDirectLinkKeys = new java.util.HashSet<>();
+    private int activeDirectLinkJobs;
     private String dashboardFilter = "all";
     private String dashboardSearch = "";
     private boolean sortOldestFirst;
@@ -819,31 +821,26 @@ public final class MainActivity extends Activity {
             }
         });
         content.addView(importButton, margin(0, 12, 0, 0));
-        TextView localDownloadStatus = bodyText("Los enlaces ToDus del bot se pueden descargar directamente aquí con conexiones simultáneas.");
+        TextView localDownloadStatus = bodyText("Descarga aquí un enlace HTTPS directo al archivo. Este flujo es independiente de las entregas ToDus y de la cola del bot.");
         localDownloadStatus.setTextSize(12);
         content.addView(localDownloadStatus, margin(0, 12, 0, 0));
         ProgressBar localDownloadProgress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
         localDownloadProgress.setMax(100);
         localDownloadProgress.setVisibility(View.GONE);
         content.addView(localDownloadProgress, margin(0, 6, 0, 0));
-        Button localDownload = secondaryButton("Descargar enlace ToDus en este teléfono");
+        Button localDownload = secondaryButton("Descargar link directo aquí");
         localDownload.setOnClickListener(v -> {
             ArrayList<String> links = extractLinks(linkInput.getText().toString());
             if (links.size() != 1) {
-                localDownloadStatus.setText("Pega un solo enlace ToDus del bot para descargarlo aquí.");
+                localDownloadStatus.setText("Pega un solo enlace HTTPS directo al archivo para descargarlo aquí.");
                 return;
             }
-            if (!isTodusShareLink(links.get(0))) {
-                localDownloadStatus.setText("Esta opción es para enlaces HTTPS de ToDus generados por el bot.");
+            if (!links.get(0).toLowerCase(java.util.Locale.ROOT).startsWith("https://")) {
+                localDownloadStatus.setText("La descarga directa requiere un enlace HTTPS.");
                 return;
             }
-            if (todusToken == null || todusToken.isEmpty()) {
-                localDownloadStatus.setText("Conecta primero tu cuenta ToDus en Ajustes para descargar este enlace.");
-                return;
-            }
-            String filename = filenameFromTodusLink(links.get(0));
-            downloadParts(filename, new JSONArray().put(links.get(0)), 0L,
-                    localDownload, localDownloadStatus, localDownloadProgress);
+            String filename = filenameFromDirectLink(links.get(0));
+            downloadLinkLocally(links.get(0), filename, localDownload, localDownloadStatus, localDownloadProgress);
         });
         content.addView(localDownload, margin(0, 8, 0, 0));
         Button submit = primaryButton("Enviar enlace al bot");
@@ -880,21 +877,120 @@ public final class MainActivity extends Activity {
         dialog.show();
     }
 
-    private boolean isTodusShareLink(String link) {
+    private boolean isTrustedS3Link(String link) {
         try {
             Uri uri = Uri.parse(link);
             String host = uri.getHost();
-            return "https".equalsIgnoreCase(uri.getScheme()) && host != null
-                    && (host.equalsIgnoreCase("todus.cu") || host.toLowerCase(java.util.Locale.ROOT).endsWith(".todus.cu"));
+            return "https".equalsIgnoreCase(uri.getScheme()) && "s3.todus.cu".equalsIgnoreCase(host)
+                    && uri.getPath() != null && uri.getPath().startsWith("/stream/");
         } catch (Exception ignored) {
             return false;
         }
     }
 
-    private String filenameFromTodusLink(String link) {
+    private String filenameFromDirectLink(String link) {
         String name = Uri.parse(link).getLastPathSegment();
-        if (name == null || name.trim().isEmpty()) name = "archivo_todus.bin";
+        if (name == null || name.trim().isEmpty()) name = "archivo_descargado.bin";
         return safeName(name);
+    }
+
+    private void downloadLinkLocally(String url, String filename, Button button,
+                                     TextView status, ProgressBar progressBar) {
+        JSONArray cacheParts = new JSONArray().put(url);
+        final String transferKey = downloadCacheKey(filename, cacheParts);
+        int maxConcurrent = Math.max(1, Math.min(5, prefs.getInt(PREF_DOWNLOAD_CONCURRENCY, 3)));
+        synchronized (directLinkDownloadLock) {
+            if (activeDirectLinkKeys.contains(transferKey)) {
+                status.setText("Este enlace ya se está descargando.");
+                return;
+            }
+            if (activeDirectLinkJobs >= maxConcurrent) {
+                status.setText("Ya hay " + maxConcurrent + " descargas directas activas.");
+                return;
+            }
+            activeDirectLinkKeys.add(transferKey);
+            activeDirectLinkJobs++;
+        }
+        if (prefs.getString(PREF_DOWNLOAD_FOLDER, "").isEmpty()
+                && Build.VERSION.SDK_INT < Build.VERSION_CODES.Q
+                && checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE}, REQUEST_WRITE_STORAGE);
+            status.setText("Permite guardar archivos en Descargas y vuelve a pulsar el botón.");
+            releaseDirectLinkDownload(transferKey);
+            return;
+        }
+        status.setText("Iniciando descarga directa con fragmentos paralelos…");
+        status.setTextColor(Color.rgb(99, 230, 216));
+        button.setEnabled(false);
+        progressBar.setVisibility(View.VISIBLE);
+        progressBar.setProgress(0);
+        progressBar.setIndeterminate(true);
+        new Thread(() -> {
+            File workDir = new File(getCacheDir(), "direct-link-" + transferKey);
+            File downloaded = new File(workDir, "download.bin");
+            DownloadTarget target = null;
+            try {
+                if (!workDir.exists() && !workDir.mkdirs()) {
+                    throw new IOException("No se pudo preparar el almacenamiento temporal.");
+                }
+                String transferToken = isTrustedS3Link(url) && todusToken != null ? todusToken : "";
+                final int[] lastShownPercent = {-1};
+                ParallelRangeDownloader.download(transferToken, url, url, downloaded, 0L, (received, total) -> {
+                    if (total > 0) {
+                        int percent = (int) Math.min(99L, Math.max(0L, received * 100L / total));
+                        boolean shouldUpdate;
+                        synchronized (lastShownPercent) {
+                            shouldUpdate = percent > lastShownPercent[0];
+                            if (shouldUpdate) lastShownPercent[0] = percent;
+                        }
+                        if (shouldUpdate) runOnUiThread(() -> {
+                            progressBar.setIndeterminate(false);
+                            ObjectAnimator.ofInt(progressBar, "progress", progressBar.getProgress(), percent)
+                                    .setDuration(140).start();
+                            status.setText("Descargando… " + percent + "%");
+                        });
+                    } else {
+                        runOnUiThread(() -> status.setText("Descargando… " + formatBytes(received)));
+                    }
+                });
+                target = openPublicDownload(filename);
+                long downloadedSize = downloaded.length();
+                try (InputStream input = new FileInputStream(downloaded); OutputStream output = target.stream) {
+                    byte[] buffer = new byte[64 * 1024];
+                    int count;
+                    while ((count = input.read(buffer)) != -1) output.write(buffer, 0, count);
+                }
+                finishPublicDownload(target);
+                recordDownloadedFile(target, downloadedSize);
+                deleteTree(workDir);
+                final String savedName = target.name;
+                runOnUiThread(() -> {
+                    progressBar.setIndeterminate(false);
+                    progressBar.setProgress(100);
+                    status.setTextColor(Color.rgb(99, 230, 216));
+                    status.setText("Completada · guardada en Descargas: " + savedName);
+                    button.setEnabled(true);
+                    if (viewingDownloadsTab) showDownloadsStep(false);
+                });
+            } catch (Exception e) {
+                if (target != null) deletePublicDownload(target);
+                runOnUiThread(() -> {
+                    progressBar.setIndeterminate(false);
+                    status.setTextColor(Color.rgb(255, 156, 156));
+                    status.setText("Error: " + e.getMessage() + ". Se conservaron fragmentos para reintentar.");
+                    button.setEnabled(true);
+                });
+            } finally {
+                releaseDirectLinkDownload(transferKey);
+            }
+        }, "direct-link-range-download").start();
+    }
+
+    private void releaseDirectLinkDownload(String transferKey) {
+        synchronized (directLinkDownloadLock) {
+            activeDirectLinkKeys.remove(transferKey);
+            activeDirectLinkJobs = Math.max(0, activeDirectLinkJobs - 1);
+        }
     }
 
     private ArrayList<String> extractLinks(String raw) {
@@ -2382,18 +2478,12 @@ public final class MainActivity extends Activity {
     private void downloadParts(String name, JSONArray parts, long expectedSize, Button downloadButton,
                                TextView progressLabel, ProgressBar progressBar) {
         if (parts == null || parts.length() == 0) return;
-        final String transferKey = downloadCacheKey(name, parts);
         final int maxConcurrent = Math.max(1, Math.min(5, prefs.getInt(PREF_DOWNLOAD_CONCURRENCY, 3)));
         synchronized (downloadConcurrencyLock) {
-            if (activeDownloadKeys.contains(transferKey)) {
-                progressLabel.setText("Esta descarga ya está activa.");
-                return;
-            }
             if (activeDownloadJobs >= maxConcurrent) {
                 if (syncStatus != null) syncStatus.setText("Límite alcanzado: hay " + maxConcurrent + " descargas simultáneas. Espera a que termine una.");
                 return;
             }
-            activeDownloadKeys.add(transferKey);
             activeDownloadJobs++;
         }
         if (prefs.getString(PREF_DOWNLOAD_FOLDER, "").isEmpty()
@@ -2401,13 +2491,13 @@ public final class MainActivity extends Activity {
                 && checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE}, REQUEST_WRITE_STORAGE);
             if (syncStatus != null) syncStatus.setText("Permite guardar archivos en Descargas y vuelve a pulsar Descargar.");
-            releaseActiveDownload(transferKey);
+            synchronized (downloadConcurrencyLock) { activeDownloadJobs--; }
             return;
         }
         final String sessionToken = todusToken;
         if (sessionToken == null || sessionToken.isEmpty()) {
             if (syncStatus != null) syncStatus.setText("Conecta tu cuenta ToDus antes de descargar.");
-            releaseActiveDownload(transferKey);
+            synchronized (downloadConcurrencyLock) { activeDownloadJobs--; }
             return;
         }
         if (syncStatus != null) syncStatus.setText("Descargando " + name + "…");
@@ -2420,11 +2510,11 @@ public final class MainActivity extends Activity {
         progressBar.setProgress(0);
         progressBar.setIndeterminate(totalSize <= 0);
         new Thread(() -> {
-            File tempDir = new File(getCacheDir(), "todus-range-" + transferKey);
+            File tempDir = new File(getCacheDir(), "parts_" + System.currentTimeMillis());
             DownloadTarget target = null;
             long completedBytes = 0L;
             try {
-                if (!tempDir.exists() && !tempDir.mkdirs()) throw new IOException("No se pudo preparar el almacenamiento temporal.");
+                if (!tempDir.mkdirs()) throw new IOException("No se pudo preparar el almacenamiento temporal.");
                 target = openPublicDownload(name);
                 try (OutputStream out = target.stream) {
                     byte[] buffer = new byte[65536];
@@ -2432,15 +2522,10 @@ public final class MainActivity extends Activity {
                         File part = new File(tempDir, "part" + i);
                         final int[] lastShownPercent = {-1};
                         ToDusFileTransfer.download(sessionToken, parts.getString(i), part, completedBytes, (received, reportedTotal) -> {
-                            long effectiveTotal = totalSize > 0 ? totalSize : reportedTotal;
-                            if (effectiveTotal > 0) {
-                                int percent = (int) Math.min(99L, Math.max(0L, received * 100L / effectiveTotal));
-                                boolean shouldUpdate;
-                                synchronized (lastShownPercent) {
-                                    shouldUpdate = percent > lastShownPercent[0];
-                                    if (shouldUpdate) lastShownPercent[0] = percent;
-                                }
-                                if (shouldUpdate) {
+                            if (totalSize > 0) {
+                                int percent = (int) Math.min(99L, Math.max(0L, received * 100L / totalSize));
+                                if (percent != lastShownPercent[0]) {
+                                    lastShownPercent[0] = percent;
                                     runOnUiThread(() -> {
                                         progressBar.setIndeterminate(false);
                                         int current = progressBar.getProgress();
@@ -2458,7 +2543,12 @@ public final class MainActivity extends Activity {
                             int count;
                             while ((count = in.read(buffer)) != -1) out.write(buffer, 0, count);
                         }
+                        part.delete();
                     }
+                }
+                if (expectedSize > 0L && completedBytes != expectedSize) {
+                    throw new IOException("El archivo unido no coincide con el tamaño original ("
+                            + formatBytes(completedBytes) + " de " + formatBytes(expectedSize) + ").");
                 }
                 finishPublicDownload(target);
                 recordDownloadedFile(target, completedBytes);
@@ -2474,16 +2564,17 @@ public final class MainActivity extends Activity {
                     if (viewingDownloadsTab) showDownloadsStep(false);
                 });
             } catch (Exception e) {
+                deleteTree(tempDir);
                 if (target != null) deletePublicDownload(target);
                 runOnUiThread(() -> {
                     progressBar.setIndeterminate(false);
                     progressLabel.setTextColor(Color.rgb(255, 156, 156));
-                    progressLabel.setText("Error de descarga. Se conservaron los fragmentos para reanudar al reintentar.");
+                    progressLabel.setText("Error de descarga. Pulsa «Descargar» para reintentar.");
                     downloadButton.setEnabled(true);
                     if (syncStatus != null) syncStatus.setText("Error de descarga: " + e.getMessage());
                 });
             } finally {
-                releaseActiveDownload(transferKey);
+                synchronized (downloadConcurrencyLock) { activeDownloadJobs = Math.max(0, activeDownloadJobs - 1); }
             }
         }).start();
     }
@@ -2497,13 +2588,6 @@ public final class MainActivity extends Activity {
             return result.toString();
         } catch (Exception e) {
             return Integer.toHexString((name + parts.toString()).hashCode());
-        }
-    }
-
-    private void releaseActiveDownload(String transferKey) {
-        synchronized (downloadConcurrencyLock) {
-            activeDownloadKeys.remove(transferKey);
-            activeDownloadJobs = Math.max(0, activeDownloadJobs - 1);
         }
     }
 
