@@ -84,6 +84,7 @@ import javax.crypto.spec.GCMParameterSpec;
 
 public final class MainActivity extends Activity {
     private static final String API_BASE = "https://tod4s3-production.up.railway.app";
+    private static final String LOG_TAG = "Tod4S3Sync";
     private static final String KEY_ALIAS = "tod4s3.sync.todus.credentials.v1";
     private static final String PREF_TODUS_PHONE = "todus_phone_enc";
     private static final String PREF_TODUS_PASSWORD = "todus_password_enc";
@@ -169,6 +170,8 @@ public final class MainActivity extends Activity {
     private boolean bannedScreenVisible;
     private volatile boolean unbannedScreenVisible;
     private volatile int appAccessGeneration;
+    private TextView appLogOutput;
+    private volatile int appLogGeneration;
     private boolean premiumActive;
     private boolean premiumVerified;
     private int freeQuotaPercent;
@@ -208,6 +211,7 @@ public final class MainActivity extends Activity {
         loadDirectLinkTasks();
         loadToDusDownloadTasks();
         loadToDusCredentials();
+        android.util.Log.i(LOG_TAG, "Inicio de Tod4S3 Sync v" + appVersion() + " · Android API " + Build.VERSION.SDK_INT);
         buildUi();
         ensureDownloadNotificationChannel();
         handler.postDelayed(this::requestNotificationPermissionIfNeeded, 1_200L);
@@ -1618,6 +1622,9 @@ public final class MainActivity extends Activity {
         }
         addDrawerRow(content, popup, "↓", "Descargas", "Archivos guardados en el teléfono", () -> showDashboard("completed", true));
         addDrawerRow(content, popup, "▥", "Estadísticas", "Uso y actividad", () -> showStats(true));
+        if (token != null && !token.isEmpty()) {
+            addDrawerRow(content, popup, "▤", "Registros de la App", "Consultar actividad y errores", () -> showAppLogs(true));
+        }
         addDrawerRow(content, popup, "◉", "Grupo de Telegram", "Dark Zone", () -> openExternalUrl("https://t.me/Dark_Zone_666"));
         addDrawerRow(content, popup, "↗", "Enlace no disponible", "Reportar pedido caído", () -> shareReport("Pedido caído"));
         addDrawerRow(content, popup, "⚠", "Reportar un error", "Enviar detalles al soporte", () -> shareReport("Error de Tod4S3 Sync"));
@@ -1973,6 +1980,163 @@ public final class MainActivity extends Activity {
         group.setOnClickListener(v -> openExternalUrl("https://t.me/Dark_Zone_666"));
         page.addView(group, margin(0, 16, 0, 0));
         showPage(page, animated);
+    }
+
+    private void showAppLogs(boolean animated) {
+        viewingDashboard = false;
+        final ArrayList<String> logRows = new ArrayList<>();
+        final String[] selectedLevel = {"TODOS"};
+        final int[] requestGeneration = {0};
+        LinearLayout page = createStepPage(0, "Registros de la App", "Consulta y filtra la actividad reciente de Tod4S3 Sync.");
+        page.addView(infoCard("Diagnóstico local", "Solo se muestran registros del proceso de Tod4S3 Sync. No se leen chats ni registros de otras aplicaciones."), margin(0, 18, 0, 12));
+
+        EditText search = input("Buscar en logs…", android.text.InputType.TYPE_CLASS_TEXT);
+        page.addView(search, margin(0, 0, 0, 10));
+
+        LinearLayout filters = new LinearLayout(this);
+        filters.setOrientation(LinearLayout.HORIZONTAL);
+        String[] levels = {"TODOS", "INFO", "WARN", "ERROR"};
+        ArrayList<Button> filterButtons = new ArrayList<>();
+        for (String level : levels) {
+            Button chip = secondaryButton(level);
+            chip.setTextSize(11);
+            chip.setMinHeight(dp(40));
+            boolean active = level.equals(selectedLevel[0]);
+            chip.setBackground(roundRect(active ? accentColor() : raisedSurfaceColor(), 12, borderColor()));
+            chip.setTextColor(active ? onAccentColor() : secondaryTextColor());
+            LinearLayout.LayoutParams chipParams = new LinearLayout.LayoutParams(0, dp(42), 1f);
+            chipParams.setMargins(dp(3), 0, dp(3), 0);
+            filters.addView(chip, chipParams);
+            filterButtons.add(chip);
+        }
+        page.addView(filters, margin(-3, 0, -3, 12));
+
+        TextView output = new TextView(this);
+        output.setTextSize(11);
+        output.setTypeface(Typeface.MONOSPACE, Typeface.NORMAL);
+        output.setTextColor(isDarkTheme() ? Color.rgb(222, 229, 239) : Color.rgb(30, 39, 52));
+        output.setPadding(dp(12), dp(12), dp(12), dp(12));
+        output.setTextIsSelectable(true);
+        output.setGravity(Gravity.TOP | Gravity.START);
+        ScrollView consoleScroll = new ScrollView(this);
+        consoleScroll.setFillViewport(true);
+        consoleScroll.setVerticalScrollBarEnabled(true);
+        consoleScroll.setBackground(roundRect(isDarkTheme() ? Color.rgb(8, 12, 22) : Color.rgb(247, 248, 251), 14, borderColor()));
+        consoleScroll.addView(output, new ScrollView.LayoutParams(-1, -2));
+        LinearLayout console = card();
+        console.addView(consoleScroll, new LinearLayout.LayoutParams(-1, dp(350)));
+        page.addView(console, margin(0, 0, 0, 10));
+
+        TextView status = bodyText("Leyendo registros de Tod4S3 Sync…");
+        page.addView(status, margin(0, 0, 0, 10));
+        LinearLayout actions = new LinearLayout(this);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+        Button clear = secondaryButton("Limpiar vista");
+        clear.setContentDescription("Limpiar vista local");
+        clear.setOnClickListener(v -> {
+            logRows.clear();
+            renderAppLogRows(logRows, selectedLevel[0], search.getText().toString(), output, consoleScroll);
+            status.setText("Vista limpiada localmente. Pulsa actualizar para volver a leer los registros.");
+        });
+        Button refresh = secondaryButton("Actualizar registros");
+        LinearLayout.LayoutParams actionParams = new LinearLayout.LayoutParams(0, dp(48), 1f);
+        actionParams.setMargins(0, 0, dp(8), 0);
+        actions.addView(clear, actionParams);
+        actions.addView(refresh, new LinearLayout.LayoutParams(0, dp(48), 1f));
+        page.addView(actions, margin(0, 0, 0, 8));
+        showPage(page, animated);
+        appLogOutput = output;
+        requestGeneration[0] = ++appLogGeneration;
+
+        Runnable render = () -> renderAppLogRows(logRows, selectedLevel[0], search.getText().toString(), output, consoleScroll);
+        for (int i = 0; i < filterButtons.size(); i++) {
+            final String level = levels[i];
+            filterButtons.get(i).setOnClickListener(v -> {
+                selectedLevel[0] = level;
+                for (int j = 0; j < filterButtons.size(); j++) {
+                    boolean chosen = levels[j].equals(level);
+                    filterButtons.get(j).setBackground(roundRect(chosen ? accentColor() : raisedSurfaceColor(), 12, borderColor()));
+                    filterButtons.get(j).setTextColor(chosen ? onAccentColor() : secondaryTextColor());
+                }
+                render.run();
+            });
+        }
+        search.addTextChangedListener(new android.text.TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) { }
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) { render.run(); }
+            @Override public void afterTextChanged(android.text.Editable s) { }
+        });
+        refresh.setOnClickListener(v -> {
+            requestGeneration[0] = ++appLogGeneration;
+            loadAppLogRows(logRows, output, consoleScroll, status, selectedLevel, search, requestGeneration[0]);
+        });
+        loadAppLogRows(logRows, output, consoleScroll, status, selectedLevel, search, requestGeneration[0]);
+    }
+
+    private void loadAppLogRows(ArrayList<String> rows, TextView output, ScrollView scroll,
+                                TextView status, String[] selectedLevel, EditText search, int generation) {
+        status.setText("Leyendo registros de Tod4S3 Sync…");
+        new Thread(() -> {
+            ArrayList<String> captured = captureOwnProcessLogcat();
+            runOnUiThread(() -> {
+                if (generation != appLogGeneration || appLogOutput != output) return;
+                rows.clear();
+                rows.addAll(captured);
+                renderAppLogRows(rows, selectedLevel[0], search.getText().toString(), output, scroll);
+                status.setText(captured.size() + " registro(s) del proceso de Tod4S3 Sync.");
+            });
+        }, "tod4s3-app-logcat").start();
+    }
+
+    private ArrayList<String> captureOwnProcessLogcat() {
+        ArrayList<String> rows = new ArrayList<>();
+        String ownPid = Integer.toString(android.os.Process.myPid());
+        try {
+            Process process = new ProcessBuilder("logcat", "-d", "-v", "threadtime", "-t", "600")
+                    .redirectErrorStream(true).start();
+            try (java.io.BufferedReader reader = new java.io.BufferedReader(
+                    new java.io.InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    String[] fields = line.trim().split("\\s+", 6);
+                    if (fields.length < 6 || !ownPid.equals(fields[2])) continue;
+                    String priority = fields[4];
+                    String level;
+                    if ("E".equals(priority) || "F".equals(priority) || "A".equals(priority)) level = "ERROR";
+                    else if ("W".equals(priority)) level = "WARN";
+                    else level = "INFO";
+                    rows.add("[" + level + "] " + fields[0] + " " + fields[1] + " " + fields[5]);
+                }
+            }
+            process.waitFor();
+        } catch (Exception e) {
+            rows.add("[WARN] Captura local no disponible (" + e.getClass().getSimpleName() + ").");
+        }
+        if (rows.isEmpty()) rows.add("[INFO] Tod4S3 Sync está activa. No hay registros recientes del proceso.");
+        if (rows.size() > 400) return new ArrayList<>(rows.subList(rows.size() - 400, rows.size()));
+        return rows;
+    }
+
+    private void renderAppLogRows(ArrayList<String> rows, String levelFilter, String query,
+                                  TextView output, ScrollView scroll) {
+        android.text.SpannableStringBuilder rendered = new android.text.SpannableStringBuilder();
+        String normalizedQuery = query == null ? "" : query.trim().toLowerCase(java.util.Locale.ROOT);
+        int count = 0;
+        for (String row : rows) {
+            String level = row.contains("[ERROR]") ? "ERROR" : row.contains("[WARN]") ? "WARN" : "INFO";
+            if (!"TODOS".equals(levelFilter) && !levelFilter.equals(level)) continue;
+            if (!normalizedQuery.isEmpty() && !row.toLowerCase(java.util.Locale.ROOT).contains(normalizedQuery)) continue;
+            int start = rendered.length();
+            rendered.append(row).append('\n');
+            int color = "ERROR".equals(level) ? Color.rgb(255, 126, 137)
+                    : "WARN".equals(level) ? Color.rgb(255, 204, 112) : Color.rgb(99, 230, 216);
+            rendered.setSpan(new android.text.style.ForegroundColorSpan(color), start, rendered.length(),
+                    android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+            if (++count >= 300) break;
+        }
+        if (count == 0) rendered.append("No hay registros que coincidan con la búsqueda.");
+        output.setText(rendered);
+        scroll.post(() -> scroll.fullScroll(View.FOCUS_DOWN));
     }
 
     private void openExternalUrl(String url) {
@@ -2409,44 +2573,45 @@ public final class MainActivity extends Activity {
         brand.setGravity(Gravity.CENTER);
         page.addView(brand, margin(0, 0, 0, 34));
 
-        TextView lock = text(accessRestored ? "✓" : "🔒", 48, true);
-        lock.setGravity(Gravity.CENTER);
-        int accessColor = accessRestored ? Color.rgb(27, 128, 91) : Color.rgb(174, 45, 58);
-        lock.setBackground(roundRect(accessColor, 64,
-                accessRestored ? Color.rgb(99, 230, 216) : Color.rgb(255, 155, 164)));
-        LinearLayout.LayoutParams lockParams = new LinearLayout.LayoutParams(dp(112), dp(112));
-        lockParams.gravity = Gravity.CENTER_HORIZONTAL;
-        lockParams.bottomMargin = dp(26);
-        page.addView(lock, lockParams);
+        ImageView accessIllustration = new ImageView(this);
+        accessIllustration.setImageResource(accessRestored ? R.drawable.access_restored : R.drawable.access_banned);
+        accessIllustration.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        accessIllustration.setContentDescription(accessRestored ? "Acceso restaurado" : "Acceso bloqueado");
+        LinearLayout.LayoutParams illustrationParams = new LinearLayout.LayoutParams(dp(148), dp(148));
+        illustrationParams.gravity = Gravity.CENTER_HORIZONTAL;
+        illustrationParams.bottomMargin = dp(26);
+        page.addView(accessIllustration, illustrationParams);
 
         TextView title = text(accessRestored ? "Usted ha sido desbaneado" : "Usted ha sido baneado", 23, true);
         title.setGravity(Gravity.CENTER);
         page.addView(title, margin(0, 0, 0, 12));
         String detailCopy = accessRestored
-                ? "El administrador restauró el acceso a la aplicación. Si el bloqueo se aplicó por error, puedes avisar al soporte desde aquí."
+                ? "El administrador restauró tu acceso. Pulsa el botón para continuar con la aplicación."
                 : "El administrador bloqueó el acceso a esta aplicación por un posible incumplimiento de las reglas de uso, incluida la prioridad de voz. El bloqueo se vincula a tu ID de Telegram y a este móvil. Si crees que fue un error, escribe al soporte desde aquí.";
         TextView detail = bodyText(detailCopy);
         detail.setGravity(Gravity.CENTER);
         page.addView(detail, margin(0, 0, 0, 18));
 
-        LinearLayout help = card();
-        help.addView(text("Mensaje al bot de soporte", 16, true));
-        help.addView(bodyText("Escribe aquí. El mensaje aparecerá en la bandeja de soporte APK del bot, junto con tu ID de Telegram y el ID de este móvil; no se enviará al privado del administrador."),
-                margin(0, 6, 0, 0));
-        EditText supportInput = input("Describe brevemente el problema", android.text.InputType.TYPE_CLASS_TEXT
-                | android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE | android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
-        supportInput.setSingleLine(false);
-        supportInput.setMinLines(3);
-        supportInput.setMaxLines(6);
-        supportInput.setGravity(Gravity.TOP | Gravity.START);
-        help.addView(supportInput, margin(0, 10, 0, 0));
-        TextView supportStatus = bodyText("Máximo 2000 caracteres.");
-        help.addView(supportStatus, margin(0, 8, 0, 0));
-        page.addView(help, margin(0, 0, 0, 14));
+        if (!accessRestored) {
+            LinearLayout help = card();
+            help.addView(text("Mensaje al bot de soporte", 16, true));
+            help.addView(bodyText("Escribe aquí. El mensaje aparecerá en la bandeja de soporte APK del bot, junto con tu ID de Telegram y el ID de este móvil; no se enviará al privado del administrador."),
+                    margin(0, 6, 0, 0));
+            EditText supportInput = input("Describe brevemente el problema", android.text.InputType.TYPE_CLASS_TEXT
+                    | android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE | android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
+            supportInput.setSingleLine(false);
+            supportInput.setMinLines(3);
+            supportInput.setMaxLines(6);
+            supportInput.setGravity(Gravity.TOP | Gravity.START);
+            help.addView(supportInput, margin(0, 10, 0, 0));
+            TextView supportStatus = bodyText("Máximo 2000 caracteres.");
+            help.addView(supportStatus, margin(0, 8, 0, 0));
+            page.addView(help, margin(0, 0, 0, 14));
 
-        Button support = primaryButton("✉  Enviar mensaje al bot");
-        support.setOnClickListener(v -> sendAppSupportMessage(supportInput, supportStatus, support));
-        page.addView(support, margin(0, 4, 0, 10));
+            Button support = primaryButton("✉  Enviar mensaje al bot");
+            support.setOnClickListener(v -> sendAppSupportMessage(supportInput, supportStatus, support));
+            page.addView(support, margin(0, 4, 0, 10));
+        }
 
         if (accessRestored) {
             Button continueButton = primaryButton("Continuar con la aplicación");
@@ -3594,6 +3759,7 @@ public final class MainActivity extends Activity {
     private void notifyDownloadCompleted(String filename) {
         handler.post(() -> {
             String safeName = filename == null || filename.trim().isEmpty() ? "Archivo" : filename.trim();
+            android.util.Log.i(LOG_TAG, "Descarga completada y guardada en Descargas.");
             Toast.makeText(this, "Descarga completada en Descargas: " + safeName, Toast.LENGTH_LONG).show();
             if (Build.VERSION.SDK_INT >= 33
                     && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
@@ -4267,6 +4433,8 @@ public final class MainActivity extends Activity {
             } catch (Exception ignored) { }
             detail = detail.replaceAll("[\\p{Cntrl}]+", " ").trim();
             if (detail.length() > 160) detail = detail.substring(0, 160) + "…";
+            android.util.Log.w(LOG_TAG, method + " " + path + " devolvió HTTP " + code
+                    + (detail.isEmpty() ? "" : ": " + detail));
             if (code == HttpURLConnection.HTTP_FORBIDDEN && "app_banned".equals(detail)) {
                 if (markAppBanned(requestAccessGeneration)) {
                     handler.post(() -> {
