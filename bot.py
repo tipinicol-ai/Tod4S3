@@ -1789,7 +1789,7 @@ def admin_registered_users_keyboard(page: int = 0, page_size: int = ADMIN_USERS_
 ADMIN_APP_USERS_PAGE_SIZE = 2
 
 
-def admin_app_users_text(page: int = 0) -> str:
+def admin_app_users_text(page: int = 0, status_message: str = "") -> str:
     users, total = sync_api.app_users_page(page, ADMIN_APP_USERS_PAGE_SIZE)
     user_records = _load_json(USERS_DATA_FILE).get("users", {})
     user_records = user_records if isinstance(user_records, dict) else {}
@@ -1798,6 +1798,8 @@ def admin_app_users_text(page: int = 0) -> str:
         "La huella completa permite reconocer el mismo móvil.",
         "",
     ]
+    if status_message:
+        lines.extend([status_message, ""])
     if not users:
         lines.append("Todavía no hay móviles vinculados a la aplicación.")
     for user in users:
@@ -5075,6 +5077,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             return
 
         if query.data.startswith("admin:appban:"):
+            page = 0
             try:
                 _, _, action, raw_user_id, raw_page = query.data.split(":")
                 target_id = int(raw_user_id)
@@ -5084,26 +5087,39 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 if action == "ban":
                     result = sync_api.ban_app_user(target_id, user.id)
                     device_count = len(result.get("device_ids", []))
-                    notice = f"Telegram ID {target_id} y {device_count} móvil(es) vinculados bloqueados."
+                    notice = f"✅ Baneo APK aplicado · Telegram ID {target_id} · móviles: {device_count}."
                     backup_reason = "baneo de usuario de la APK"
                 else:
                     result = sync_api.unban_app_user(target_id, admin_id=user.id)
                     device_count = len(result.get("device_ids", []))
-                    notice = f"Baneo retirado para Telegram ID {target_id}; se liberaron {device_count} huella(s) asociada(s)."
+                    notice = f"✅ Baneo APK retirado · Telegram ID {target_id} · huellas: {device_count}."
                     backup_reason = "desbaneo de usuario de la APK"
-                schedule_data_backup(context.application, backup_reason)
-                await query.answer(notice[:190], show_alert=True)
-            except (TypeError, ValueError) as exc:
-                message = ("Tu propia cuenta de administrador no se puede banear desde este panel."
-                           if str(exc) == "protected_admin_id"
-                           else "No se pudo procesar el baneo de la APK.")
-                await query.answer(message, show_alert=True)
+                try:
+                    schedule_data_backup(context.application, backup_reason)
+                except Exception:
+                    log.exception("No se pudo programar el respaldo después de cambiar un ban APK.")
+                    notice += " ⚠️ No se pudo programar el respaldo automático."
+            except Exception:
+                log.exception("Falló el callback del control de acceso exclusivo de la APK.")
+                try:
+                    await edit_query_message_text(
+                        query.message,
+                        admin_app_users_text(page, "⚠️ No se pudo guardar el cambio. Actualiza la lista e inténtalo de nuevo."),
+                        reply_markup=admin_app_users_keyboard(page),
+                    )
+                except Exception:
+                    log.exception("No se pudo actualizar el panel después de un error de ban APK.")
                 return
-            await edit_query_message_text(
-                query.message,
-                admin_app_users_text(page),
-                reply_markup=admin_app_users_keyboard(page),
-            )
+            try:
+                await edit_query_message_text(
+                    query.message,
+                    admin_app_users_text(page, notice),
+                    reply_markup=admin_app_users_keyboard(page),
+                )
+            except Exception:
+                log.exception("El cambio de acceso APK se guardó, pero no se pudo refrescar el panel.")
+                if hasattr(query.message, "reply_text"):
+                    await query.message.reply_text(notice)
             return
 
         if query.data.startswith("admin:menu:"):

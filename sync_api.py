@@ -478,8 +478,6 @@ def ban_app_user(user_id: int, admin_id: int = 0) -> dict[str, Any]:
         raise ValueError("invalid_user_id")
     now = int(time.time())
     user_key = str(user_id)
-    if admin_id > 0 and user_id == admin_id:
-        raise ValueError("protected_admin_id")
     with _LOCK:
         state = _read()
         bans = state.get("app_bans", {})
@@ -493,7 +491,6 @@ def ban_app_user(user_id: int, admin_id: int = 0) -> dict[str, Any]:
             devices = {}
         users[user_key] = {"banned_at": now, "banned_by": admin_id}
         device_ids: set[str] = set()
-        admin_devices: set[str] = set()
         for record in state.get("tokens", {}).values():
             if not isinstance(record, dict):
                 continue
@@ -503,9 +500,6 @@ def ban_app_user(user_id: int, admin_id: int = 0) -> dict[str, Any]:
                 continue
             if owner == user_id:
                 device_ids.add(device_id)
-            if admin_id > 0 and owner == admin_id:
-                admin_devices.add(device_id)
-        device_ids.difference_update(admin_devices)
         for device_id in device_ids:
             record = devices.get(device_id, {})
             record = dict(record) if isinstance(record, dict) else {}

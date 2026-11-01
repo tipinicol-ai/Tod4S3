@@ -60,20 +60,12 @@ def test_app_user_list_marks_recent_sessions_online(monkeypatch, tmp_path):
     assert rows[0]["last_seen_at"] <= int(time.time())
 
 
-def test_admin_account_and_shared_admin_device_remain_allowed(monkeypatch, tmp_path):
+def test_admin_owner_can_be_banned_from_apk_including_its_device(monkeypatch, tmp_path):
     monkeypatch.setattr(sync_api, "STATE_FILE", tmp_path / "sync_app.json")
-    shared_device = "d" * 64
-    for user_id in (900, 901):
-        code = sync_api.create_pairing_code(user_id)
-        assert sync_api.consume_pairing_code(code, shared_device)
+    owner_device = "d" * 64
+    code = sync_api.create_pairing_code(900)
+    assert sync_api.consume_pairing_code(code, owner_device)
 
-    try:
-        sync_api.ban_app_user(900, admin_id=900)
-        assert False, "admin must not be able to ban their own account"
-    except ValueError as error:
-        assert str(error) == "protected_admin_id"
-
-    result = sync_api.ban_app_user(901, admin_id=900)
-    assert result["device_ids"] == []
-    assert sync_api.is_app_user_banned(901) is True
-    assert sync_api.is_app_user_banned(900, shared_device) is False
+    result = sync_api.ban_app_user(900, admin_id=900)
+    assert result["device_ids"] == [owner_device]
+    assert sync_api.is_app_user_banned(900, owner_device) is True
