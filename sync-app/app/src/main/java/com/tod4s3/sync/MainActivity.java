@@ -129,6 +129,7 @@ public final class MainActivity extends Activity {
     private boolean deliveryRefreshInFlight;
     private boolean appTaskRefreshInFlight;
     private boolean viewingDashboard;
+    private boolean showingPlansPage;
     private final Object downloadConcurrencyLock = new Object();
     private int activeDownloadJobs;
     private final Object directLinkDownloadLock = new Object();
@@ -242,10 +243,11 @@ public final class MainActivity extends Activity {
         appRoot.addView(appScroll, new FrameLayout.LayoutParams(-1, -1));
         setContentView(appRoot);
         applySystemBarTheme();
-        showDashboard("all", false);
+        showPlansStep(false);
     }
 
     private void showPlansStep(boolean animated) {
+        showingPlansPage = true;
         LinearLayout page = createStepPage(0, "Elige tu plan", "Empieza gratis. Los planes Premium son opcionales.");
         LinearLayout free = card();
         TextView freeTag = text("RECOMENDADO PARA EMPEZAR", 11, true);
@@ -276,7 +278,7 @@ public final class MainActivity extends Activity {
         page.addView(planStatus, margin(0, 8, 0, 0));
         if (!prefs.getString(PREF_SELECTED_PLAN, "").isEmpty()) {
             Button returnToApp = secondaryButton("Volver a mis entregas");
-            returnToApp.setOnClickListener(v -> chooseFreePlan());
+            returnToApp.setOnClickListener(v -> continueToApp());
             page.addView(returnToApp, margin(0, 12, 0, 0));
         }
         showPage(page, animated);
@@ -448,6 +450,11 @@ public final class MainActivity extends Activity {
 
     private void chooseFreePlan() {
         prefs.edit().putString(PREF_SELECTED_PLAN, "free").apply();
+        continueToApp();
+    }
+
+    private void continueToApp() {
+        showingPlansPage = false;
         if (token == null || token.isEmpty()) {
             showBotStep(true);
         } else if (prefs.getBoolean(PREF_TODUS_PIN_REQUESTED, false)) {
@@ -461,6 +468,7 @@ public final class MainActivity extends Activity {
     }
 
     private void showBotStep(boolean animated) {
+        showingPlansPage = false;
         LinearLayout page = createStepPage(1, "Vincula tu bot", "Un código de un solo uso conecta esta app con tus entregas de Tod4S3.");
         LinearLayout box = card();
         box.addView(text("Conecta tu cuenta", 18, true));
@@ -479,6 +487,7 @@ public final class MainActivity extends Activity {
     }
 
     private void showPhoneStep(boolean animated) {
+        showingPlansPage = false;
         LinearLayout page = createStepPage(2, "Tu número de ToDus", "Te enviaremos un código para confirmar que la cuenta es tuya.");
         LinearLayout box = card();
         box.addView(text("¿A qué número lo enviamos?", 18, true));
@@ -501,6 +510,7 @@ public final class MainActivity extends Activity {
     }
 
     private void showPinStep(boolean animated) {
+        showingPlansPage = false;
         LinearLayout page = createStepPage(3, "Confirma tu número", "Escribe el código que ToDus envió a tu cuenta.");
         LinearLayout box = card();
         box.addView(text("Código de verificación", 18, true));
@@ -535,6 +545,7 @@ public final class MainActivity extends Activity {
     }
 
     private void showDashboard(String filter, boolean animated) {
+        showingPlansPage = false;
         viewingDashboard = true;
         dashboardFilter = filter;
         viewingDownloadsTab = "completed".equals(filter);
@@ -817,17 +828,17 @@ public final class MainActivity extends Activity {
         linkInput.setMaxLines(5);
         linkInput.setGravity(Gravity.TOP | Gravity.START);
         content.addView(linkInput, margin(0, 12, 0, 0));
-        TextView status = bodyText("La descarga se guardará en Descargas del teléfono. Para iniciar un trabajo nuevo, usa «Enviar enlace al bot»." );
+        TextView status = bodyText("El botón principal descarga aquí el archivo final que recibiste del bot; no lo vuelve a enviar a la cola.");
         status.setTextSize(12);
         content.addView(status, margin(0, 10, 0, 0));
-        TextView localDownloadStatus = bodyText("Descarga el enlace recibido del bot directamente en la carpeta Descargas del teléfono.");
+        TextView localDownloadStatus = bodyText("Se guardará en Descargas del teléfono usando el motor por fragmentos y reanudación.");
         localDownloadStatus.setTextSize(12);
         content.addView(localDownloadStatus, margin(0, 12, 0, 0));
         ProgressBar localDownloadProgress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
         localDownloadProgress.setMax(100);
         localDownloadProgress.setVisibility(View.GONE);
         content.addView(localDownloadProgress, margin(0, 6, 0, 0));
-        Button localDownload = secondaryButton("Descargar enlace recibido");
+        Button localDownload = primaryButton("Descargar enlace recibido");
         localDownload.setOnClickListener(v -> {
             ArrayList<String> links = extractLinks(linkInput.getText().toString());
             if (links.size() != 1) {
@@ -842,7 +853,7 @@ public final class MainActivity extends Activity {
             downloadLinkLocally(links.get(0), filename, localDownload, localDownloadStatus, localDownloadProgress);
         });
         content.addView(localDownload, margin(0, 8, 0, 0));
-        Button submit = primaryButton("Enviar enlace al bot");
+        Button submit = secondaryButton("Enviar otro enlace de origen al bot");
         content.addView(submit, margin(0, 10, 0, 0));
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle("Nueva descarga")
@@ -2243,11 +2254,11 @@ public final class MainActivity extends Activity {
                 todusToken = newToken;
                 runOnUiThread(() -> {
                     if (syncStatus != null) syncStatus.setText("Sesión ToDus restaurada.");
-                    if (deliveriesBox == null) showHomeStep(true);
+                    if (deliveriesBox == null && !showingPlansPage) showHomeStep(true);
                 });
             } catch (Exception e) {
                 runOnUiThread(() -> {
-                    showPhoneStep(true);
+                    if (!showingPlansPage) showPhoneStep(true);
                     if (todusStatus != null) todusStatus.setText("No se pudo restaurar la sesión: " + e.getMessage());
                 });
             }
