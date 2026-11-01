@@ -53,6 +53,8 @@ def _dispatch_app_task(token: str, action: str, payload: dict) -> tuple[dict, in
         if not isinstance(task_id, str) or not task_id.strip() or len(task_id) > 200:
             return {"ok": False, "error": "invalid_task_id"}, 400
         payload = {"task_id": task_id.strip()}
+    elif action == "clear_cloud":
+        payload = {}
     elif action != "list":
         return {"ok": False, "error": "invalid_action"}, 400
     with _APP_TASK_BRIDGE_LOCK:
@@ -213,7 +215,18 @@ class StoreHandler(SimpleHTTPRequestHandler):
             except Exception:
                 self._json_response({"ok": False, "error": "profile_unavailable"}, 503)
                 return
-            self._json_response({"premium": profile["premium"], "plan": profile["plan"]})
+            expires = profile.get("expires", "")
+            if not isinstance(expires, str):
+                expires = ""
+            remaining = profile.get("days_remaining")
+            if isinstance(remaining, bool) or not isinstance(remaining, int) or remaining < 0:
+                remaining = None
+            self._json_response({
+                "premium": profile["premium"],
+                "plan": profile["plan"],
+                "expires": expires[:32],
+                "days_remaining": remaining,
+            })
             return
         if path == "/api/app/deliveries":
             token = self.headers.get("Authorization", "")
@@ -289,7 +302,7 @@ class StoreHandler(SimpleHTTPRequestHandler):
         parsed = urlsplit(unquote(self.path))
         if parsed.path not in {
             "/api/app/pair", "/api/app/revoke", "/api/app/deliveries/delete",
-            "/api/app/download", "/api/app/tasks/cancel",
+            "/api/app/download", "/api/app/tasks/cancel", "/api/app/cloud/clear",
         }:
             self._json_response({"ok": False, "error": "not_found"}, 404)
             return
@@ -318,6 +331,10 @@ class StoreHandler(SimpleHTTPRequestHandler):
             return
         if parsed.path == "/api/app/tasks/cancel":
             payload, status = _dispatch_app_task(token, "cancel", body)
+            self._json_response(payload, status)
+            return
+        if parsed.path == "/api/app/cloud/clear":
+            payload, status = _dispatch_app_task(token, "clear_cloud", {})
             self._json_response(payload, status)
             return
         if parsed.path == "/api/app/deliveries/delete":

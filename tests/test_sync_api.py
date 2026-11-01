@@ -33,6 +33,24 @@ def test_deliveries_only_return_tod4s3_bot_source(tmp_path, monkeypatch):
     assert rows[0]["source"] == "tod4s3_bot"
 
 
+def test_clear_deliveries_for_user_removes_only_bot_rows(tmp_path, monkeypatch):
+    monkeypatch.setattr(sync_api, "STATE_FILE", tmp_path / "sync_app.json")
+    sync_api.record_delivery(42, "task-1", "archivo.bin", 4, ["https://s3.todus.cu/stream/parte1"])
+    state = sync_api._read()
+    state["deliveries"]["42"].append({
+        "task_id": "foreign-source",
+        "source": "other_source",
+        "parts": ["https://example.invalid/not-owned"],
+    })
+    sync_api._write(state)
+
+    assert len(sync_api.deliveries_for_user(42)) == 1
+    assert sync_api.clear_deliveries_for_user(42) == 1
+    rows = sync_api._read()["deliveries"]["42"]
+    assert len(rows) == 1
+    assert rows[0]["source"] == "other_source"
+
+
 def _prepare_delivery(tmp_path, monkeypatch, parts):
     monkeypatch.setattr(sync_api, "STATE_FILE", tmp_path / "sync_app.json")
     monkeypatch.setattr(sync_api, "user_id_for_token", lambda _token: 42)

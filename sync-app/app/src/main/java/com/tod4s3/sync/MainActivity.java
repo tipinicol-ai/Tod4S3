@@ -85,6 +85,9 @@ public final class MainActivity extends Activity {
     private static final String PREF_TODUS_PIN_REQUESTED = "todus_pin_requested";
     private static final String PREF_SELECTED_PLAN = "selected_plan";
     private static final String PREF_DOWNLOAD_HISTORY = "download_history_v1";
+    private static final String PREF_DIRECT_LINK_TASKS = "direct_link_tasks_v1";
+    private static final String PREF_ACTIVE_PLAN = "active_plan_v1";
+    private static final String PREF_ACTIVE_PREMIUM = "active_premium_v1";
     private static final String PREF_HIDDEN_DELIVERIES = "hidden_delivery_ids_v1";
     private static final String PREF_UI_THEME = "ui_theme_v1";
     private static final String PREF_UI_ACCENT = "ui_accent_v1";
@@ -99,6 +102,7 @@ public final class MainActivity extends Activity {
         @Override public void run() {
             refreshDeliveries();
             refreshAppTasks();
+            refreshAccountProfile();
             handler.postDelayed(this, 15_000L);
         }
     };
@@ -130,10 +134,15 @@ public final class MainActivity extends Activity {
     private boolean appTaskRefreshInFlight;
     private boolean viewingDashboard;
     private boolean showingPlansPage;
+    private boolean profileRefreshInFlight;
+    private boolean premiumActive;
+    private String activePlan = "free";
+    private String premiumExpiresAt = "";
     private final Object downloadConcurrencyLock = new Object();
     private int activeDownloadJobs;
     private final Object directLinkDownloadLock = new Object();
     private final java.util.Set<String> activeDirectLinkKeys = new java.util.HashSet<>();
+    private final java.util.LinkedHashMap<String, DirectLinkTask> directLinkTasks = new java.util.LinkedHashMap<>();
     private int activeDirectLinkJobs;
     private String dashboardFilter = "all";
     private String dashboardSearch = "";
@@ -148,6 +157,10 @@ public final class MainActivity extends Activity {
         super.onCreate(state);
         prefs = getSharedPreferences("tod4s3_sync", MODE_PRIVATE);
         token = prefs.getString("token", "");
+        premiumActive = prefs.getBoolean(PREF_ACTIVE_PREMIUM, false);
+        activePlan = prefs.getString(PREF_ACTIVE_PLAN, "free");
+        premiumExpiresAt = prefs.getString("active_plan_expires_v1", "");
+        loadDirectLinkTasks();
         loadToDusCredentials();
         buildUi();
 
@@ -197,6 +210,11 @@ public final class MainActivity extends Activity {
         String message = pendingPremiumShareText;
         pendingPremiumShareText = "";
         sharePremiumReceipt(receiptUri, message);
+    }
+
+    @Override protected void onResume() {
+        super.onResume();
+        if (prefs != null && token != null && !token.isEmpty()) refreshAccountProfile();
     }
 
     private void chooseReceiptAndShare(String message) {
@@ -274,7 +292,7 @@ public final class MainActivity extends Activity {
         paymentMethods.addView(paymentMethodChip(R.drawable.saldo_movil_payment, "Saldo móvil"), balanceChipLayout);
         page.addView(paymentMethods, margin(0, 5, 0, 10));
         page.addView(bodyText("Los pagos se coordinan por Transfermóvil o saldo móvil. La activación de Premium es manual."), margin(0, 6, 0, 0));
-        planStatus = statusText("");
+        planStatus = statusText(accountPlanStatusText());
         page.addView(planStatus, margin(0, 8, 0, 0));
         if (!prefs.getString(PREF_SELECTED_PLAN, "").isEmpty()) {
             Button returnToApp = secondaryButton("Volver a mis entregas");
@@ -572,6 +590,7 @@ public final class MainActivity extends Activity {
             handler.postDelayed(() -> {
                 refreshDeliveries();
                 refreshAppTasks();
+                refreshAccountProfile();
             }, animated ? 260L : 0L);
         }
     }
@@ -584,10 +603,10 @@ public final class MainActivity extends Activity {
         banner.setBackground(roundRect(Color.rgb(35, 31, 23), 18, Color.rgb(143, 111, 48)));
         LinearLayout copy = new LinearLayout(this);
         copy.setOrientation(LinearLayout.VERTICAL);
-        TextView title = text("Planes Premium", 16, true);
-        title.setTextColor(Color.rgb(255, 221, 141));
+        TextView title = text(premiumActive ? "Premium activo" : "Planes Premium", 16, true);
+        title.setTextColor(premiumActive ? Color.rgb(126, 230, 190) : Color.rgb(255, 221, 141));
         copy.addView(title);
-        TextView subtitle = bodyText("Precios, duración y opciones de pago");
+        TextView subtitle = bodyText(premiumActive ? accountPlanStatusText() : "Precios, duración y opciones de pago");
         subtitle.setTextSize(12);
         copy.addView(subtitle, margin(0, 3, 0, 0));
         banner.addView(copy, new LinearLayout.LayoutParams(0, -2, 1f));
@@ -703,6 +722,9 @@ public final class MainActivity extends Activity {
         if (!viewingDashboard || dashboardItemsBox == null) return;
         dashboardItemsBox.removeAllViews();
         int shown = 0;
+        if ("all".equals(dashboardFilter) || "active".equals(dashboardFilter)) {
+            shown += renderDirectLinkTasks();
+        }
         ArrayList<JSONObject> tasks = new ArrayList<>();
         for (int i = 0; i < latestAppTaskRows.length(); i++) {
             JSONObject row = latestAppTaskRows.optJSONObject(i);
@@ -747,6 +769,83 @@ public final class MainActivity extends Activity {
             shown += savedDownloadRecords().length();
         }
         if (shown == 0) addDashboardEmptyState(dashboardItemsBox);
+    }
+
+    private int renderDirectLinkTasks() {
+        ArrayList<DirectLinkTask> tasks;
+        synchronized (directLinkDownloadLock) {
+            tasks = new ArrayList<>(directLinkTasks.values());
+        }
+        java.util.Collections.sort(tasks, (left, right) -> sortOldestFirst
+                ? Long.compare(left.updatedAt, right.updatedAt)
+                : Long.compare(right.updatedAt, left.updatedAt));
+        ArrayList<DirectLinkTask> visible = new ArrayList<>();
+        for (DirectLinkTask task : tasks) {
+            if (task.state.equals("done")) continue;
+            if (!dashboardSearch.isEmpty() && !task.filename.toLowerCase(java.util.Locale.ROOT)
+                    .contains(dashboardSearch.toLowerCase(java.util.Locale.ROOT))) continue;
+            visible.add(task);
+        }
+        if (visible.isEmpty()) return 0;
+        dashboardItemsBox.addView(text("Descargas en este teléfono", 15, true), margin(2, 8, 0, 8));
+        for (DirectLinkTask task : visible) {
+            dashboardItemsBox.addView(directLinkTaskCard(task), margin(0, 0, 0, 9));
+        }
+        return visible.size();
+    }
+
+    private LinearLayout directLinkTaskCard(DirectLinkTask task) {
+        LinearLayout item = card();
+        item.setPadding(dp(14), dp(12), dp(14), dp(12));
+        item.addView(text(task.filename, 14, true));
+        String stateLabel = task.state.equals("downloading") ? "Descargando"
+                : task.state.equals("saving") ? "Guardando en Descargas"
+                : task.state.equals("pausing") ? "Pausando…"
+                : task.state.equals("deleting") ? "Eliminando…"
+                : task.state.equals("error") ? "Error · puedes reanudar"
+                : "Pausada";
+        int percent = task.total > 0 ? (int) Math.min(100L, task.bytes * 100L / task.total) : 0;
+        String detailText = stateLabel;
+        if (task.total > 0) detailText += " · " + percent + "% · " + formatBytes(task.bytes) + " / " + formatBytes(task.total);
+        else if (task.bytes > 0) detailText += " · " + formatBytes(task.bytes);
+        TextView detail = bodyText(detailText);
+        detail.setTextSize(12);
+        item.addView(detail, margin(0, 4, 0, 0));
+
+        ProgressBar progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        progress.setMax(100);
+        progress.setProgressTintList(ColorStateList.valueOf(accentColor()));
+        progress.setIndeterminateTintList(ColorStateList.valueOf(accentColor()));
+        boolean running = task.state.equals("downloading") || task.state.equals("saving");
+        progress.setIndeterminate(running && task.total <= 0);
+        progress.setProgress(percent);
+        item.addView(progress, margin(0, 8, 0, 0));
+        if (task.state.equals("error") && !task.error.isEmpty()) {
+            item.addView(bodyText(task.error), margin(0, 5, 0, 0));
+        }
+
+        LinearLayout actions = new LinearLayout(this);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+        if (task.state.equals("downloading") || task.state.equals("saving")) {
+            Button pause = secondaryButton("Pausar");
+            pause.setOnClickListener(v -> pauseDirectLinkTask(task.key));
+            LinearLayout.LayoutParams pauseParams = new LinearLayout.LayoutParams(0, -2, 1f);
+            pauseParams.setMargins(0, 0, dp(8), 0);
+            actions.addView(pause, pauseParams);
+        } else if (task.state.equals("paused") || task.state.equals("error")) {
+            Button resume = primaryButton("Reanudar");
+            resume.setOnClickListener(v -> resumeDirectLinkTask(task.key));
+            LinearLayout.LayoutParams resumeParams = new LinearLayout.LayoutParams(0, -2, 1f);
+            resumeParams.setMargins(0, 0, dp(8), 0);
+            actions.addView(resume, resumeParams);
+        }
+        Button delete = secondaryButton("Eliminar");
+        delete.setOnClickListener(v -> confirmDeleteDirectLinkTask(task.key, task.filename));
+        LinearLayout.LayoutParams deleteParams = new LinearLayout.LayoutParams(
+                actions.getChildCount() == 0 ? -1 : 0, -2, actions.getChildCount() == 0 ? 0f : 1f);
+        actions.addView(delete, deleteParams);
+        item.addView(actions, margin(0, 9, 0, 0));
+        return item;
     }
 
     private LinearLayout appTaskCard(JSONObject row) {
@@ -831,14 +930,11 @@ public final class MainActivity extends Activity {
         TextView status = bodyText("El botón principal descarga aquí el archivo final que recibiste del bot; no lo vuelve a enviar a la cola.");
         status.setTextSize(12);
         content.addView(status, margin(0, 10, 0, 0));
-        TextView localDownloadStatus = bodyText("Se guardará en Descargas del teléfono usando el motor por fragmentos y reanudación.");
+        TextView localDownloadStatus = bodyText("Al iniciar, aparecerá en Activas con porcentaje y botones para pausar, reanudar o eliminar.");
         localDownloadStatus.setTextSize(12);
         content.addView(localDownloadStatus, margin(0, 12, 0, 0));
-        ProgressBar localDownloadProgress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
-        localDownloadProgress.setMax(100);
-        localDownloadProgress.setVisibility(View.GONE);
-        content.addView(localDownloadProgress, margin(0, 6, 0, 0));
         Button localDownload = primaryButton("Descargar enlace recibido");
+        final AlertDialog[] dialogRef = new AlertDialog[1];
         localDownload.setOnClickListener(v -> {
             ArrayList<String> links = extractLinks(linkInput.getText().toString());
             if (links.size() != 1) {
@@ -850,7 +946,10 @@ public final class MainActivity extends Activity {
                 return;
             }
             String filename = filenameFromDirectLink(links.get(0));
-            downloadLinkLocally(links.get(0), filename, localDownload, localDownloadStatus, localDownloadProgress);
+            if (downloadLinkLocally(links.get(0), filename)) {
+                if (dialogRef[0] != null) dialogRef[0].dismiss();
+                showDashboard("active", true);
+            }
         });
         content.addView(localDownload, margin(0, 8, 0, 0));
         Button submit = secondaryButton("Enviar otro enlace de origen al bot");
@@ -860,6 +959,7 @@ public final class MainActivity extends Activity {
                 .setView(content)
                 .setNegativeButton("Cerrar", null)
                 .create();
+        dialogRef[0] = dialog;
         submit.setOnClickListener(v -> {
             ArrayList<String> links = extractLinks(linkInput.getText().toString());
             if (links.isEmpty()) {
@@ -904,96 +1004,198 @@ public final class MainActivity extends Activity {
         return safeName(name);
     }
 
-    private void downloadLinkLocally(String url, String filename, Button button,
-                                     TextView status, ProgressBar progressBar) {
-        JSONArray cacheParts = new JSONArray().put(url);
-        final String transferKey = downloadCacheKey(filename, cacheParts);
-        int maxConcurrent = Math.max(1, Math.min(5, prefs.getInt(PREF_DOWNLOAD_CONCURRENCY, 3)));
+    private boolean downloadLinkLocally(String url, String filename) {
+        if (!hasPublicDownloadPermission()) return false;
+        String key = downloadCacheKey(filename, new JSONArray().put(url));
+        DirectLinkTask task;
         synchronized (directLinkDownloadLock) {
-            if (activeDirectLinkKeys.contains(transferKey)) {
-                status.setText("Este enlace ya se está descargando.");
-                return;
+            task = directLinkTasks.get(key);
+            if (task == null) task = new DirectLinkTask(key, url, filename);
+            if (task.state.equals("downloading") || task.state.equals("saving") || task.state.equals("pausing")) {
+                return true;
             }
-            if (activeDirectLinkJobs >= maxConcurrent) {
-                status.setText("Ya hay " + maxConcurrent + " descargas directas activas.");
-                return;
+        }
+        return startDirectLinkTask(task);
+    }
+
+    private boolean hasPublicDownloadPermission() {
+        if (!prefs.getString(PREF_DOWNLOAD_FOLDER, "").isEmpty()
+                || Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+                || checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED) {
+            return true;
+        }
+        requestPermissions(new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE}, REQUEST_WRITE_STORAGE);
+        Toast.makeText(this, "Permite guardar en Descargas y vuelve a iniciar la descarga.", Toast.LENGTH_LONG).show();
+        return false;
+    }
+
+    private boolean startDirectLinkTask(DirectLinkTask task) {
+        if (!hasPublicDownloadPermission()) return false;
+        int maxConcurrent = Math.max(1, Math.min(5, prefs.getInt(PREF_DOWNLOAD_CONCURRENCY, 3)));
+        int otherActive;
+        synchronized (downloadConcurrencyLock) { otherActive = activeDownloadJobs; }
+        Thread worker;
+        synchronized (directLinkDownloadLock) {
+            if (activeDirectLinkKeys.contains(task.key)) return true;
+            if (activeDirectLinkJobs + otherActive >= maxConcurrent) {
+                Toast.makeText(this, "Ya hay " + maxConcurrent + " descargas simultáneas. Espera o pausa una.", Toast.LENGTH_LONG).show();
+                return false;
             }
-            activeDirectLinkKeys.add(transferKey);
+            task.pauseRequested = false;
+            task.deleteRequested = false;
+            task.error = "";
+            task.state = "downloading";
+            task.updatedAt = System.currentTimeMillis();
+            task.control = new ParallelRangeDownloader.DownloadControl();
+            directLinkTasks.put(task.key, task);
+            activeDirectLinkKeys.add(task.key);
             activeDirectLinkJobs++;
+            worker = new Thread(() -> runDirectLinkTask(task), "direct-link-range-download");
+            task.worker = worker;
+            persistDirectLinkTasks();
         }
-        if (prefs.getString(PREF_DOWNLOAD_FOLDER, "").isEmpty()
-                && Build.VERSION.SDK_INT < Build.VERSION_CODES.Q
-                && checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE}, REQUEST_WRITE_STORAGE);
-            status.setText("Permite guardar archivos en Descargas y vuelve a pulsar el botón.");
-            releaseDirectLinkDownload(transferKey);
-            return;
-        }
-        status.setText("Iniciando descarga directa con fragmentos paralelos…");
-        status.setTextColor(Color.rgb(99, 230, 216));
-        button.setEnabled(false);
-        progressBar.setVisibility(View.VISIBLE);
-        progressBar.setProgress(0);
-        progressBar.setIndeterminate(true);
-        new Thread(() -> {
-            File workDir = new File(getCacheDir(), "direct-link-" + transferKey);
-            File downloaded = new File(workDir, "download.bin");
-            DownloadTarget target = null;
-            try {
-                if (!workDir.exists() && !workDir.mkdirs()) {
-                    throw new IOException("No se pudo preparar el almacenamiento temporal.");
-                }
-                String transferToken = isTrustedS3Link(url) && todusToken != null ? todusToken : "";
-                final int[] lastShownPercent = {-1};
-                ParallelRangeDownloader.download(transferToken, url, url, downloaded, 0L, (received, total) -> {
-                    if (total > 0) {
-                        int percent = (int) Math.min(99L, Math.max(0L, received * 100L / total));
-                        boolean shouldUpdate;
-                        synchronized (lastShownPercent) {
-                            shouldUpdate = percent > lastShownPercent[0];
-                            if (shouldUpdate) lastShownPercent[0] = percent;
-                        }
-                        if (shouldUpdate) runOnUiThread(() -> {
-                            progressBar.setIndeterminate(false);
-                            ObjectAnimator.ofInt(progressBar, "progress", progressBar.getProgress(), percent)
-                                    .setDuration(140).start();
-                            status.setText("Descargando… " + percent + "%");
-                        });
-                    } else {
-                        runOnUiThread(() -> status.setText("Descargando… " + formatBytes(received)));
-                    }
-                });
-                target = openPublicDownload(filename);
-                long downloadedSize = downloaded.length();
-                try (InputStream input = new FileInputStream(downloaded); OutputStream output = target.stream) {
-                    byte[] buffer = new byte[64 * 1024];
-                    int count;
-                    while ((count = input.read(buffer)) != -1) output.write(buffer, 0, count);
-                }
-                finishPublicDownload(target);
-                recordDownloadedFile(target, downloadedSize);
-                deleteTree(workDir);
-                final String savedName = target.name;
-                runOnUiThread(() -> {
-                    progressBar.setIndeterminate(false);
-                    progressBar.setProgress(100);
-                    status.setTextColor(Color.rgb(99, 230, 216));
-                    status.setText("Completada · guardada en Descargas: " + savedName);
-                    button.setEnabled(true);
-                    if (viewingDownloadsTab) showDownloadsStep(false);
-                });
-            } catch (Exception e) {
-                if (target != null) deletePublicDownload(target);
-                runOnUiThread(() -> {
-                    progressBar.setIndeterminate(false);
-                    status.setTextColor(Color.rgb(255, 156, 156));
-                    status.setText("Error: " + e.getMessage() + ". Se conservaron fragmentos para reintentar.");
-                    button.setEnabled(true);
-                });
-            } finally {
-                releaseDirectLinkDownload(transferKey);
+        worker.start();
+        return true;
+    }
+
+    private void runDirectLinkTask(DirectLinkTask task) {
+        File workDir = new File(new File(getFilesDir(), "direct-link-downloads"), task.key);
+        File downloaded = new File(workDir, "download.bin");
+        DownloadTarget target = null;
+        boolean saved = false;
+        try {
+            if (!workDir.exists() && !workDir.mkdirs()) {
+                throw new IOException("No se pudo preparar el almacenamiento temporal.");
             }
-        }, "direct-link-range-download").start();
+            String transferToken = isTrustedS3Link(task.url) && todusToken != null ? todusToken : "";
+            ParallelRangeDownloader.download(transferToken, task.url, task.url, downloaded, 0L,
+                    (received, total) -> updateDirectLinkProgress(task, received, total), task.control);
+            task.control.check();
+            task.state = "saving";
+            task.updatedAt = System.currentTimeMillis();
+            persistDirectLinkTasks();
+            postDirectLinkTaskRefresh();
+            target = openPublicDownload(task.filename);
+            long downloadedSize = downloaded.length();
+            try (InputStream input = new FileInputStream(downloaded); OutputStream output = target.stream) {
+                byte[] buffer = new byte[64 * 1024];
+                int count;
+                while ((count = input.read(buffer)) != -1) {
+                    task.control.check();
+                    output.write(buffer, 0, count);
+                }
+            }
+            task.control.check();
+            finishPublicDownload(target);
+            recordDownloadedFile(target, downloadedSize);
+            saved = true;
+            String savedName = target.name;
+            runOnUiThread(() -> Toast.makeText(this, "Descarga completada en Descargas: " + savedName, Toast.LENGTH_LONG).show());
+        } catch (Exception e) {
+            if (target != null) deletePublicDownload(target);
+            if (!task.pauseRequested && !task.deleteRequested) {
+                task.state = "error";
+                task.error = e.getMessage() == null ? "No se pudo completar la descarga." : e.getMessage();
+                task.updatedAt = System.currentTimeMillis();
+            }
+        } finally {
+            if (saved || task.deleteRequested) {
+                deleteTree(workDir);
+                synchronized (directLinkDownloadLock) { directLinkTasks.remove(task.key); }
+            } else if (task.pauseRequested) {
+                task.state = "paused";
+                task.updatedAt = System.currentTimeMillis();
+            }
+            task.worker = null;
+            task.control = null;
+            releaseDirectLinkDownload(task.key);
+            persistDirectLinkTasks();
+            postDirectLinkTaskRefresh();
+        }
+    }
+
+    private void updateDirectLinkProgress(DirectLinkTask task, long received, long total) {
+        long now = System.currentTimeMillis();
+        int percent = total > 0 ? (int) Math.min(100L, Math.max(0L, received * 100L / total)) : -1;
+        boolean update;
+        synchronized (directLinkDownloadLock) {
+            task.bytes = Math.max(0L, received);
+            task.total = Math.max(0L, total);
+            update = percent != task.lastProgressPercent || now - task.lastPersistAt >= 800L;
+            if (update) {
+                task.lastProgressPercent = percent;
+                task.lastPersistAt = now;
+                task.updatedAt = now;
+            }
+        }
+        if (update) {
+            persistDirectLinkTasks();
+            postDirectLinkTaskRefresh();
+        }
+    }
+
+    private void pauseDirectLinkTask(String key) {
+        DirectLinkTask task;
+        synchronized (directLinkDownloadLock) {
+            task = directLinkTasks.get(key);
+            if (task == null || task.worker == null || task.control == null
+                    || (!task.state.equals("downloading") && !task.state.equals("saving"))) return;
+            task.pauseRequested = true;
+            task.state = "pausing";
+            task.updatedAt = System.currentTimeMillis();
+            persistDirectLinkTasks();
+        }
+        task.control.cancel();
+        task.worker.interrupt();
+        postDirectLinkTaskRefresh();
+    }
+
+    private void resumeDirectLinkTask(String key) {
+        DirectLinkTask task;
+        synchronized (directLinkDownloadLock) { task = directLinkTasks.get(key); }
+        if (task != null && (task.state.equals("paused") || task.state.equals("error"))) {
+            if (startDirectLinkTask(task)) postDirectLinkTaskRefresh();
+        }
+    }
+
+    private void confirmDeleteDirectLinkTask(String key, String filename) {
+        new AlertDialog.Builder(this)
+                .setTitle("Eliminar descarga")
+                .setMessage("Se eliminarán la tarea y sus fragmentos temporales. El archivo solo se borra del teléfono si todavía no había terminado.")
+                .setNegativeButton("Cancelar", null)
+                .setPositiveButton("Eliminar", (dialog, which) -> deleteDirectLinkTask(key))
+                .show();
+    }
+
+    private void deleteDirectLinkTask(String key) {
+        DirectLinkTask task;
+        synchronized (directLinkDownloadLock) {
+            task = directLinkTasks.get(key);
+            if (task == null) return;
+            if (task.worker != null && task.control != null) {
+                task.deleteRequested = true;
+                task.pauseRequested = false;
+                task.state = "deleting";
+                task.updatedAt = System.currentTimeMillis();
+                persistDirectLinkTasks();
+            } else {
+                directLinkTasks.remove(key);
+                persistDirectLinkTasks();
+            }
+        }
+        if (task.worker != null && task.control != null) {
+            task.control.cancel();
+            task.worker.interrupt();
+        } else {
+            deleteTree(new File(new File(getFilesDir(), "direct-link-downloads"), task.key));
+            postDirectLinkTaskRefresh();
+        }
+    }
+
+    private void postDirectLinkTaskRefresh() {
+        runOnUiThread(() -> {
+            if (viewingDashboard) renderDashboardItems();
+        });
     }
 
     private void releaseDirectLinkDownload(String transferKey) {
@@ -1093,6 +1295,9 @@ public final class MainActivity extends Activity {
             else showAccountMenu(v);
         });
         addDrawerRow(content, popup, "▣", "Archivos en la Nube", "Entregas del bot", () -> showDashboard("all", true));
+        if (token != null && !token.isEmpty()) {
+            addDrawerRow(content, popup, "☁", "Vaciar mi nube", "Eliminar mis archivos de nube", this::confirmClearMyCloud);
+        }
         addDrawerRow(content, popup, "↓", "Descargas", "Archivos guardados en el teléfono", () -> showDashboard("completed", true));
         addDrawerRow(content, popup, "▥", "Estadísticas", "Uso y actividad", () -> showStats(true));
         addDrawerRow(content, popup, "◉", "Grupo de Telegram", "Dark Zone", () -> openExternalUrl("https://t.me/Dark_Zone_666"));
@@ -1139,6 +1344,38 @@ public final class MainActivity extends Activity {
             action.run();
         });
         parent.addView(row, margin(0, 0, 0, 7));
+    }
+
+    private void confirmClearMyCloud() {
+        new AlertDialog.Builder(this)
+                .setTitle("Vaciar mi nube")
+                .setMessage("Se borrarán los archivos en la nube y sus enlaces registrados para tu cuenta. Las descargas que ya guardaste en el teléfono no se borrarán. Esta acción no se puede deshacer.")
+                .setNegativeButton("Cancelar", null)
+                .setPositiveButton("Vaciar mi nube", (dialog, which) -> clearMyCloud())
+                .show();
+    }
+
+    private void clearMyCloud() {
+        String currentToken = token;
+        if (currentToken == null || currentToken.isEmpty()) {
+            Toast.makeText(this, "Vincula primero la aplicación con el bot.", Toast.LENGTH_LONG).show();
+            return;
+        }
+        Toast.makeText(this, "Borrando tus archivos de nube…", Toast.LENGTH_SHORT).show();
+        new Thread(() -> {
+            try {
+                JSONObject result = request("POST", "/api/app/cloud/clear", "{}", currentToken);
+                int deleted = result.optInt("deleted_files", 0);
+                runOnUiThread(() -> {
+                    Toast.makeText(this, "Nube vaciada: " + deleted + " archivo(s) eliminado(s).", Toast.LENGTH_LONG).show();
+                    refreshDeliveries();
+                    if (viewingDashboard) renderDashboardItems();
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> Toast.makeText(this,
+                        "No se pudo vaciar la nube. Los registros se conservaron para reintentar.", Toast.LENGTH_LONG).show());
+            }
+        }, "clear-user-cloud").start();
     }
 
     private LinearLayout sectionHeader(String title) {
@@ -1873,7 +2110,11 @@ public final class MainActivity extends Activity {
         final String oldToken = token == null ? "" : token;
         token = "";
         prefs.edit().remove("token").remove(PREF_SELECTED_PLAN)
+                .remove(PREF_ACTIVE_PREMIUM).remove(PREF_ACTIVE_PLAN).remove("active_plan_expires_v1")
                 .putBoolean(PREF_TODUS_PIN_REQUESTED, false).apply();
+        premiumActive = false;
+        activePlan = "free";
+        premiumExpiresAt = "";
         clearToDusCredentials();
         savedCredentialsCouldNotBeDecrypted = false;
         deliveriesBox = null;
@@ -2393,6 +2634,53 @@ public final class MainActivity extends Activity {
         }, "app-task-refresh").start();
     }
 
+    private void refreshAccountProfile() {
+        final String current = token;
+        if (current == null || current.isEmpty() || profileRefreshInFlight) return;
+        profileRefreshInFlight = true;
+        new Thread(() -> {
+            try {
+                JSONObject profile = request("GET", "/api/app/profile", "", current);
+                boolean newPremium = profile.optBoolean("premium", false);
+                String newPlan = profile.optString("plan", "free");
+                String newExpiry = profile.optString("expires", "");
+                runOnUiThread(() -> {
+                    if (!current.equals(token)) {
+                        profileRefreshInFlight = false;
+                        return;
+                    }
+                    boolean changed = premiumActive != newPremium || !activePlan.equals(newPlan)
+                            || !premiumExpiresAt.equals(newExpiry);
+                    premiumActive = newPremium;
+                    activePlan = newPlan;
+                    premiumExpiresAt = newExpiry;
+                    profileRefreshInFlight = false;
+                    prefs.edit().putBoolean(PREF_ACTIVE_PREMIUM, premiumActive)
+                            .putString(PREF_ACTIVE_PLAN, activePlan)
+                            .putString("active_plan_expires_v1", premiumExpiresAt).apply();
+                    if (planStatus != null) planStatus.setText(accountPlanStatusText());
+                    if (changed && viewingDashboard && "all".equals(dashboardFilter)) {
+                        showDashboard(dashboardFilter, false);
+                    }
+                });
+            } catch (Exception ignored) {
+                runOnUiThread(() -> profileRefreshInFlight = false);
+            }
+        }, "account-profile-refresh").start();
+    }
+
+    private String accountPlanStatusText() {
+        if (premiumActive) {
+            String label = "Plan Premium activo";
+            if (!premiumExpiresAt.isEmpty()) label += " · hasta " + premiumExpiresAt;
+            else label += " · permanente";
+            return label;
+        }
+        return token == null || token.isEmpty()
+                ? "Vincula tu cuenta para sincronizar el plan activado por el bot."
+                : "Plan actual: Gratis · se actualizará automáticamente si activan Premium.";
+    }
+
     private void renderDeliveries(JSONArray rows) {
         if (deliveriesBox == null) return;
         deliveriesBox.removeAllViews();
@@ -2664,6 +2952,56 @@ public final class MainActivity extends Activity {
         }
     }
 
+    private void loadDirectLinkTasks() {
+        try {
+            JSONArray saved = new JSONArray(prefs.getString(PREF_DIRECT_LINK_TASKS, "[]"));
+            synchronized (directLinkDownloadLock) {
+                for (int i = 0; i < saved.length(); i++) {
+                    JSONObject row = saved.optJSONObject(i);
+                    if (row == null) continue;
+                    String key = row.optString("key", "");
+                    String url = row.optString("url", "");
+                    String filename = row.optString("filename", "");
+                    if (key.isEmpty() || url.isEmpty() || filename.isEmpty()) continue;
+                    if (!key.equals(downloadCacheKey(filename, new JSONArray().put(url)))) continue;
+                    DirectLinkTask task = new DirectLinkTask(key, url, filename);
+                    task.state = row.optString("state", "paused");
+                    if (task.state.equals("downloading") || task.state.equals("saving")
+                            || task.state.equals("pausing") || task.state.equals("deleting")) {
+                        task.state = "paused";
+                    }
+                    task.bytes = Math.max(0L, row.optLong("bytes", 0L));
+                    task.total = Math.max(0L, row.optLong("total", 0L));
+                    task.error = row.optString("error", "");
+                    task.updatedAt = row.optLong("updated_at", System.currentTimeMillis());
+                    directLinkTasks.put(key, task);
+                }
+            }
+            persistDirectLinkTasks();
+        } catch (Exception ignored) { }
+    }
+
+    private void persistDirectLinkTasks() {
+        if (prefs == null) return;
+        JSONArray rows = new JSONArray();
+        synchronized (directLinkDownloadLock) {
+            for (DirectLinkTask task : directLinkTasks.values()) {
+                try {
+                    rows.put(new JSONObject()
+                            .put("key", task.key)
+                            .put("url", task.url)
+                            .put("filename", task.filename)
+                            .put("state", task.state)
+                            .put("bytes", task.bytes)
+                            .put("total", task.total)
+                            .put("error", task.error)
+                            .put("updated_at", task.updatedAt));
+                } catch (Exception ignored) { }
+            }
+        }
+        prefs.edit().putString(PREF_DIRECT_LINK_TASKS, rows.toString()).apply();
+    }
+
     private void recordDownloadedFile(DownloadTarget target, long size) {
         try {
             JSONArray oldRecords = savedDownloadRecords();
@@ -2689,7 +3027,7 @@ public final class MainActivity extends Activity {
         if (requestCode == REQUEST_WRITE_STORAGE && syncStatus != null) {
             boolean granted = grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED;
             syncStatus.setText(granted
-                    ? "Permiso concedido. Pulsa Descargar para guardar el archivo en Descargas."
+                    ? "Permiso concedido. Vuelve a pegar el enlace y pulsa Descargar enlace recibido."
                     : "Sin permiso no se puede guardar el archivo en la carpeta Descargas del teléfono.");
         }
     }
@@ -2774,6 +3112,29 @@ public final class MainActivity extends Activity {
             this.stream = stream;
             this.name = name;
             this.mediaStore = mediaStore;
+        }
+    }
+
+    private static final class DirectLinkTask {
+        final String key;
+        final String url;
+        final String filename;
+        volatile String state = "paused";
+        volatile long bytes;
+        volatile long total;
+        volatile long updatedAt = System.currentTimeMillis();
+        volatile String error = "";
+        volatile boolean pauseRequested;
+        volatile boolean deleteRequested;
+        volatile int lastProgressPercent = -1;
+        volatile long lastPersistAt;
+        volatile Thread worker;
+        volatile ParallelRangeDownloader.DownloadControl control;
+
+        DirectLinkTask(String key, String url, String filename) {
+            this.key = key;
+            this.url = url;
+            this.filename = filename;
         }
     }
 

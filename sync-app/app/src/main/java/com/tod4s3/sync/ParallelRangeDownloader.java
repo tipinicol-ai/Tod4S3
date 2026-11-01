@@ -11,8 +11,11 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -36,19 +39,50 @@ final class ParallelRangeDownloader {
         void onProgress(long bytesDownloaded, long totalBytes);
     }
 
+    static final class DownloadControl {
+        private final AtomicBoolean cancelled = new AtomicBoolean(false);
+        private final Set<HttpURLConnection> connections = Collections.newSetFromMap(
+                new ConcurrentHashMap<HttpURLConnection, Boolean>());
+
+        boolean isCancelled() { return cancelled.get(); }
+
+        void cancel() {
+            cancelled.set(true);
+            for (HttpURLConnection connection : connections) connection.disconnect();
+        }
+
+        void register(HttpURLConnection connection) {
+            connections.add(connection);
+            if (cancelled.get()) connection.disconnect();
+        }
+
+        void check() throws IOException {
+            if (cancelled.get() || Thread.currentThread().isInterrupted()) {
+                throw new IOException("La descarga fue interrumpida.");
+            }
+        }
+    }
+
     private ParallelRangeDownloader() { }
 
     static void download(String token, String realUrl, String resourceKey, File destination,
                          long previousBytes, ProgressCallback progressCallback) throws Exception {
+        download(token, realUrl, resourceKey, destination, previousBytes, progressCallback, null);
+    }
+
+    static void download(String token, String realUrl, String resourceKey, File destination,
+                         long previousBytes, ProgressCallback progressCallback,
+                         DownloadControl control) throws Exception {
+        if (control != null) control.check();
         File parent = destination.getParentFile();
         if (parent != null && !parent.exists() && !parent.mkdirs()) {
             throw new IOException("No se pudo preparar el almacenamiento temporal.");
         }
 
-        Probe probe = probe(token, realUrl);
+        Probe probe = probe(token, realUrl, control);
         if (probe.status == HttpURLConnection.HTTP_OK) {
             try {
-                writeSequential(probe.connection, destination, previousBytes, progressCallback);
+                writeSequential(probe.connection, destination, previousBytes, progressCallback, control);
             } finally {
                 probe.connection.disconnect();
             }
@@ -57,7 +91,7 @@ final class ParallelRangeDownloader {
         probe.connection.disconnect();
 
         if (probe.totalBytes < 0) {
-            downloadSequential(token, realUrl, probe.sendBearer, destination, previousBytes, progressCallback);
+            downloadSequential(token, realUrl, probe.sendBearer, destination, previousBytes, progressCallback, control);
             return;
         }
         if (probe.totalBytes == 0) {
@@ -66,18 +100,20 @@ final class ParallelRangeDownloader {
             return;
         }
         if (probe.totalBytes < MIN_PARALLEL_BYTES) {
-            downloadSequential(token, realUrl, probe.sendBearer, destination, previousBytes, progressCallback);
+            downloadSequential(token, realUrl, probe.sendBearer, destination, previousBytes, progressCallback, control);
             return;
         }
 
         downloadRanges(token, realUrl, resourceKey, destination, previousBytes,
-                probe.totalBytes, probe.sendBearer, probe.etag, probe.lastModified, progressCallback);
+                probe.totalBytes, probe.sendBearer, probe.etag, probe.lastModified, progressCallback, control);
     }
 
-    private static Probe probe(String token, String realUrl) throws IOException {
+    private static Probe probe(String token, String realUrl, DownloadControl control) throws IOException {
         for (int attempt = 0; attempt < 2; attempt++) {
+            if (control != null) control.check();
             boolean sendBearer = attempt == 0;
             HttpURLConnection connection = open(realUrl, token, sendBearer, 0L, 0L);
+            if (control != null) control.register(connection);
             int status;
             try {
                 status = connection.getResponseCode();
@@ -115,11 +151,13 @@ final class ParallelRangeDownloader {
 
     private static void downloadSequential(String token, String realUrl, boolean preferredBearer,
                                            File destination, long previousBytes,
-                                           ProgressCallback progressCallback) throws Exception {
+                                           ProgressCallback progressCallback, DownloadControl control) throws Exception {
         IOException lastError = null;
         for (int attempt = 0; attempt < 2; attempt++) {
+            if (control != null) control.check();
             boolean sendBearer = attempt == 0 ? preferredBearer : !preferredBearer;
             HttpURLConnection connection = open(realUrl, token, sendBearer, -1L, -1L);
+            if (control != null) control.register(connection);
             try {
                 int status = connection.getResponseCode();
                 if (sendBearer && status == HttpURLConnection.HTTP_BAD_REQUEST
@@ -134,7 +172,7 @@ final class ParallelRangeDownloader {
                     }
                     throw new IOException("El servidor ToDus respondió HTTP " + status + " al descargar" + detail);
                 }
-                writeSequential(connection, destination, previousBytes, progressCallback);
+                writeSequential(connection, destination, previousBytes, progressCallback, control);
                 return;
             } catch (IOException e) {
                 lastError = e;
@@ -147,7 +185,8 @@ final class ParallelRangeDownloader {
     }
 
     private static void writeSequential(HttpURLConnection connection, File destination,
-                                        long previousBytes, ProgressCallback progressCallback) throws IOException {
+                                        long previousBytes, ProgressCallback progressCallback,
+                                        DownloadControl control) throws IOException {
         InputStream response = connection.getInputStream();
         boolean gzip = "gzip".equalsIgnoreCase(connection.getContentEncoding());
         long responseLength = contentLength(connection);
@@ -159,6 +198,7 @@ final class ParallelRangeDownloader {
             long transferred = 0L;
             if (progressCallback != null) progressCallback.onProgress(previousBytes, totalBytes);
             while ((count = input.read(buffer)) != -1) {
+                if (control != null) control.check();
                 output.write(buffer, 0, count);
                 transferred += count;
                 if (progressCallback != null) progressCallback.onProgress(previousBytes + transferred, totalBytes);
@@ -169,7 +209,8 @@ final class ParallelRangeDownloader {
     private static void downloadRanges(String token, String realUrl, String resourceKey, File destination,
                                        long previousBytes, long totalBytes, boolean sendBearer,
                                        String etag, String lastModified,
-                                       ProgressCallback progressCallback) throws Exception {
+                                       ProgressCallback progressCallback, DownloadControl control) throws Exception {
+        if (control != null) control.check();
         int connectionCount = (int) Math.min(MAX_CONNECTIONS,
                 Math.max(2L, (totalBytes + MIN_PARALLEL_BYTES - 1L) / MIN_PARALLEL_BYTES));
         long chunkSize = (totalBytes + connectionCount - 1L) / connectionCount;
@@ -220,23 +261,28 @@ final class ParallelRangeDownloader {
                 final long end = ends.get(index);
                 futures.add(pool.submit(() -> {
                     downloadOneRange(token, realUrl, chunk, start, end, totalBytes, useBearer,
-                            completed, previousBytes, progressCallback, etag);
+                            completed, previousBytes, progressCallback, etag, control);
                     return null;
                 }));
             }
             for (Future<?> future : futures) future.get();
         } catch (ExecutionException e) {
             for (Future<?> future : futures) future.cancel(true);
+            if (control != null) control.cancel();
             Throwable cause = e.getCause();
             if (cause instanceof Exception) throw (Exception) cause;
             throw new IOException("Falló una conexión de descarga por fragmentos.", cause);
         } catch (InterruptedException e) {
             for (Future<?> future : futures) future.cancel(true);
+            if (control != null) control.cancel();
             Thread.currentThread().interrupt();
             throw new IOException("La descarga fue interrumpida.", e);
         } finally {
             pool.shutdownNow();
-            pool.awaitTermination(2, TimeUnit.SECONDS);
+            boolean interrupted = Thread.interrupted();
+            try { pool.awaitTermination(2, TimeUnit.SECONDS); }
+            catch (InterruptedException e) { interrupted = true; }
+            finally { if (interrupted) Thread.currentThread().interrupt(); }
         }
 
         try (FileOutputStream output = new FileOutputStream(destination, false)) {
@@ -246,6 +292,7 @@ final class ParallelRangeDownloader {
                 try (InputStream input = new FileInputStream(chunk)) {
                     int count;
                     while ((count = input.read(buffer)) != -1) {
+                        if (control != null) control.check();
                         output.write(buffer, 0, count);
                         merged += count;
                     }
@@ -262,12 +309,15 @@ final class ParallelRangeDownloader {
     private static void downloadOneRange(String token, String realUrl, File chunk, long rangeStart,
                                          long rangeEnd, long totalBytes, AtomicBoolean useBearer,
                                          AtomicLong completed, long previousBytes,
-                                         ProgressCallback progressCallback, String expectedEtag) throws IOException {
+                                         ProgressCallback progressCallback, String expectedEtag,
+                                         DownloadControl control) throws IOException {
         long expectedLength = rangeEnd - rangeStart + 1L;
         long currentLength = chunk.isFile() ? chunk.length() : 0L;
         for (int attempt = 0; attempt < MAX_RETRIES && currentLength < expectedLength; attempt++) {
+            if (control != null) control.check();
             long requestStart = rangeStart + currentLength;
             HttpURLConnection connection = open(realUrl, token, useBearer.get(), requestStart, rangeEnd);
+            if (control != null) control.register(connection);
             try {
                 int status = connection.getResponseCode();
                 if (status == HttpURLConnection.HTTP_BAD_REQUEST && useBearer.get()
@@ -296,6 +346,7 @@ final class ParallelRangeDownloader {
                     byte[] buffer = new byte[64 * 1024];
                     int count;
                     while ((count = input.read(buffer)) != -1) {
+                        if (control != null) control.check();
                         if (Thread.currentThread().isInterrupted()) throw new IOException("La descarga fue interrumpida.");
                         if (currentLength + count > expectedLength) {
                             throw new IOException("ToDus envió más datos que el tamaño del fragmento.");
@@ -312,6 +363,9 @@ final class ParallelRangeDownloader {
                     throw new IOException("Una conexión terminó antes de completar su fragmento.");
                 }
             } catch (IOException e) {
+                if (control != null && control.isCancelled()) {
+                    throw new IOException("La descarga fue interrumpida.", e);
+                }
                 if (attempt + 1 == MAX_RETRIES) throw e;
                 try { Thread.sleep(250L * (attempt + 1)); }
                 catch (InterruptedException interrupted) {

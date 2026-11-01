@@ -154,6 +154,38 @@ def deliveries_for_token(token: str) -> list[dict[str, Any]] | None:
         ]
 
 
+def deliveries_for_user(user_id: int) -> list[dict[str, Any]]:
+    """Returns a copy of this user's bot deliveries for server-side cleanup."""
+    with _LOCK:
+        state = _read()
+        rows = state["deliveries"].get(str(int(user_id)), [])
+        if not isinstance(rows, list):
+            return []
+        return [dict(row) for row in rows if isinstance(row, dict)
+                and row.get("source", "tod4s3_bot") == "tod4s3_bot"]
+
+
+def clear_deliveries_for_user(user_id: int) -> int:
+    """Remove only bot-created delivery rows for one user after remote deletion."""
+    with _LOCK:
+        state = _read()
+        key = str(int(user_id))
+        rows = state["deliveries"].get(key, [])
+        if not isinstance(rows, list):
+            return 0
+        kept = [row for row in rows if not (
+            isinstance(row, dict) and row.get("source", "tod4s3_bot") == "tod4s3_bot"
+        )]
+        removed = len(rows) - len(kept)
+        if removed:
+            if kept:
+                state["deliveries"][key] = kept
+            else:
+                state["deliveries"].pop(key, None)
+            _write(state)
+        return removed
+
+
 def delivery_for_user(user_id: int, task_id: str) -> dict[str, Any] | None:
     """Devuelve una copia de una entrega cuyo propietario ya se verificó."""
     with _LOCK:

@@ -53,6 +53,7 @@ from telegram_backup import (
     restore_from_telegram,
 )
 from task_queue import FairTaskQueue, TransferTask
+import sync_api
 
 load_dotenv()
 
@@ -2580,8 +2581,8 @@ def admin_section_keyboard(section: str) -> InlineKeyboardMarkup:
         "storage": [
             [btn("🗂️ ʜɪꜱᴛᴏʀɪᴀʟ ᴅᴇ ᴜꜱᴜᴀʀɪᴏ", callback_data="admin:user_history")],
             [btn("🧹 ʟɪᴍᴘɪᴀʀ ᴍᴇɴꜱᴀᴊᴇꜱ ᴛᴏᴅᴜꜱ", callback_data="admin:todus_cleanup_confirm")],
-            [btn("☁️ ʙᴏʀʀᴀʀ ᴛᴏᴅᴏꜱ ʟᴏꜱ ᴀʀᴄʜɪᴠᴏꜱ", callback_data="admin:cloud_all_confirm")],
-            [btn("🗑️ ʙᴏʀʀᴀʀ ᴀʀᴄʜɪᴠᴏ ᴅᴇ ᴜꜱᴜᴀʀɪᴏ", callback_data="admin:cloud_user")],
+            [btn("☁️ ᴠᴀᴄɪᴀʀ ɴᴜʙᴇ ᴅᴇ ᴛᴏᴅᴏꜱ", callback_data="admin:cloud_all_confirm")],
+            [btn("🗑️ ᴠᴀᴄɪᴀʀ ɴᴜʙᴇ ᴅᴇ ᴜꜱᴜᴀʀɪᴏ", callback_data="admin:cloud_user")],
             [btn("🧹 ʙᴏʀʀᴀʀ ᴛᴏᴅᴏ ᴇʟ ʜɪꜱᴛᴏʀɪᴀʟ", callback_data="admin:all_history_confirm")],
         ],
         "reports": [
@@ -6435,7 +6436,13 @@ async def post_shutdown(application: Application) -> None:
 
 def sync_app_profile(user_id: int) -> dict:
     plan = get_user_plan(user_id)
-    return {"premium": is_owner(user_id) or plan == "premium", "plan": plan}
+    expires_label, remaining_days = get_plan_expiry_info(user_id)
+    return {
+        "premium": is_owner(user_id) or plan == "premium",
+        "plan": plan,
+        "expires": expires_label or "",
+        "days_remaining": remaining_days,
+    }
 
 
 def sync_app_profile_photo(user_id: int) -> bytes | None:
@@ -6486,6 +6493,51 @@ def sync_app_profile_photo(user_id: int) -> bytes | None:
 async def sync_app_task_request(application: Application, action: str, user_id: int,
                                 payload: dict) -> tuple[dict, int]:
     """Acciones de cola solicitadas por un dispositivo emparejado."""
+    if action == "clear_cloud":
+        entries = get_task_history(user_id, 50)
+        deliveries = sync_api.deliveries_for_user(user_id)
+        manager: FairTaskQueue | None = application.bot_data.get("task_queue")
+        done_jobs = []
+        if manager is not None:
+            async with manager.lock:
+                done_jobs = [job for job in manager.jobs.values()
+                             if job.user_id == user_id and job.state == "done"]
+        urls = {
+            str(url)
+            for entry in entries
+            if isinstance(entry, dict) and isinstance(entry.get("urls"), list)
+            for url in entry["urls"] if url
+        }
+        for row in deliveries:
+            parts = row.get("parts", []) if isinstance(row, dict) else []
+            if isinstance(parts, list):
+                urls.update(str(url) for url in parts if url)
+        for job in done_jobs:
+            urls.update(str(url) for url in getattr(job, "part_urls", {}).values() if url)
+        results = await asyncio.gather(*(
+            asyncio.to_thread(delete_from_todus_s3, url) for url in sorted(urls)
+        ), return_exceptions=True)
+        failed = sum(isinstance(result, Exception) for result in results)
+        if failed:
+            return {
+                "ok": False,
+                "error": "cloud_delete_failed",
+                "message": "Algunos archivos siguen en la nube; no se borró el historial para poder reintentar.",
+                "deleted_files": len(urls) - failed,
+                "failed_files": failed,
+            }, 502
+        clear_task_history(user_id)
+        sync_api.clear_deliveries_for_user(user_id)
+        if manager is not None and done_jobs:
+            async with manager.lock:
+                for job in done_jobs:
+                    if job.user_id == user_id and job.state == "done":
+                        job.part_urls.clear()
+        if urls or entries:
+            schedule_data_backup(application, "vaciado personal de archivos de nube desde Android")
+        return {"ok": True, "deleted_files": len(urls),
+                "deleted_records": len(entries) + len(deliveries)}, 200
+
     manager: FairTaskQueue = application.bot_data["task_queue"]
     if action == "enqueue":
         try:
