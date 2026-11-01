@@ -1256,13 +1256,10 @@ public final class MainActivity extends Activity {
         circle.setShape(GradientDrawable.OVAL);
         circle.setColor(accentColor());
         badge.setBackground(circle);
-        ImageView profilePhoto = new ImageView(this);
-        profilePhoto.setImageResource(R.drawable.ic_launcher_foreground);
-        profilePhoto.setScaleType(ImageView.ScaleType.FIT_CENTER);
-        profilePhoto.setPadding(dp(9), dp(9), dp(9), dp(9));
-        profilePhoto.setContentDescription("Foto de perfil de Telegram");
-        badge.addView(profilePhoto, new FrameLayout.LayoutParams(dp(48), dp(48), Gravity.CENTER));
-        loadTelegramProfilePhoto(profilePhoto);
+        TextView initials = text(token == null || token.isEmpty() ? "➤" : "T", 20, true);
+        initials.setTextColor(onAccentColor());
+        initials.setGravity(Gravity.CENTER);
+        badge.addView(initials, new FrameLayout.LayoutParams(dp(48), dp(48), Gravity.CENTER));
         account.addView(badge, new LinearLayout.LayoutParams(dp(48), dp(48)));
         LinearLayout accountText = new LinearLayout(this);
         accountText.setOrientation(LinearLayout.VERTICAL);
