@@ -1273,8 +1273,8 @@ public final class MainActivity extends Activity {
         ScrollView drawerScroll = new ScrollView(this);
         drawerScroll.setFillViewport(true);
         drawerScroll.setSmoothScrollingEnabled(true);
-        drawerScroll.setVerticalScrollBarEnabled(true);
-        drawerScroll.setOverScrollMode(View.OVER_SCROLL_IF_CONTENT_SCROLLS);
+        drawerScroll.setVerticalScrollBarEnabled(false);
+        drawerScroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
         drawerScroll.setBackgroundColor(surfaceColor());
         drawerScroll.addView(content, new FrameLayout.LayoutParams(-1, -2));
         PopupWindow popup = new PopupWindow(drawerScroll, dp(296), -1, true);
