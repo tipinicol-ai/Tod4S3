@@ -86,6 +86,7 @@ public final class MainActivity extends Activity {
     private static final String PREF_SELECTED_PLAN = "selected_plan";
     private static final String PREF_DOWNLOAD_HISTORY = "download_history_v1";
     private static final String PREF_DIRECT_LINK_TASKS = "direct_link_tasks_v1";
+    private static final String PREF_TODUS_DOWNLOAD_TASKS = "todus_download_tasks_v1";
     private static final String PREF_ACTIVE_PLAN = "active_plan_v1";
     private static final String PREF_ACTIVE_PREMIUM = "active_premium_v1";
     private static final String PREF_HIDDEN_DELIVERIES = "hidden_delivery_ids_v1";
@@ -145,6 +146,8 @@ public final class MainActivity extends Activity {
     private final Object directLinkDownloadLock = new Object();
     private final java.util.Set<String> activeDirectLinkKeys = new java.util.HashSet<>();
     private final java.util.LinkedHashMap<String, DirectLinkTask> directLinkTasks = new java.util.LinkedHashMap<>();
+    private final Object toDusDownloadLock = new Object();
+    private final java.util.LinkedHashMap<String, ToDusDownloadTask> toDusDownloadTasks = new java.util.LinkedHashMap<>();
     private int activeDirectLinkJobs;
     private String dashboardFilter = "all";
     private String dashboardSearch = "";
@@ -163,6 +166,7 @@ public final class MainActivity extends Activity {
         activePlan = prefs.getString(PREF_ACTIVE_PLAN, "free");
         premiumExpiresAt = prefs.getString("active_plan_expires_v1", "");
         loadDirectLinkTasks();
+        loadToDusDownloadTasks();
         loadToDusCredentials();
         buildUi();
 
@@ -712,6 +716,7 @@ public final class MainActivity extends Activity {
         int shown = 0;
         boolean toDusTab = "all".equals(dashboardFilter);
         if (toDusTab) addToDusSessionStatus(dashboardItemsBox);
+        shown += renderToDusDownloadTasks();
         if ("active".equals(dashboardFilter)) {
             shown += renderDirectLinkTasks();
         }
@@ -761,6 +766,77 @@ public final class MainActivity extends Activity {
             shown += savedDownloadRecords().length();
         }
         if (shown == 0) addDashboardEmptyState(dashboardItemsBox);
+    }
+
+    private int renderToDusDownloadTasks() {
+        ArrayList<ToDusDownloadTask> tasks;
+        synchronized (toDusDownloadLock) {
+            tasks = new ArrayList<>(toDusDownloadTasks.values());
+        }
+        java.util.Collections.sort(tasks, (left, right) -> sortOldestFirst
+                ? Long.compare(left.updatedAt, right.updatedAt)
+                : Long.compare(right.updatedAt, left.updatedAt));
+        ArrayList<ToDusDownloadTask> visible = new ArrayList<>();
+        for (ToDusDownloadTask task : tasks) {
+            if (task.state.equals("done")) continue;
+            if (!dashboardSearch.isEmpty() && !(task.filename + " " + task.taskId)
+                    .toLowerCase(java.util.Locale.ROOT).contains(dashboardSearch.toLowerCase(java.util.Locale.ROOT))) continue;
+            visible.add(task);
+        }
+        if (visible.isEmpty()) return 0;
+        dashboardItemsBox.addView(text("Descargas ToDus en este teléfono", 15, true), margin(2, 8, 0, 8));
+        for (ToDusDownloadTask task : visible) {
+            dashboardItemsBox.addView(toDusDownloadTaskCard(task), margin(0, 0, 0, 9));
+        }
+        return visible.size();
+    }
+
+    private LinearLayout toDusDownloadTaskCard(ToDusDownloadTask task) {
+        LinearLayout item = card();
+        item.setPadding(dp(14), dp(12), dp(14), dp(12));
+        item.addView(text(task.filename, 14, true));
+        String stateLabel = task.state.equals("downloading") ? "Descargando desde ToDus"
+                : task.state.equals("saving") ? "Guardando en Descargas"
+                : task.state.equals("pausing") ? "Pausando…"
+                : task.state.equals("deleting") ? "Cancelando y limpiando…"
+                : task.state.equals("error") ? "Error · puedes reanudar"
+                : "Pausada · se conserva el progreso";
+        int percent = task.total > 0 ? (int) Math.min(100L, task.bytes * 100L / task.total) : 0;
+        String detailText = stateLabel;
+        if (task.total > 0) detailText += " · " + percent + "% · " + formatBytes(task.bytes) + " / " + formatBytes(task.total);
+        else if (task.bytes > 0) detailText += " · " + formatBytes(task.bytes);
+        TextView detail = bodyText(detailText);
+        detail.setTextSize(12);
+        item.addView(detail, margin(0, 4, 0, 0));
+        ProgressBar progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        progress.setMax(100);
+        progress.setProgressTintList(ColorStateList.valueOf(accentColor()));
+        progress.setIndeterminateTintList(ColorStateList.valueOf(accentColor()));
+        boolean running = task.state.equals("downloading") || task.state.equals("saving") || task.state.equals("pausing");
+        progress.setIndeterminate(running && task.total <= 0);
+        progress.setProgress(percent);
+        item.addView(progress, margin(0, 8, 0, 0));
+        if (task.state.equals("error") && !task.error.isEmpty()) item.addView(bodyText(task.error), margin(0, 5, 0, 0));
+        LinearLayout actions = new LinearLayout(this);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+        if (task.state.equals("downloading") || task.state.equals("saving")) {
+            Button pause = secondaryButton("Pausar");
+            pause.setOnClickListener(v -> pauseToDusDownload(task.key));
+            LinearLayout.LayoutParams pauseParams = new LinearLayout.LayoutParams(0, -2, 1f);
+            pauseParams.setMargins(0, 0, dp(8), 0);
+            actions.addView(pause, pauseParams);
+        } else if (task.state.equals("paused") || task.state.equals("error")) {
+            Button resume = primaryButton("Reanudar");
+            resume.setOnClickListener(v -> resumeToDusDownload(task.key));
+            LinearLayout.LayoutParams resumeParams = new LinearLayout.LayoutParams(0, -2, 1f);
+            resumeParams.setMargins(0, 0, dp(8), 0);
+            actions.addView(resume, resumeParams);
+        }
+        Button cancel = secondaryButton("Cancelar");
+        cancel.setOnClickListener(v -> confirmCancelToDusDownload(task.key, task.filename));
+        actions.addView(cancel, new LinearLayout.LayoutParams(0, -2, actions.getChildCount() == 0 ? 1f : 1f));
+        item.addView(actions, margin(0, 9, 0, 0));
+        return item;
     }
 
     private int renderDirectLinkTasks() {
@@ -2739,6 +2815,8 @@ public final class MainActivity extends Activity {
                     LinearLayout.LayoutParams progressLayout = new LinearLayout.LayoutParams(-1, dp(8));
                     progressLayout.setMargins(0, 0, 0, dp(8));
                     card.addView(progressBar, progressLayout);
+                    LinearLayout cloudActions = new LinearLayout(this);
+                    cloudActions.setOrientation(LinearLayout.HORIZONTAL);
                     Button download = primaryButton(partCount > 1
                             ? "Descargar y unir · " + partCount : "Descargar");
                     download.setTextSize(13);
@@ -2748,8 +2826,18 @@ public final class MainActivity extends Activity {
                     final JSONArray copy = parts;
                     final String copyName = name;
                     final long copySize = size;
-                    download.setOnClickListener(v -> downloadParts(copyName, copy, copySize, download, progressLabel, progressBar));
-                    card.addView(download, margin(0, 8, 0, 0));
+                    download.setOnClickListener(v -> startToDusDelivery(taskId, copyName, copy, copySize));
+                    cloudActions.addView(download, new LinearLayout.LayoutParams(0, -2, 1f));
+                    if (!taskId.isEmpty()) {
+                        Button deleteCloud = secondaryButton("Eliminar nube");
+                        deleteCloud.setTextSize(12);
+                        deleteCloud.setMinHeight(dp(46));
+                        LinearLayout.LayoutParams deleteLayout = new LinearLayout.LayoutParams(0, -2, 0.85f);
+                        deleteLayout.setMargins(dp(8), 0, 0, 0);
+                        cloudActions.addView(deleteCloud, deleteLayout);
+                        deleteCloud.setOnClickListener(v -> confirmDeleteCloudDelivery(taskId, copyName));
+                    }
+                    card.addView(cloudActions, margin(0, 8, 0, 0));
                     deliveriesBox.addView(card, margin(0, 0, 0, 8));
                     card.setAlpha(0f);
                     card.setTranslationY(dp(4));
@@ -2861,108 +2949,322 @@ public final class MainActivity extends Activity {
         return String.format(java.util.Locale.US, "%.2f MB", n / 1048576.0);
     }
 
-    private void downloadParts(String name, JSONArray parts, long expectedSize, Button downloadButton,
-                               TextView progressLabel, ProgressBar progressBar) {
+    private void startToDusDelivery(String taskId, String name, JSONArray parts, long expectedSize) {
         if (parts == null || parts.length() == 0) return;
-        final int maxConcurrent = Math.max(1, Math.min(5, prefs.getInt(PREF_DOWNLOAD_CONCURRENCY, 3)));
+        String key = downloadCacheKey(name, parts);
+        ToDusDownloadTask task;
+        synchronized (toDusDownloadLock) {
+            task = toDusDownloadTasks.get(key);
+            if (task == null) {
+                task = new ToDusDownloadTask(key, taskId == null ? "" : taskId, name, parts, Math.max(0L, expectedSize));
+                toDusDownloadTasks.put(key, task);
+                persistToDusDownloadTasksLocked();
+            }
+        }
+        if (task.state.equals("downloading") || task.state.equals("saving") || task.state.equals("pausing")) return;
+        startToDusDownload(task);
+    }
+
+    private boolean startToDusDownload(ToDusDownloadTask task) {
+        if (!hasPublicDownloadPermission()) return false;
+        final String sessionToken = todusToken;
+        if (sessionToken == null || sessionToken.isEmpty()) {
+            Toast.makeText(this, "Conecta tu cuenta ToDus antes de descargar.", Toast.LENGTH_LONG).show();
+            return false;
+        }
+        int maxConcurrent = Math.max(1, Math.min(5, prefs.getInt(PREF_DOWNLOAD_CONCURRENCY, 3)));
         synchronized (downloadConcurrencyLock) {
             if (activeDownloadJobs >= maxConcurrent) {
-                if (syncStatus != null) syncStatus.setText("Límite alcanzado: hay " + maxConcurrent + " descargas simultáneas. Espera a que termine una.");
-                return;
+                Toast.makeText(this, "Ya hay " + maxConcurrent + " descargas simultáneas. Espera o pausa una.", Toast.LENGTH_LONG).show();
+                return false;
             }
             activeDownloadJobs++;
         }
-        if (prefs.getString(PREF_DOWNLOAD_FOLDER, "").isEmpty()
-                && Build.VERSION.SDK_INT < Build.VERSION_CODES.Q
-                && checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE}, REQUEST_WRITE_STORAGE);
-            if (syncStatus != null) syncStatus.setText("Permite guardar archivos en Descargas y vuelve a pulsar Descargar.");
-            synchronized (downloadConcurrencyLock) { activeDownloadJobs--; }
-            return;
+        synchronized (toDusDownloadLock) {
+            if (task.worker != null) {
+                synchronized (downloadConcurrencyLock) { activeDownloadJobs = Math.max(0, activeDownloadJobs - 1); }
+                return true;
+            }
+            task.pauseRequested = false;
+            task.deleteRequested = false;
+            task.error = "";
+            task.state = "downloading";
+            task.updatedAt = System.currentTimeMillis();
+            task.control = new ParallelRangeDownloader.DownloadControl();
+            task.worker = new Thread(() -> runToDusDownload(task, sessionToken), "todus-file-download");
+            persistToDusDownloadTasksLocked();
+            task.worker.start();
         }
-        final String sessionToken = todusToken;
-        if (sessionToken == null || sessionToken.isEmpty()) {
-            if (syncStatus != null) syncStatus.setText("Conecta tu cuenta ToDus antes de descargar.");
-            synchronized (downloadConcurrencyLock) { activeDownloadJobs--; }
-            return;
-        }
-        if (syncStatus != null) syncStatus.setText("Descargando " + name + "…");
-        final long totalSize = Math.max(0L, expectedSize);
-        downloadButton.setEnabled(false);
-        progressLabel.setVisibility(View.VISIBLE);
-        progressLabel.setTextColor(Color.rgb(99, 230, 216));
-        progressLabel.setText(totalSize > 0 ? "Descargando… 0%" : "Descargando…");
-        progressBar.setVisibility(View.VISIBLE);
-        progressBar.setProgress(0);
-        progressBar.setIndeterminate(totalSize <= 0);
-        new Thread(() -> {
-            File tempDir = new File(getCacheDir(), "parts_" + System.currentTimeMillis());
-            DownloadTarget target = null;
+        postToDusDownloadRefresh();
+        return true;
+    }
+
+    private void runToDusDownload(ToDusDownloadTask task, String sessionToken) {
+        File workDir = new File(new File(getFilesDir(), "todus-downloads"), task.key);
+        DownloadTarget target = null;
+        boolean saved = false;
+        try {
+            if (!workDir.exists() && !workDir.mkdirs()) throw new IOException("No se pudo preparar el almacenamiento temporal.");
+            ParallelRangeDownloader.DownloadControl control = task.control;
             long completedBytes = 0L;
-            try {
-                if (!tempDir.mkdirs()) throw new IOException("No se pudo preparar el almacenamiento temporal.");
-                target = openPublicDownload(name);
-                try (OutputStream out = target.stream) {
-                    byte[] buffer = new byte[65536];
-                    for (int i = 0; i < parts.length(); i++) {
-                        File part = new File(tempDir, "part" + i);
-                        final int[] lastShownPercent = {-1};
-                        ToDusFileTransfer.download(sessionToken, parts.getString(i), part, completedBytes, (received, reportedTotal) -> {
-                            if (totalSize > 0) {
-                                int percent = (int) Math.min(99L, Math.max(0L, received * 100L / totalSize));
-                                if (percent != lastShownPercent[0]) {
-                                    lastShownPercent[0] = percent;
-                                    runOnUiThread(() -> {
-                                        progressBar.setIndeterminate(false);
-                                        int current = progressBar.getProgress();
-                                        ObjectAnimator.ofInt(progressBar, "progress", current, percent).setDuration(140).start();
-                                        progressLabel.setText("Descargando… " + percent + "%");
-                                    });
-                                }
-                            } else {
-                                runOnUiThread(() -> progressLabel.setText("Descargando… " + formatBytes(received)));
-                            }
-                        });
-                        completedBytes += part.length();
-                        runOnUiThread(() -> progressLabel.setText(parts.length() > 1 ? "Uniendo partes…" : "Guardando en Descargas…"));
-                        try (FileInputStream in = new FileInputStream(part)) {
-                            int count;
-                            while ((count = in.read(buffer)) != -1) out.write(buffer, 0, count);
+            int firstPart;
+            synchronized (toDusDownloadLock) { firstPart = Math.max(0, Math.min(task.currentPart, task.parts.length())); }
+            for (int i = 0; i < firstPart; i++) {
+                File completedPart = new File(workDir, "part" + i);
+                if (!completedPart.isFile()) throw new IOException("Falta un fragmento temporal; cancela esta tarea e inicia una nueva descarga.");
+                completedBytes += completedPart.length();
+            }
+            for (int i = firstPart; i < task.parts.length(); i++) {
+                control.check();
+                final int partIndex = i;
+                File part = new File(workDir, "part" + i);
+                long partBase = completedBytes;
+                ToDusFileTransfer.download(sessionToken, task.parts.getString(i), part, partBase,
+                        (received, reportedTotal) -> updateToDusDownloadProgress(task, received,
+                                task.expectedSize > 0 ? task.expectedSize : reportedTotal), control);
+                control.check();
+                completedBytes += part.length();
+                task.currentPart = i + 1;
+                task.bytes = completedBytes;
+                task.updatedAt = System.currentTimeMillis();
+                persistToDusDownloadTasks();
+                postToDusDownloadRefresh();
+            }
+            if (task.expectedSize > 0L && completedBytes != task.expectedSize) {
+                throw new IOException("El archivo unido no coincide con el tamaño original ("
+                        + formatBytes(completedBytes) + " de " + formatBytes(task.expectedSize) + ").");
+            }
+            control.check();
+            task.state = "saving";
+            task.total = task.expectedSize > 0 ? task.expectedSize : completedBytes;
+            task.bytes = completedBytes;
+            persistToDusDownloadTasks();
+            postToDusDownloadRefresh();
+            target = openPublicDownload(task.filename);
+            task.target = target;
+            try (OutputStream output = target.stream) {
+                byte[] buffer = new byte[64 * 1024];
+                for (int i = 0; i < task.parts.length(); i++) {
+                    control.check();
+                    try (InputStream input = new FileInputStream(new File(workDir, "part" + i))) {
+                        int count;
+                        while ((count = input.read(buffer)) != -1) {
+                            control.check();
+                            output.write(buffer, 0, count);
                         }
-                        part.delete();
                     }
                 }
-                if (expectedSize > 0L && completedBytes != expectedSize) {
-                    throw new IOException("El archivo unido no coincide con el tamaño original ("
-                            + formatBytes(completedBytes) + " de " + formatBytes(expectedSize) + ").");
-                }
+            }
+            synchronized (toDusDownloadLock) {
+                control.check();
+                if (task.deleteRequested) throw new IOException("La descarga fue cancelada.");
                 finishPublicDownload(target);
                 recordDownloadedFile(target, completedBytes);
-                deleteTree(tempDir);
-                final String savedName = target.name;
+                saved = true;
+                toDusDownloadTasks.remove(task.key);
+            }
+            final String savedName = target.name;
+            runOnUiThread(() -> Toast.makeText(this, "Descarga completada en Descargas: " + savedName, Toast.LENGTH_LONG).show());
+        } catch (Exception e) {
+            if (target != null) deletePublicDownload(target);
+            if (!task.pauseRequested && !task.deleteRequested) {
+                task.state = "error";
+                task.error = e.getMessage() == null ? "No se pudo completar la descarga." : e.getMessage();
+                task.updatedAt = System.currentTimeMillis();
+            }
+        } finally {
+            if (saved || task.deleteRequested) {
+                deleteTree(workDir);
+                synchronized (toDusDownloadLock) { toDusDownloadTasks.remove(task.key); }
+            } else if (task.pauseRequested) {
+                task.state = "paused";
+                task.bytes = measureToDusDownloadBytes(task, workDir);
+                task.updatedAt = System.currentTimeMillis();
+            }
+            task.target = null;
+            task.worker = null;
+            task.control = null;
+            synchronized (downloadConcurrencyLock) { activeDownloadJobs = Math.max(0, activeDownloadJobs - 1); }
+            persistToDusDownloadTasks();
+            postToDusDownloadRefresh();
+        }
+    }
+
+    private long measureToDusDownloadBytes(ToDusDownloadTask task, File workDir) {
+        long bytes = 0L;
+        int complete = Math.max(0, Math.min(task.currentPart, task.parts.length()));
+        for (int i = 0; i < complete; i++) {
+            File part = new File(workDir, "part" + i);
+            if (part.isFile()) bytes += part.length();
+        }
+        if (complete < task.parts.length()) {
+            File current = new File(workDir, "part" + complete);
+            if (current.isFile()) bytes += current.length();
+        }
+        return bytes;
+    }
+
+    private void updateToDusDownloadProgress(ToDusDownloadTask task, long received, long total) {
+        long now = System.currentTimeMillis();
+        boolean update;
+        synchronized (toDusDownloadLock) {
+            task.bytes = Math.max(0L, received);
+            if (total > 0L) task.total = Math.max(task.total, total);
+            update = now - task.lastPersistAt >= 800L;
+            if (update) {
+                task.lastPersistAt = now;
+                task.updatedAt = now;
+            }
+        }
+        if (update) {
+            persistToDusDownloadTasks();
+            postToDusDownloadRefresh();
+        }
+    }
+
+    private void pauseToDusDownload(String key) {
+        ToDusDownloadTask task;
+        synchronized (toDusDownloadLock) {
+            task = toDusDownloadTasks.get(key);
+            if (task == null || task.worker == null || task.control == null
+                    || (!task.state.equals("downloading") && !task.state.equals("saving"))) return;
+            task.pauseRequested = true;
+            task.state = "pausing";
+            task.updatedAt = System.currentTimeMillis();
+            persistToDusDownloadTasksLocked();
+        }
+        task.control.cancel();
+        if (task.worker != null) task.worker.interrupt();
+        postToDusDownloadRefresh();
+    }
+
+    private void resumeToDusDownload(String key) {
+        ToDusDownloadTask task;
+        synchronized (toDusDownloadLock) { task = toDusDownloadTasks.get(key); }
+        if (task != null && (task.state.equals("paused") || task.state.equals("error"))) startToDusDownload(task);
+    }
+
+    private void confirmCancelToDusDownload(String key, String filename) {
+        new AlertDialog.Builder(this).setTitle("Cancelar descarga")
+                .setMessage("Se cancelará esta descarga y se borrarán solo sus temporales. La entrega original de ToDus no se borrará.")
+                .setNegativeButton("Volver", null)
+                .setPositiveButton("Cancelar descarga", (dialog, which) -> cancelToDusDownload(key))
+                .show();
+    }
+
+    private void cancelToDusDownload(String key) {
+        ToDusDownloadTask task;
+        synchronized (toDusDownloadLock) {
+            task = toDusDownloadTasks.get(key);
+            if (task == null) return;
+            if (task.worker != null && task.control != null) {
+                task.deleteRequested = true;
+                task.pauseRequested = false;
+                task.state = "deleting";
+                task.updatedAt = System.currentTimeMillis();
+                persistToDusDownloadTasksLocked();
+            } else {
+                toDusDownloadTasks.remove(key);
+                persistToDusDownloadTasksLocked();
+            }
+        }
+        if (task.worker != null && task.control != null) {
+            task.control.cancel();
+            task.worker.interrupt();
+        } else {
+            deleteTree(new File(new File(getFilesDir(), "todus-downloads"), task.key));
+            postToDusDownloadRefresh();
+        }
+    }
+
+    private void confirmDeleteCloudDelivery(String taskId, String filename) {
+        new AlertDialog.Builder(this).setTitle("Eliminar entrega de ToDus")
+                .setMessage("Se eliminará la entrega de la nube y se cancelará cualquier descarga en curso. Los archivos que ya guardaste en el teléfono no se borrarán.")
+                .setNegativeButton("Cancelar", null)
+                .setPositiveButton("Eliminar de la nube", (dialog, which) -> deleteCloudDelivery(taskId, filename))
+                .show();
+    }
+
+    private void deleteCloudDelivery(String taskId, String filename) {
+        if (taskId == null || taskId.trim().isEmpty()) {
+            Toast.makeText(this, "Esta entrega no tiene task_id; no se puede solicitar el borrado remoto.", Toast.LENGTH_LONG).show();
+            return;
+        }
+        ArrayList<String> matching = new ArrayList<>();
+        synchronized (toDusDownloadLock) {
+            for (ToDusDownloadTask task : toDusDownloadTasks.values()) {
+                if (taskId.equals(task.taskId)) matching.add(task.key);
+            }
+        }
+        for (String key : matching) cancelToDusDownload(key);
+        new Thread(() -> {
+            try {
+                JSONObject body = new JSONObject().put("task_id", taskId);
+                JSONObject result = request("POST", "/api/app/deliveries/delete", body.toString(), token == null ? "" : token);
+                if (!result.optBoolean("ok", false)) {
+                    throw new IOException(result.optString("message", "El servidor no confirmó el borrado remoto."));
+                }
+                rememberHiddenDelivery(taskId);
                 runOnUiThread(() -> {
-                    progressBar.setIndeterminate(false);
-                    progressBar.setProgress(100);
-                    progressLabel.setTextColor(Color.rgb(99, 230, 216));
-                    progressLabel.setText("Completada · 100%");
-                    downloadButton.setEnabled(true);
-                    if (syncStatus != null) syncStatus.setText("Descarga guardada en Descargas: " + savedName);
-                    if (viewingDownloadsTab) showDownloadsStep(false);
+                    Toast.makeText(this, "Entrega eliminada de ToDus.", Toast.LENGTH_LONG).show();
+                    refreshDeliveries();
                 });
             } catch (Exception e) {
-                deleteTree(tempDir);
-                if (target != null) deletePublicDownload(target);
-                runOnUiThread(() -> {
-                    progressBar.setIndeterminate(false);
-                    progressLabel.setTextColor(Color.rgb(255, 156, 156));
-                    progressLabel.setText("Error de descarga. Pulsa «Descargar» para reintentar.");
-                    downloadButton.setEnabled(true);
-                    if (syncStatus != null) syncStatus.setText("Error de descarga: " + e.getMessage());
-                });
-            } finally {
-                synchronized (downloadConcurrencyLock) { activeDownloadJobs = Math.max(0, activeDownloadJobs - 1); }
+                String message = e.getMessage() == null ? "No se pudo eliminar la entrega remota." : e.getMessage();
+                runOnUiThread(() -> Toast.makeText(this, "No se eliminó la entrega: " + message, Toast.LENGTH_LONG).show());
             }
-        }).start();
+        }, "todus-cloud-delete").start();
+    }
+
+    private void postToDusDownloadRefresh() {
+        runOnUiThread(() -> { if (viewingDashboard) renderDashboardItems(); });
+    }
+
+    private void persistToDusDownloadTasks() {
+        synchronized (toDusDownloadLock) { persistToDusDownloadTasksLocked(); }
+    }
+
+    private void persistToDusDownloadTasksLocked() {
+        JSONArray rows = new JSONArray();
+        try {
+            for (ToDusDownloadTask task : toDusDownloadTasks.values()) {
+                if (task.state.equals("done") || task.state.equals("deleting")) continue;
+                JSONObject row = new JSONObject().put("key", task.key).put("task_id", task.taskId)
+                        .put("filename", task.filename).put("parts", task.parts).put("expected_size", task.expectedSize)
+                        .put("bytes", task.bytes).put("total", task.total).put("current_part", task.currentPart)
+                        .put("state", task.state).put("error", task.error).put("updated_at", task.updatedAt);
+                rows.put(row);
+            }
+            prefs.edit().putString(PREF_TODUS_DOWNLOAD_TASKS, rows.toString()).apply();
+        } catch (Exception ignored) { }
+    }
+
+    private void loadToDusDownloadTasks() {
+        try {
+            JSONArray rows = new JSONArray(prefs.getString(PREF_TODUS_DOWNLOAD_TASKS, "[]"));
+            synchronized (toDusDownloadLock) {
+                for (int i = 0; i < rows.length(); i++) {
+                    JSONObject row = rows.optJSONObject(i);
+                    if (row == null) continue;
+                    String key = row.optString("key", "");
+                    JSONArray parts = row.optJSONArray("parts");
+                    if (key.isEmpty() || parts == null || parts.length() == 0) continue;
+                    ToDusDownloadTask task = new ToDusDownloadTask(key, row.optString("task_id", ""),
+                            row.optString("filename", "archivo.bin"), parts, row.optLong("expected_size", 0L));
+                    task.bytes = row.optLong("bytes", 0L);
+                    task.total = row.optLong("total", task.expectedSize);
+                    task.currentPart = Math.max(0, Math.min(row.optInt("current_part", 0), parts.length()));
+                    task.state = row.optString("state", "paused");
+                    if (task.state.equals("downloading") || task.state.equals("saving") || task.state.equals("pausing")) task.state = "paused";
+                    task.error = row.optString("error", "");
+                    task.updatedAt = row.optLong("updated_at", System.currentTimeMillis());
+                    File workDir = new File(new File(getFilesDir(), "todus-downloads"), key);
+                    task.bytes = measureToDusDownloadBytes(task, workDir);
+                    if (!task.state.equals("done")) toDusDownloadTasks.put(key, task);
+                }
+            }
+            persistToDusDownloadTasks();
+        } catch (Exception ignored) { }
     }
 
     private String downloadCacheKey(String name, JSONArray parts) {
@@ -3137,6 +3439,35 @@ public final class MainActivity extends Activity {
             this.stream = stream;
             this.name = name;
             this.mediaStore = mediaStore;
+        }
+    }
+
+    private static final class ToDusDownloadTask {
+        final String key;
+        final String taskId;
+        final String filename;
+        final JSONArray parts;
+        final long expectedSize;
+        volatile String state = "paused";
+        volatile long bytes;
+        volatile long total;
+        volatile int currentPart;
+        volatile long updatedAt = System.currentTimeMillis();
+        volatile long lastPersistAt;
+        volatile String error = "";
+        volatile boolean pauseRequested;
+        volatile boolean deleteRequested;
+        volatile Thread worker;
+        volatile ParallelRangeDownloader.DownloadControl control;
+        volatile DownloadTarget target;
+
+        ToDusDownloadTask(String key, String taskId, String filename, JSONArray parts, long expectedSize) {
+            this.key = key;
+            this.taskId = taskId == null ? "" : taskId;
+            this.filename = filename;
+            this.parts = parts;
+            this.expectedSize = expectedSize;
+            this.total = expectedSize;
         }
     }
 

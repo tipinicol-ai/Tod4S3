@@ -21,7 +21,7 @@ import java.util.regex.Pattern;
 import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
 
-/** Native ToDus download flow: XMPP URL resolution followed by authenticated HTTP GET. */
+/** Native ToDus download flow: XMPP URL resolution followed by authenticated, resumable HTTP GET. */
 final class ToDusFileTransfer {
     private static final String XMPP_HOST = "im.todus.cu";
     private static final int XMPP_PORT = 1756;
@@ -29,6 +29,7 @@ final class ToDusFileTransfer {
     private static final int SOCKET_TIMEOUT_MS = 15_000;
     private static final SecureRandom RANDOM = new SecureRandom();
     private static final String ALPHANUMERIC = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    private static final Pattern CONTENT_RANGE = Pattern.compile("(?i)^bytes\\s+(\\d+)-(\\d+)/(\\d+|\\*)$");
 
     interface ProgressCallback {
         void onProgress(long bytesDownloaded, long totalBytes);
@@ -37,19 +38,26 @@ final class ToDusFileTransfer {
     private ToDusFileTransfer() { }
 
     static void download(String token, String sharedUrl, File destination) throws Exception {
-        download(token, sharedUrl, destination, 0L, null);
+        download(token, sharedUrl, destination, 0L, null, null);
     }
 
     static void download(String token, String sharedUrl, File destination, ProgressCallback progressCallback) throws Exception {
-        download(token, sharedUrl, destination, 0L, progressCallback);
+        download(token, sharedUrl, destination, 0L, progressCallback, null);
     }
 
     static void download(String token, String sharedUrl, File destination, long previousBytes,
                          ProgressCallback progressCallback) throws Exception {
+        download(token, sharedUrl, destination, previousBytes, progressCallback, null);
+    }
+
+    static void download(String token, String sharedUrl, File destination, long previousBytes,
+                         ProgressCallback progressCallback,
+                         ParallelRangeDownloader.DownloadControl control) throws Exception {
         String accessToken = token == null ? "" : token.trim();
         if (accessToken.isEmpty()) throw new IOException("Conecta tu cuenta ToDus antes de descargar.");
+        if (control != null) control.check();
         String realUrl = resolveRealUrl(accessToken, sharedUrl);
-        downloadHttp(accessToken, realUrl, destination, previousBytes, progressCallback);
+        downloadHttp(accessToken, realUrl, destination, previousBytes, progressCallback, control);
     }
 
     private static String resolveRealUrl(String token, String sharedUrl) throws Exception {
@@ -99,51 +107,75 @@ final class ToDusFileTransfer {
     }
 
     private static void downloadHttp(String token, String realUrl, File destination, long previousBytes,
-                                     ProgressCallback progressCallback) throws Exception {
+                                     ProgressCallback progressCallback,
+                                     ParallelRangeDownloader.DownloadControl control) throws Exception {
+        File parent = destination.getParentFile();
+        if (parent != null && !parent.exists() && !parent.mkdirs()) {
+            throw new IOException("No se pudo preparar el almacenamiento temporal.");
+        }
+        long localBytes = destination.isFile() ? destination.length() : 0L;
         for (int attempt = 0; attempt < 2; attempt++) {
+            if (control != null) control.check();
             boolean sendBearer = attempt == 0;
             HttpURLConnection connection = (HttpURLConnection) new URL(realUrl).openConnection();
+            if (control != null) control.register(connection);
             connection.setConnectTimeout(20_000);
             connection.setReadTimeout(60_000);
             connection.setInstanceFollowRedirects(true);
             connection.setUseCaches(false);
             connection.setRequestProperty("User-Agent", "ToDus " + VERSION_NAME + " HTTP-Download");
-            if (sendBearer) connection.setRequestProperty("Authorization", "Bearer " + token);
             connection.setRequestProperty("Accept", "*/*");
-            connection.setRequestProperty("Accept-Encoding", "gzip");
+            connection.setRequestProperty("Accept-Encoding", "identity");
+            if (sendBearer) connection.setRequestProperty("Authorization", "Bearer " + token);
+            if (localBytes > 0L) connection.setRequestProperty("Range", "bytes=" + localBytes + "-");
             try {
                 int status = connection.getResponseCode();
+                if (status == 416 && localBytes > 0L) {
+                    Matcher unsatisfied = Pattern.compile("(?i)^bytes\\s+\\*/(\\d+)$")
+                            .matcher(nullToEmpty(connection.getHeaderField("Content-Range")).trim());
+                    if (unsatisfied.matches() && Long.parseLong(unsatisfied.group(1)) == localBytes) return;
+                }
+                if (sendBearer && status == HttpURLConnection.HTTP_BAD_REQUEST
+                        && isMultipleAuthenticationError(readErrorBody(connection))) continue;
                 if (status < 200 || status >= 300) {
                     String detail = readErrorBody(connection);
-                    if (sendBearer && status == 400 && isMultipleAuthenticationError(detail)) continue;
-                    if (status == 403) {
+                    if (status == HttpURLConnection.HTTP_FORBIDDEN) {
                         throw new IOException("ToDus rechazó el acceso al archivo (HTTP 403)" + detail);
                     }
                     throw new IOException("El servidor ToDus respondió HTTP " + status + " al descargar" + detail);
                 }
-                File parent = destination.getParentFile();
-                if (parent != null && !parent.exists() && !parent.mkdirs()) {
-                    throw new IOException("No se pudo preparar el almacenamiento temporal.");
+                long totalPartBytes;
+                boolean append = localBytes > 0L;
+                if (status == HttpURLConnection.HTTP_PARTIAL) {
+                    Matcher range = CONTENT_RANGE.matcher(nullToEmpty(connection.getHeaderField("Content-Range")).trim());
+                    if (!range.matches()) throw new IOException("ToDus devolvió un Content-Range inválido.");
+                    long start = Long.parseLong(range.group(1));
+                    if (start != localBytes) throw new IOException("ToDus no reanudó desde el byte temporal esperado.");
+                    totalPartBytes = "*".equals(range.group(3)) ? 0L : Long.parseLong(range.group(3));
+                    append = true;
+                } else {
+                    // Algunos servidores ignoran Range; conservar las partes completas y reiniciar
+                    // solamente este fragmento evita dejar la tarea atascada al pulsar Reanudar.
+                    localBytes = 0L;
+                    totalPartBytes = contentLength(connection);
+                    append = false;
                 }
-                InputStream response = connection.getInputStream();
-                boolean gzip = "gzip".equalsIgnoreCase(connection.getContentEncoding());
-                long responseLength = contentLength(connection);
-                long totalBytes = !gzip && responseLength >= 0 ? previousBytes + responseLength : 0L;
-                if (gzip) {
-                    response = new java.util.zip.GZIPInputStream(response);
-                }
-                try (InputStream input = response; FileOutputStream output = new FileOutputStream(destination)) {
+                try (InputStream input = connection.getInputStream();
+                     FileOutputStream output = new FileOutputStream(destination, append)) {
                     byte[] buffer = new byte[64 * 1024];
                     int count;
-                    long transferred = 0L;
-                    if (progressCallback != null) progressCallback.onProgress(previousBytes, totalBytes);
-                    while ((count = input.read(buffer)) != -1) {
-                        output.write(buffer, 0, count);
-                        transferred += count;
-                        if (progressCallback != null) {
-                            progressCallback.onProgress(previousBytes + transferred, totalBytes);
-                        }
+                    if (progressCallback != null) {
+                        long reportedTotal = totalPartBytes > 0 ? previousBytes + totalPartBytes : 0L;
+                        progressCallback.onProgress(previousBytes + localBytes, reportedTotal);
                     }
+                    while ((count = input.read(buffer)) != -1) {
+                        if (control != null) control.check();
+                        output.write(buffer, 0, count);
+                        localBytes += count;
+                        long reportedTotal = totalPartBytes > 0 ? previousBytes + totalPartBytes : 0L;
+                        if (progressCallback != null) progressCallback.onProgress(previousBytes + localBytes, reportedTotal);
+                    }
+                    if (control != null) control.check();
                 }
                 return;
             } finally {
@@ -154,11 +186,8 @@ final class ToDusFileTransfer {
     }
 
     private static long contentLength(HttpURLConnection connection) {
-        try {
-            return Long.parseLong(connection.getHeaderField("Content-Length"));
-        } catch (Exception ignored) {
-            return -1L;
-        }
+        try { return Long.parseLong(connection.getHeaderField("Content-Length")); }
+        catch (Exception ignored) { return -1L; }
     }
 
     private static boolean isMultipleAuthenticationError(String detail) {
@@ -202,18 +231,11 @@ final class ToDusFileTransfer {
         while (System.currentTimeMillis() < deadline) {
             int remaining = (int) Math.max(1, deadline - System.currentTimeMillis());
             socket.setSoTimeout(remaining);
-            int count;
-            try {
-                count = input.read(buffer);
-            } catch (SocketTimeoutException e) {
-                throw e;
-            }
+            int count = input.read(buffer);
             if (count < 0) throw new IOException("ToDus cerró la conexión durante la descarga.");
             received.write(buffer, 0, count);
             String text = new String(received.toByteArray(), StandardCharsets.UTF_8);
-            for (String marker : markers) {
-                if (text.contains(marker)) return text;
-            }
+            for (String marker : markers) if (text.contains(marker)) return text;
         }
         throw new SocketTimeoutException("ToDus no respondió a tiempo.");
     }
@@ -225,20 +247,13 @@ final class ToDusFileTransfer {
         InputStream input = socket.getInputStream();
         while (System.currentTimeMillis() < deadline) {
             socket.setSoTimeout((int) Math.max(1, deadline - System.currentTimeMillis()));
-            int count;
-            try {
-                count = input.read(buffer);
-            } catch (SocketTimeoutException e) {
-                throw e;
-            }
+            int count = input.read(buffer);
             if (count < 0) throw new IOException("ToDus cerró la conexión antes de responder.");
             received.write(buffer, 0, count);
             String text = new String(received.toByteArray(), StandardCharsets.UTF_8);
             if (text.contains("<not-authorized/>")) return text;
             if (text.contains(transactionId)) {
-                for (String marker : completionMarkers) {
-                    if (text.contains(marker)) return text;
-                }
+                for (String marker : completionMarkers) if (text.contains(marker)) return text;
             }
         }
         throw new SocketTimeoutException("ToDus no devolvió la respuesta de descarga.");
@@ -283,4 +298,6 @@ final class ToDusFileTransfer {
         for (int i = 0; i < length; i++) value.append(ALPHANUMERIC.charAt(RANDOM.nextInt(ALPHANUMERIC.length())));
         return value.toString();
     }
+
+    private static String nullToEmpty(String value) { return value == null ? "" : value; }
 }
