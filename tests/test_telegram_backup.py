@@ -102,6 +102,49 @@ def make_layout(root: Path) -> BackupLayout:
     return BackupLayout.from_paths(data_dir, auth_dir, states)
 
 
+def test_encrypted_backup_round_trip_preserves_app_bans_and_device_ids():
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        source = make_layout(root / "source")
+        target = make_layout(root / "target")
+        device_id = "e" * 64
+        banned_state = {
+            "pairings": {},
+            "tokens": {"token-digest": {
+                "user_id": 123456,
+                "device_id": device_id,
+                "created_at": 1800000000,
+            }},
+            "deliveries": {},
+            "premium_activations": {},
+            "app_bans": {
+                "users": {"123456": {"banned_at": 1800000010, "banned_by": 900}},
+                "devices": {device_id: {
+                    "user_ids": ["123456"],
+                    "banned_at": 1800000010,
+                    "banned_by": 900,
+                }},
+            },
+        }
+        source_state = root / "source" / "sync_app.json"
+        target_state = root / "target" / "sync_app.json"
+        source_state.write_text(json.dumps(banned_state), encoding="utf-8")
+        source.state_files["sync_app.json"] = source_state
+        target.state_files["sync_app.json"] = target_state
+
+        encrypted, _, _, _ = build_encrypted_backup(source, TOKEN)
+        assert b"app_bans" not in encrypted
+        assert device_id.encode("ascii") not in encrypted
+        snapshot = decrypt_snapshot(encrypted, TOKEN)
+        restored, _ = restore_snapshot(snapshot, target)
+
+        assert restored >= 1
+        restored_json = json.loads(target_state.read_text(encoding="utf-8"))
+        assert restored_json["app_bans"]["users"]["123456"]["banned_by"] == 900
+        assert device_id in restored_json["app_bans"]["devices"]
+        assert restored_json["tokens"]["token-digest"]["device_id"] == device_id
+
+
 class TelegramBackupFlowTests(unittest.IsolatedAsyncioTestCase):
     async def test_runtime_backup_layout_includes_premium_and_app_token_state(self):
         layout = telegram_bot.telegram_backup_layout()

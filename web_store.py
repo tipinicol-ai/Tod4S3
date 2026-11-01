@@ -39,9 +39,10 @@ def configure_app_task_bridge(bridge: Callable[[str, int, dict], tuple[dict, int
 
 
 def _dispatch_app_task(token: str, action: str, payload: dict) -> tuple[dict, int]:
-    user_id = sync_api.user_id_for_token(token)
-    if user_id is None:
-        return {"ok": False, "error": "unauthorized"}, 401
+    identity, error, status = _authorize_app_token(token)
+    if error:
+        return error, status
+    user_id = int(identity["user_id"])
     if action == "enqueue":
         url = payload.get("url")
         if (not isinstance(url, str) or not url.strip() or len(url.strip()) > 2048
@@ -78,6 +79,21 @@ def _dispatch_app_task(token: str, action: str, payload: dict) -> tuple[dict, in
     return result
 
 
+def _authorize_app_token(token: str) -> tuple[dict | None, dict | None, int]:
+    """Validate a mobile session and apply both Telegram-ID and device bans."""
+    identity = sync_api.app_identity_for_token(token)
+    if identity is None:
+        # Compatibility with narrow test/provider adapters exposing only user_id.
+        user_id = sync_api.user_id_for_token(token)
+        if user_id is None:
+            return None, {"ok": False, "error": "unauthorized"}, 401
+        identity = {"user_id": int(user_id), "device_id": ""}
+    ban = sync_api.app_access_ban(int(identity["user_id"]), str(identity.get("device_id", "")))
+    if ban:
+        return identity, {"ok": False, "error": "app_banned"}, 403
+    return identity, None, 200
+
+
 def _validated_delivery_url(url: str, user_id: int) -> bool:
     """Check that a saved part belongs to this user's configured ToDus namespace."""
     if not isinstance(url, str) or not url:
@@ -110,9 +126,10 @@ def _delivery_todus_deletable(row: dict) -> bool:
 
 def delete_delivery_for_token(token: str, task_id: str) -> tuple[dict, int]:
     """Delete an owned delivery; network calls occur outside sync_api's lock."""
-    user_id = sync_api.user_id_for_token(token)
-    if user_id is None:
-        return {"ok": False, "error": "unauthorized"}, 401
+    identity, error, status = _authorize_app_token(token)
+    if error:
+        return error, status
+    user_id = int(identity["user_id"])
     if not isinstance(task_id, str) or not task_id.strip() or len(task_id) > 200:
         return {"ok": False, "error": "invalid_task_id"}, 400
     task_id = task_id.strip()
@@ -173,10 +190,11 @@ class StoreHandler(SimpleHTTPRequestHandler):
         if path == "/api/app/profile/photo":
             authorization = self.headers.get("Authorization", "")
             token = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
-            user_id = sync_api.user_id_for_token(token)
-            if user_id is None:
-                self._json_response({"ok": False, "error": "unauthorized"}, 401)
+            identity, error, status = _authorize_app_token(token)
+            if error:
+                self._json_response(error, status)
                 return
+            user_id = int(identity["user_id"])
             checker = _PROFILE_PHOTO_CHECKER
             if checker is None:
                 self._json_response({"ok": False, "error": "profile_photo_unavailable"}, 503)
@@ -203,10 +221,11 @@ class StoreHandler(SimpleHTTPRequestHandler):
         if path == "/api/app/profile":
             authorization = self.headers.get("Authorization", "")
             token = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
-            user_id = sync_api.user_id_for_token(token)
-            if user_id is None:
-                self._json_response({"ok": False, "error": "unauthorized"}, 401)
+            identity, error, status = _authorize_app_token(token)
+            if error:
+                self._json_response(error, status)
                 return
+            user_id = int(identity["user_id"])
             checker = _PROFILE_CHECKER
             if checker is None:
                 self._json_response({"ok": False, "error": "profile_unavailable"}, 503)
@@ -220,10 +239,6 @@ class StoreHandler(SimpleHTTPRequestHandler):
                     raise ValueError("invalid_profile")
             except Exception:
                 self._json_response({"ok": False, "error": "profile_unavailable"}, 503)
-                return
-            identity = sync_api.app_identity_for_token(token)
-            if identity is None:
-                self._json_response({"ok": False, "error": "unauthorized"}, 401)
                 return
             premium_verified = profile.get("plan") == "owner" or (
                 profile.get("premium") is True
@@ -266,9 +281,13 @@ class StoreHandler(SimpleHTTPRequestHandler):
         if path == "/api/app/deliveries":
             token = self.headers.get("Authorization", "")
             token = token[7:].strip() if token.lower().startswith("bearer ") else ""
+            identity, error, status = _authorize_app_token(token)
+            if error:
+                self._json_response(error, status)
+                return
             deliveries = deliveries_for_token(token)
-            user_id = sync_api.user_id_for_token(token)
-            if deliveries is None or user_id is None:
+            user_id = int(identity["user_id"])
+            if deliveries is None:
                 self._json_response({"ok": False, "error": "unauthorized"}, 401)
             else:
                 for row in deliveries:
@@ -357,14 +376,27 @@ class StoreHandler(SimpleHTTPRequestHandler):
             self._json_response({"ok": False, "error": "invalid_body"}, 400)
             return
         if parsed.path == "/api/app/pair":
-            token = consume_pairing_code(body.get("code", ""), body.get("device_id", ""))
+            code = body.get("code", "")
+            device_id = body.get("device_id", "")
+            if sync_api.pairing_code_ban(code, device_id):
+                self._json_response({"ok": False, "error": "app_banned"}, 403)
+                return
+            token = consume_pairing_code(code, device_id)
             if not token:
-                self._json_response({"ok": False, "error": "invalid_or_expired_code"}, 401)
+                if sync_api.pairing_code_ban(code, device_id):
+                    self._json_response({"ok": False, "error": "app_banned"}, 403)
+                else:
+                    self._json_response({"ok": False, "error": "invalid_or_expired_code"}, 401)
             else:
                 self._json_response({"ok": True, "token": token})
             return
         token = self.headers.get("Authorization", "")
         token = token[7:].strip() if token.lower().startswith("bearer ") else ""
+        if parsed.path != "/api/app/revoke":
+            _, error, status = _authorize_app_token(token)
+            if error:
+                self._json_response(error, status)
+                return
         if parsed.path == "/api/app/premium/claim":
             identity = sync_api.app_identity_for_token(token)
             checker = _PROFILE_CHECKER

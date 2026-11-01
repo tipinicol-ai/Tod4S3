@@ -152,6 +152,8 @@ public final class MainActivity extends Activity {
     private boolean viewingDashboard;
     private boolean showingPlansPage;
     private boolean profileRefreshInFlight;
+    private volatile boolean appBanned;
+    private boolean bannedScreenVisible;
     private boolean premiumActive;
     private boolean premiumVerified;
     private int freeQuotaPercent;
@@ -2317,8 +2319,81 @@ public final class MainActivity extends Activity {
                 .show();
     }
 
+    private void showBannedScreen() {
+        if (bannedScreenVisible) return;
+        appBanned = true;
+        bannedScreenVisible = true;
+        LinearLayout page = new LinearLayout(this);
+        page.setOrientation(LinearLayout.VERTICAL);
+        page.setGravity(Gravity.CENTER_HORIZONTAL);
+        page.setPadding(dp(26), dp(52), dp(26), dp(36));
+        page.setBackgroundColor(backgroundColor());
+
+        TextView brand = text("Tod4S3 Sync", 24, true);
+        brand.setGravity(Gravity.CENTER);
+        page.addView(brand, margin(0, 0, 0, 34));
+
+        TextView lock = text("🔒", 48, true);
+        lock.setGravity(Gravity.CENTER);
+        lock.setBackground(roundRect(Color.rgb(27, 128, 91), 64, Color.rgb(99, 230, 216)));
+        LinearLayout.LayoutParams lockParams = new LinearLayout.LayoutParams(dp(112), dp(112));
+        lockParams.gravity = Gravity.CENTER_HORIZONTAL;
+        lockParams.bottomMargin = dp(26);
+        page.addView(lock, lockParams);
+
+        TextView title = text("Tu acceso está bloqueado", 23, true);
+        title.setGravity(Gravity.CENTER);
+        page.addView(title, margin(0, 0, 0, 12));
+        TextView detail = bodyText(
+                "El administrador ha bloqueado el acceso a esta aplicación. "
+                + "El bloqueo queda asociado a tu cuenta de Telegram y a este dispositivo.\n\n"
+                + "Si crees que se trata de un error, escribe a soporte desde el botón de abajo. "
+                + "Solo el administrador puede retirar el bloqueo.");
+        detail.setGravity(Gravity.CENTER);
+        page.addView(detail, margin(0, 0, 0, 24));
+
+        LinearLayout help = card();
+        help.addView(text("¿Necesitas ayuda?", 16, true));
+        help.addView(bodyText("El chat privado de soporte se abrirá con los datos de este móvil preparados para enviar."),
+                margin(0, 6, 0, 0));
+        page.addView(help, margin(0, 0, 0, 18));
+
+        Button support = primaryButton("✉  Escribir a soporte");
+        support.setOnClickListener(v -> openBannedSupportChat());
+        page.addView(support, margin(0, 4, 0, 10));
+
+        Button signOut = secondaryButton("Cerrar sesión");
+        signOut.setOnClickListener(v -> confirmLogout());
+        page.addView(signOut, margin(0, 2, 0, 0));
+
+        TextView footer = bodyText("Tod4S3 Sync · Revisión de acceso");
+        footer.setGravity(Gravity.CENTER);
+        page.addView(footer, margin(0, 24, 0, 0));
+        showPage(page, true);
+    }
+
+    private void openBannedSupportChat() {
+        String message = "Hola, mi aplicación Tod4S3 Sync indica que mi acceso está bloqueado. "
+                + "¿Podrían revisar el caso? ID del dispositivo: " + deviceId();
+        Uri supportUri = Uri.parse("https://t.me/Niku_Blade?text=" + Uri.encode(message));
+        try {
+            Intent intent = new Intent(Intent.ACTION_VIEW, supportUri);
+            intent.setPackage("org.telegram.messenger");
+            startActivity(intent);
+        } catch (Exception telegramUnavailable) {
+            try {
+                Intent intent = new Intent(Intent.ACTION_VIEW, supportUri);
+                startActivity(intent);
+            } catch (Exception ignored) {
+                Toast.makeText(this, "No se pudo abrir el chat de soporte @Niku_Blade.", Toast.LENGTH_LONG).show();
+            }
+        }
+    }
+
     private void logout() {
         final String oldToken = token == null ? "" : token;
+        appBanned = false;
+        bannedScreenVisible = false;
         token = "";
         prefs.edit().remove("token").remove(PREF_SELECTED_PLAN)
                 .remove(PREF_ACTIVE_PREMIUM).remove(PREF_PREMIUM_VERIFIED)
@@ -2878,7 +2953,7 @@ public final class MainActivity extends Activity {
 
     private void refreshDeliveries(View trigger) {
         final String current = token;
-        if (current == null || current.isEmpty() || (deliveriesBox == null && !viewingDashboard)) return;
+        if (appBanned || current == null || current.isEmpty() || (deliveriesBox == null && !viewingDashboard)) return;
         if (deliveryRefreshInFlight) {
             if (syncStatus != null) syncStatus.setText("Las entregas ya se están actualizando…");
             return;
@@ -2911,7 +2986,7 @@ public final class MainActivity extends Activity {
 
     private void refreshAppTasks() {
         final String current = token;
-        if (current == null || current.isEmpty() || appTaskRefreshInFlight) return;
+        if (appBanned || current == null || current.isEmpty() || appTaskRefreshInFlight) return;
         appTaskRefreshInFlight = true;
         new Thread(() -> {
             try {
@@ -2977,6 +3052,9 @@ public final class MainActivity extends Activity {
                         profileRefreshInFlight = false;
                         return;
                     }
+                    boolean accessRestored = appBanned;
+                    appBanned = false;
+                    bannedScreenVisible = false;
                     premiumActive = newPremium;
                     premiumVerified = newPremiumVerified;
                     activePlan = newPlan;
@@ -2995,6 +3073,11 @@ public final class MainActivity extends Activity {
                     if (dashboardPlanStatusText != null) dashboardPlanStatusText.setText(accountPlanStatusText());
                     updateQuotaUsageCard();
                     updateFreeQuotaPanel();
+                    if (accessRestored) {
+                        showHomeStep(true);
+                        refreshDeliveries();
+                        refreshAppTasks();
+                    }
                 });
             } catch (Exception ignored) {
                 runOnUiThread(() -> profileRefreshInFlight = false);
@@ -3989,6 +4072,10 @@ public final class MainActivity extends Activity {
             } catch (Exception ignored) { }
             detail = detail.replaceAll("[\\p{Cntrl}]+", " ").trim();
             if (detail.length() > 160) detail = detail.substring(0, 160) + "…";
+            if (code == HttpURLConnection.HTTP_FORBIDDEN && "app_banned".equals(detail)) {
+                appBanned = true;
+                handler.post(this::showBannedScreen);
+            }
             throw new IOException("HTTP " + code + (detail.isEmpty() ? "" : ": " + detail));
         }
         return new JSONObject(responseText);

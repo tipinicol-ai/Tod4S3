@@ -1786,6 +1786,78 @@ def admin_registered_users_keyboard(page: int = 0, page_size: int = ADMIN_USERS_
     return InlineKeyboardMarkup(rows)
 
 
+ADMIN_APP_USERS_PAGE_SIZE = 2
+
+
+def admin_app_users_text(page: int = 0) -> str:
+    users, total = sync_api.app_users_page(page, ADMIN_APP_USERS_PAGE_SIZE)
+    user_records = _load_json(USERS_DATA_FILE).get("users", {})
+    user_records = user_records if isinstance(user_records, dict) else {}
+    lines = [
+        f"Página {page + 1} · {total} cuentas vinculadas o bloqueadas",
+        "La huella completa permite reconocer el mismo móvil.",
+        "",
+    ]
+    if not users:
+        lines.append("Todavía no hay móviles vinculados a la aplicación.")
+    for user in users:
+        user_id = int(user["user_id"])
+        record = user_records.get(str(user_id), {})
+        record = record if isinstance(record, dict) else {}
+        name = re.sub(r"[\x00-\x1f\x7f{}]", " ", str(record.get("full_name") or record.get("first_name") or "Sin nombre"))
+        name = " ".join(name.split())[:48] or "Sin nombre"
+        username = str(record.get("username", "")).strip().lstrip("@")
+        label = f"@{username}" if username else "sin @usuario"
+        if user["online"]:
+            seen = "🟢 Conectado ahora"
+        elif user["last_seen_at"]:
+            seen = "Última actividad: " + datetime.fromtimestamp(
+                user["last_seen_at"], timezone.utc
+            ).strftime("%Y-%m-%d %H:%M UTC")
+        else:
+            seen = "Sin actividad reciente registrada"
+        status = "⛔ BANEADO" if user["banned"] else "✅ Permitido"
+        lines.extend([
+            f"╭─ {name}",
+            f"┃ {label} · Telegram ID: {user_id}",
+            f"┃ {seen}",
+            f"┃ Estado APK: {status}",
+        ])
+        device_ids = user.get("device_ids", [])
+        if device_ids:
+            for index, device_id in enumerate(device_ids, 1):
+                device_state = " ⛔" if device_id in user.get("banned_device_ids", []) else ""
+                lines.append(f"┃ Móvil {index}{device_state}: {{mono:{device_id}}}")
+        else:
+            lines.append("┃ ID móvil: aún no registrado")
+        lines.append("╰────────────")
+    return card("📱 ᴜꜱᴜᴀʀɪᴏꜱ ᴅᴇ ʟᴀ ᴀᴘᴋ", lines) + f"\n\n{BOT_FOOTER}"
+
+
+def admin_app_users_keyboard(page: int = 0) -> InlineKeyboardMarkup:
+    users, total = sync_api.app_users_page(page, ADMIN_APP_USERS_PAGE_SIZE)
+    rows = []
+    for user in users:
+        user_id = int(user["user_id"])
+        if user["banned"]:
+            label = f"✅ Quitar baneo · {user_id}"
+            action = "unban"
+        else:
+            label = f"🚫 Banear APK · {user_id}"
+            action = "ban"
+        rows.append([btn(label, callback_data=f"admin:appban:{action}:{user_id}:{page}")])
+    nav = []
+    if page > 0:
+        nav.append(btn("⬅️ Anterior", callback_data=f"admin:appusers:{page - 1}"))
+    if (page + 1) * ADMIN_APP_USERS_PAGE_SIZE < total:
+        nav.append(btn("Siguiente ➡️", callback_data=f"admin:appusers:{page + 1}"))
+    if nav:
+        rows.append(nav)
+    rows.append([btn("🔄 Actualizar lista", callback_data=f"admin:appusers:{page}")])
+    rows.append([btn("⬅️ Gestión de usuarios", callback_data="admin:menu:users")])
+    return InlineKeyboardMarkup(rows)
+
+
 def delete_task_history_by_task_id(user_id: int, task_id: str) -> bool:
     """Elimina del historial el registro de una tarea borrada de ToDus."""
     try:
@@ -2807,6 +2879,7 @@ def admin_section_keyboard(section: str) -> InlineKeyboardMarkup:
             [btn("👑 ᴇꜱᴛᴀᴅᴏ ᴘʀᴇᴍɪᴜᴍ ᴘᴏʀ ɪᴅ", callback_data="admin:premium_status")],
             [btn("🔍 ᴄᴏɴꜱᴜʟᴛᴀʀ ᴜꜱᴜᴀʀɪᴏ", callback_data="admin:check")],
             [btn("👥 ᴜꜱᴜᴀʀɪᴏꜱ ʀᴇɢɪꜱᴛʀᴀᴅᴏꜱ", callback_data="admin:users:0")],
+            [btn("📱 ᴜꜱᴜᴀʀɪᴏꜱ ʏ ʙᴀɴᴇᴏꜱ ᴅᴇ ʟᴀ ᴀᴘᴋ", callback_data="admin:appusers:0")],
         ],
         "storage": [
             [btn("🗂️ ʜɪꜱᴛᴏʀɪᴀʟ ᴅᴇ ᴜꜱᴜᴀʀɪᴏ", callback_data="admin:user_history")],
@@ -4987,6 +5060,50 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if query.data == "admin:back":
             context.user_data.pop("admin_state", None)
             await edit_query_message_text(query.message, admin_panel_text(), reply_markup=admin_keyboard())
+            return
+
+        if query.data.startswith("admin:appusers:"):
+            try:
+                page = max(0, int(query.data.rsplit(":", 1)[-1]))
+            except (TypeError, ValueError):
+                page = 0
+            await edit_query_message_text(
+                query.message,
+                admin_app_users_text(page),
+                reply_markup=admin_app_users_keyboard(page),
+            )
+            return
+
+        if query.data.startswith("admin:appban:"):
+            try:
+                _, _, action, raw_user_id, raw_page = query.data.split(":")
+                target_id = int(raw_user_id)
+                page = max(0, int(raw_page))
+                if target_id <= 0 or action not in {"ban", "unban"}:
+                    raise ValueError("invalid_app_ban_action")
+                if action == "ban":
+                    result = sync_api.ban_app_user(target_id, user.id)
+                    device_count = len(result.get("device_ids", []))
+                    notice = f"Telegram ID {target_id} y {device_count} móvil(es) vinculados bloqueados."
+                    backup_reason = "baneo de usuario de la APK"
+                else:
+                    result = sync_api.unban_app_user(target_id)
+                    device_count = len(result.get("device_ids", []))
+                    notice = f"Baneo retirado para Telegram ID {target_id}; se liberaron {device_count} huella(s) asociada(s)."
+                    backup_reason = "desbaneo de usuario de la APK"
+                schedule_data_backup(context.application, backup_reason)
+                await query.answer(notice[:190], show_alert=True)
+            except (TypeError, ValueError) as exc:
+                message = ("Tu propia cuenta de administrador no se puede banear desde este panel."
+                           if str(exc) == "protected_admin_id"
+                           else "No se pudo procesar el baneo de la APK.")
+                await query.answer(message, show_alert=True)
+                return
+            await edit_query_message_text(
+                query.message,
+                admin_app_users_text(page),
+                reply_markup=admin_app_users_keyboard(page),
+            )
             return
 
         if query.data.startswith("admin:menu:"):

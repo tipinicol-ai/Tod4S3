@@ -20,7 +20,8 @@ _TOKEN_TTL = 365 * 24 * 60 * 60
 
 
 def _default_state() -> dict[str, Any]:
-    return {"pairings": {}, "tokens": {}, "deliveries": {}, "premium_activations": {}}
+    return {"pairings": {}, "tokens": {}, "deliveries": {}, "premium_activations": {},
+            "app_bans": {"users": {}, "devices": {}}}
 
 
 def _read() -> dict[str, Any]:
@@ -82,10 +83,14 @@ def consume_pairing_code(code: str, device_id: str) -> str | None:
             return None
         token = "t4s3_" + secrets.token_urlsafe(32)
         token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        user_id = int(item["user_id"])
+        if _app_access_ban_in_state(state, user_id, device_id):
+            return None
         state["tokens"][token_hash] = {
-            "user_id": int(item["user_id"]),
+            "user_id": user_id,
             "device_id": device_id,
             "created_at": int(time.time()),
+            "last_seen_at": int(time.time()),
         }
         state["pairings"].pop(code, None)
         _write(state)
@@ -122,6 +127,10 @@ def app_identity_for_token(token: str) -> dict[str, Any] | None:
         device_id = str(item.get("device_id", "")).strip()[:128]
         if user_id <= 0 or not device_id:
             return None
+        now = int(time.time())
+        if now - int(item.get("last_seen_at", 0) or 0) >= 60:
+            item["last_seen_at"] = now
+            _write(state)
         return {"user_id": user_id, "device_id": device_id}
 
 
@@ -416,3 +425,205 @@ def remove_delivery_for_user(user_id: int, task_id: str,
                 _write(state)
                 return True
     return False
+
+
+def _app_access_ban_in_state(state: dict[str, Any], user_id: int,
+                             device_id: str = "") -> dict[str, Any] | None:
+    bans = state.get("app_bans", {})
+    if not isinstance(bans, dict):
+        return None
+    user_bans = bans.get("users", {})
+    device_bans = bans.get("devices", {})
+    entry = user_bans.get(str(int(user_id))) if isinstance(user_bans, dict) else None
+    if isinstance(entry, dict):
+        return {"scope": "telegram", "banned_at": int(entry.get("banned_at", 0) or 0)}
+    device_id = str(device_id or "").strip()[:128]
+    entry = device_bans.get(device_id) if device_id and isinstance(device_bans, dict) else None
+    if isinstance(entry, dict):
+        owners = entry.get("user_ids", [])
+        if not owners or str(int(user_id)) in {str(owner) for owner in owners} or device_id:
+            return {"scope": "device", "banned_at": int(entry.get("banned_at", 0) or 0)}
+    return None
+
+
+def app_access_ban(user_id: int, device_id: str = "") -> dict[str, Any] | None:
+    """Return a non-secret ban marker if either Telegram ID or device is blocked."""
+    with _LOCK:
+        return _app_access_ban_in_state(_read(), int(user_id), device_id)
+
+
+def is_app_user_banned(user_id: int, device_id: str = "") -> bool:
+    return app_access_ban(user_id, device_id) is not None
+
+
+def pairing_code_ban(code: str, device_id: str) -> dict[str, Any] | None:
+    """Check a pairing attempt before issuing a token, including device-only bans."""
+    code = str(code or "").strip().upper()
+    device_id = str(device_id or "").strip()[:128]
+    if not code or not device_id:
+        return None
+    with _LOCK:
+        state = _read()
+        pairing = state.get("pairings", {}).get(code)
+        if not isinstance(pairing, dict) or int(pairing.get("expires_at", 0)) <= int(time.time()):
+            return None
+        return _app_access_ban_in_state(state, int(pairing.get("user_id", 0)), device_id)
+
+
+def ban_app_user(user_id: int, admin_id: int = 0) -> dict[str, Any]:
+    """Ban a Telegram user and every mobile fingerprint currently linked to it."""
+    user_id = int(user_id)
+    admin_id = int(admin_id or 0)
+    if user_id <= 0:
+        raise ValueError("invalid_user_id")
+    now = int(time.time())
+    user_key = str(user_id)
+    if admin_id > 0 and user_id == admin_id:
+        raise ValueError("protected_admin_id")
+    with _LOCK:
+        state = _read()
+        bans = state.get("app_bans", {})
+        if not isinstance(bans, dict):
+            bans = {"users": {}, "devices": {}}
+        users = bans.get("users", {})
+        devices = bans.get("devices", {})
+        if not isinstance(users, dict):
+            users = {}
+        if not isinstance(devices, dict):
+            devices = {}
+        users[user_key] = {"banned_at": now, "banned_by": admin_id}
+        device_ids: set[str] = set()
+        admin_devices: set[str] = set()
+        for record in state.get("tokens", {}).values():
+            if not isinstance(record, dict):
+                continue
+            owner = int(record.get("user_id", 0) or 0)
+            device_id = str(record.get("device_id", "")).strip()[:128]
+            if not device_id:
+                continue
+            if owner == user_id:
+                device_ids.add(device_id)
+            if admin_id > 0 and owner == admin_id:
+                admin_devices.add(device_id)
+        device_ids.difference_update(admin_devices)
+        for device_id in device_ids:
+            record = devices.get(device_id, {})
+            record = dict(record) if isinstance(record, dict) else {}
+            owners = {str(owner) for owner in record.get("user_ids", [])}
+            owners.add(user_key)
+            record.update({"user_ids": sorted(owners), "banned_at": now, "banned_by": admin_id})
+            devices[device_id] = record
+        bans["users"] = users
+        bans["devices"] = devices
+        state["app_bans"] = bans
+        _write(state)
+        return {"user_id": user_id, "device_ids": sorted(device_ids), "banned_at": now}
+
+
+def unban_app_user(user_id: int) -> dict[str, Any]:
+    """Remove this Telegram ban and its device associations, preserving shared bans."""
+    user_id = int(user_id)
+    if user_id <= 0:
+        raise ValueError("invalid_user_id")
+    user_key = str(user_id)
+    with _LOCK:
+        state = _read()
+        bans = state.get("app_bans", {})
+        if not isinstance(bans, dict):
+            return {"user_id": user_id, "changed": False, "device_ids": []}
+        users = bans.get("users", {})
+        devices = bans.get("devices", {})
+        if not isinstance(users, dict):
+            users = {}
+        if not isinstance(devices, dict):
+            devices = {}
+        changed = users.pop(user_key, None) is not None
+        affected: list[str] = []
+        for device_id, entry in list(devices.items()):
+            if not isinstance(entry, dict):
+                continue
+            owners = {str(owner) for owner in entry.get("user_ids", [])}
+            if user_key not in owners:
+                continue
+            affected.append(str(device_id))
+            owners.discard(user_key)
+            changed = True
+            if owners:
+                entry["user_ids"] = sorted(owners)
+                devices[device_id] = entry
+            else:
+                devices.pop(device_id, None)
+        if changed:
+            bans["users"] = users
+            bans["devices"] = devices
+            state["app_bans"] = bans
+            _write(state)
+        return {"user_id": user_id, "changed": changed, "device_ids": sorted(affected)}
+
+
+def app_users_page(page: int = 0, page_size: int = 3) -> tuple[list[dict[str, Any]], int]:
+    """Return users paired to the Android app plus retained bans, without token secrets."""
+    page = max(0, int(page))
+    page_size = max(1, min(20, int(page_size)))
+    now = int(time.time())
+    with _LOCK:
+        state = _read()
+        bans = state.get("app_bans", {})
+        bans = bans if isinstance(bans, dict) else {}
+        banned_users = bans.get("users", {})
+        banned_devices = bans.get("devices", {})
+        banned_users = banned_users if isinstance(banned_users, dict) else {}
+        banned_devices = banned_devices if isinstance(banned_devices, dict) else {}
+        users: dict[int, dict[str, Any]] = {}
+        tokens = state.get("tokens", {})
+        if isinstance(tokens, dict):
+            for record in tokens.values():
+                if not isinstance(record, dict):
+                    continue
+                try:
+                    user_id = int(record.get("user_id", 0))
+                    created = int(record.get("created_at", 0) or 0)
+                    seen = int(record.get("last_seen_at", created) or created)
+                except (TypeError, ValueError):
+                    continue
+                if user_id <= 0 or created + _TOKEN_TTL <= now:
+                    continue
+                entry = users.setdefault(user_id, {"user_id": user_id, "device_ids": set(), "last_seen_at": 0})
+                device_id = str(record.get("device_id", "")).strip()[:128]
+                if device_id:
+                    entry["device_ids"].add(device_id)
+                entry["last_seen_at"] = max(entry["last_seen_at"], seen)
+        for user_key, record in banned_users.items():
+            try:
+                user_id = int(user_key)
+            except (TypeError, ValueError):
+                continue
+            users.setdefault(user_id, {"user_id": user_id, "device_ids": set(), "last_seen_at": 0})
+        for device_id, record in banned_devices.items():
+            if not isinstance(record, dict):
+                continue
+            for owner in record.get("user_ids", []):
+                try:
+                    user_id = int(owner)
+                except (TypeError, ValueError):
+                    continue
+                entry = users.setdefault(user_id, {"user_id": user_id, "device_ids": set(), "last_seen_at": 0})
+                entry["device_ids"].add(str(device_id))
+        rows = []
+        for user_id, entry in users.items():
+            devices = sorted(entry["device_ids"])
+            banned_device_ids = [device_id for device_id in devices if device_id in banned_devices]
+            last_seen = int(entry["last_seen_at"])
+            rows.append({
+                "user_id": user_id,
+                "device_ids": devices,
+                "last_seen_at": last_seen,
+                "online": bool(last_seen and now - last_seen <= 180),
+                "banned": str(user_id) in banned_users or bool(banned_device_ids),
+                "telegram_banned": str(user_id) in banned_users,
+                "banned_device_ids": banned_device_ids,
+            })
+        rows.sort(key=lambda row: (row["last_seen_at"], row["user_id"]), reverse=True)
+        total = len(rows)
+        selected = rows[page * page_size:(page + 1) * page_size]
+        return selected, total
