@@ -103,6 +103,37 @@ def make_layout(root: Path) -> BackupLayout:
 
 
 class TelegramBackupFlowTests(unittest.IsolatedAsyncioTestCase):
+    async def test_runtime_backup_layout_includes_premium_and_app_token_state(self):
+        layout = telegram_bot.telegram_backup_layout()
+        self.assertEqual(layout.state_files["user_plans.json"], Path(telegram_bot.PLAN_DATA_FILE))
+        self.assertEqual(layout.state_files["sync_app.json"], Path(telegram_bot.SYNC_APP_STATE_FILE))
+
+    async def test_backup_captures_premium_plans_and_activation_tokens_encrypted(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            layout = make_layout(root)
+            plans = root / "user_plans.json"
+            app_state = root / "sync_app.json"
+            plans.write_text('{"123":{"plan":"premium","expires_at":"2030-01-01T00:00:00+00:00"}}', encoding="utf-8")
+            app_state.write_text('{"premium_activations":{"123":{"token_hash":"deadbeef","device_id":"device-1"}}}', encoding="utf-8")
+            layout.state_files["user_plans.json"] = plans
+            layout.state_files["sync_app.json"] = app_state
+
+            encrypted, snapshot, _, _ = build_encrypted_backup(layout, TOKEN)
+            restored = decrypt_snapshot(encrypted, TOKEN)
+            states = {entry["path"]: json.loads(__import__("base64").b64decode(entry["data_b64"]))
+                      for entry in restored["files"] if entry["kind"] == "state"}
+
+            self.assertIn("state/user_plans.json", states)
+            self.assertEqual(states["state/user_plans.json"]["123"]["plan"], "premium")
+            self.assertIn("state/sync_app.json", states)
+            self.assertEqual(
+                states["state/sync_app.json"]["premium_activations"]["123"]["device_id"],
+                "device-1",
+            )
+            self.assertNotIn(b"deadbeef", encrypted)
+            self.assertNotIn(b"premium_activations", encrypted)
+
     async def test_first_backup_is_encrypted_uploaded_verified_and_pinned(self):
         with tempfile.TemporaryDirectory() as temp:
             layout = make_layout(Path(temp))

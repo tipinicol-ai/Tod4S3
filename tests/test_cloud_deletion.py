@@ -110,6 +110,95 @@ async def test_personal_clear_remote_failure_keeps_both_stores(monkeypatch, tmp_
 
 
 @_run_async_test
+async def test_app_deletes_only_registered_todus_messages_for_owned_delivery(monkeypatch, tmp_path):
+    _history(monkeypatch, tmp_path, {"42": [
+        {"task_id": "native-task", "urls": ["https://media.todus.cu/file/a"], "state": "done"},
+        {"task_id": "keep-task", "urls": ["https://media.todus.cu/file/b"], "state": "done"},
+    ]})
+    _deliveries(monkeypatch, tmp_path)
+    sent_path = tmp_path / "todus_sent_messages.json"
+    monkeypatch.setattr(bot, "TODUS_SENT_MESSAGES_FILE", str(sent_path))
+    sync_api.record_delivery(
+        42, "native-task", "a.bin", 10, ["https://media.todus.cu/file/a"],
+        storage_backend="todus_native", remote_delete_supported=True,
+    )
+    bot._save_json(str(sent_path), {"messages": [
+        {"target": "5350911221", "message_id": "msg-owned", "user_id": 42, "task_id": "native-task"},
+        {"target": "5350911221", "message_id": "msg-other-task", "user_id": 42, "task_id": "keep-task"},
+        {"target": "5350999999", "message_id": "msg-other-user", "user_id": 43, "task_id": "native-task"},
+    ]})
+    monkeypatch.setattr(bot, "get_user_todus_number", lambda user_id: "5350911221" if user_id == 42 else "")
+    class FakeToDusClient:
+        def __init__(self):
+            self.deleted = []
+        def delete_message(self, target, message_id):
+            self.deleted.append((target, message_id))
+    client = FakeToDusClient()
+    monkeypatch.setattr(bot, "get_todus_client", lambda: client)
+    monkeypatch.setattr(bot, "schedule_data_backup", lambda *_args: None)
+    application = SimpleNamespace(bot_data={"task_queue": None})
+
+    payload, status = await bot.sync_app_task_request(
+        application, "delete_delivery", 42, {"task_id": "native-task"},
+    )
+
+    assert status == 200
+    assert payload["deleted_parts"] == 1
+    assert client.deleted == [("5350911221", "msg-owned")]
+    assert sync_api.deliveries_for_user(42) == []
+    assert bot.all_task_history()["42"] == [{
+        "task_id": "keep-task", "urls": ["https://media.todus.cu/file/b"], "state": "done",
+    }]
+    assert bot._load_json(str(sent_path))["messages"] == [
+        {"target": "5350911221", "message_id": "msg-other-task", "user_id": 42, "task_id": "keep-task"},
+        {"target": "5350999999", "message_id": "msg-other-user", "user_id": 43, "task_id": "native-task"},
+    ]
+
+
+@_run_async_test
+async def test_app_clear_cloud_deletes_native_todus_messages_and_registry(monkeypatch, tmp_path):
+    part = "https://media.todus.cu/file/native-part"
+    _history(monkeypatch, tmp_path, {"42": [{
+        "task_id": "native-task", "urls": [part], "state": "done",
+    }]})
+    _deliveries(monkeypatch, tmp_path)
+    sent_path = tmp_path / "todus_sent_messages.json"
+    monkeypatch.setattr(bot, "TODUS_SENT_MESSAGES_FILE", str(sent_path))
+    sync_api.record_delivery(
+        42, "native-task", "native.bin", 10, [part],
+        storage_backend="todus_native", remote_delete_supported=True,
+    )
+    bot._save_json(str(sent_path), {"messages": [
+        {"target": "5350911221", "message_id": "msg-native", "user_id": 42, "task_id": "native-task"},
+        {"target": "5350999999", "message_id": "msg-foreign", "user_id": 43, "task_id": "native-task"},
+    ]})
+    monkeypatch.setattr(bot, "get_user_todus_number", lambda user_id: "5350911221" if user_id == 42 else "")
+    class FakeToDusClient:
+        def __init__(self):
+            self.deleted = []
+        def delete_message(self, target, message_id):
+            self.deleted.append((target, message_id))
+    client = FakeToDusClient()
+    monkeypatch.setattr(bot, "get_todus_client", lambda: client)
+    monkeypatch.setattr(bot, "schedule_data_backup", lambda *_args: None)
+    deleted_s3 = []
+    monkeypatch.setattr(bot, "delete_from_todus_s3", deleted_s3.append)
+    application = SimpleNamespace(bot_data={"task_queue": None})
+
+    payload, status = await bot.sync_app_task_request(application, "clear_cloud", 42, {})
+
+    assert status == 200
+    assert payload["deleted_files"] == 1
+    assert client.deleted == [("5350911221", "msg-native")]
+    assert deleted_s3 == []
+    assert bot.all_task_history() == {}
+    assert sync_api.deliveries_for_user(42) == []
+    assert bot._load_json(str(sent_path))["messages"] == [
+        {"target": "5350999999", "message_id": "msg-foreign", "user_id": 43, "task_id": "native-task"},
+    ]
+
+
+@_run_async_test
 async def test_global_clear_includes_history_deliveries_and_completed_job_parts(monkeypatch, tmp_path):
     history_url = _owned_url(42, "history.bin")
     delivery_url = _owned_url(42, "delivery.bin")

@@ -90,6 +90,12 @@ class RequestedFeatureTests(unittest.TestCase):
                 assert quota["remaining_bytes"] == bot.FREE_JOIN_QUOTA_BYTES // 2
                 assert quota["percent_used"] == 50
                 assert 21 * 3600 < quota["reset_in_seconds"] < 22 * 3600 + 60
+                users_data = bot._load_json(bot.USERS_DATA_FILE)
+                users_data["users"]["4242"]["free_quota_remaining_bytes"] = 0
+                bot._save_json(bot.USERS_DATA_FILE, users_data)
+                exhausted_quota = bot.sync_app_profile(4242)["quota"]
+                assert exhausted_quota["percent_used"] == 100
+                assert exhausted_quota["percent_used"] <= 100
             finally:
                 bot.USERS_DATA_FILE, bot.PLAN_DATA_FILE, bot.USAGE_DATA_FILE = old_paths
 

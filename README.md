@@ -12,6 +12,8 @@ La subida a ToDus usa un `PUT` directo: no necesita cuenta, teléfono ni contras
 
 Las descargas de plataformas se limitan a contenido accesible públicamente. Usa el bot solo con archivos o medios que tengas derecho a descargar y compartir, respetando las leyes y las condiciones de cada servicio. El bot no carga cookies ni intenta acceder a publicaciones privadas, eludir inicios de sesión o saltar DRM o restricciones de plataforma.
 
+Los enlaces directos `.xapk` y `.apks` se transfieren como archivos completos y conservan su extensión; el bot no los extrae, convierte ni instala. Estos formatos pueden contener varias APK y datos OBB, no necesariamente una APK única. [OWASP MASTG](https://mas.owasp.org/MASTG/techniques/android/MASTG-TECH-0145/) [Android Developers](https://developer.android.com/guide/app-bundle/app-bundle-format).
+
 ## Instalación local
 
 Necesitas Docker con Docker Compose y un token creado con [@BotFather](https://t.me/BotFather).
@@ -46,7 +48,7 @@ Abre el bot, ejecuta `/start` y prueba primero con un archivo pequeño. `.env` e
 3. En Railway, monta un Volume en la ruta `/data`. En la instalación Docker local, Compose crea los volúmenes persistentes `bot-data` y `bot-tmp`.
 4. Reinicia el servicio y comprueba los logs. El comando `/backup`, disponible para el dueño, fuerza una copia inmediata.
 
-El bot restaura primero la copia fijada y luego inicia MTProto. Guarda automáticamente al arrancar, después de cambios, cada 300 segundos por defecto y al cerrar ordenadamente. La copia incluye los datos de planes asignados por administración, uso, historial, usuarios y, si existe, la sesión MTProto. El archivo se cifra con AES-256-GCM y la clave se deriva de `TELEGRAM_BOT_TOKEN`; conserva el mismo token para poder restaurar copias existentes. La copia cifrada debe mantenerse por debajo de 20 MiB para que la Bot API pueda descargarla al restaurar.
+El bot restaura primero la copia fijada y luego inicia MTProto. Guarda automáticamente al arrancar, después de cambios, cada 300 segundos por defecto y al cerrar ordenadamente. La copia incluye los planes Premium (`user_plans.json`) y el estado de la aplicación (`sync_app.json`), donde se conservan hashes de tokens de activación Premium, vinculación al ID de Telegram y dispositivo, además del uso, historial, usuarios y, si existe, la sesión MTProto. El contenido completo se cifra con AES-256-GCM y la clave se deriva de `TELEGRAM_BOT_TOKEN`; conserva el mismo token para poder restaurar copias existentes. La copia cifrada debe mantenerse por debajo de 20 MiB para que la Bot API pueda descargarla al restaurar.
 
 ## Variables principales
 

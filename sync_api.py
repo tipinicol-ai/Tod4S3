@@ -226,7 +226,8 @@ def claim_premium_activation_token(token: str, user_id: int, device_id: str,
 
 
 def record_delivery(user_id: int, task_id: str, filename: str, size: int,
-                    parts: list[str], *, storage_backend: str = "todus_native") -> None:
+                    parts: list[str], *, storage_backend: str = "todus_native",
+                    remote_delete_supported: bool = False) -> None:
     """Publica una entrega reciente para el usuario vinculado."""
     if not parts:
         return
@@ -240,6 +241,7 @@ def record_delivery(user_id: int, task_id: str, filename: str, size: int,
             "task_id": str(task_id),
             "source": "tod4s3_bot",
             "storage_backend": storage_backend if storage_backend in {"todus_native", "s3"} else "todus_native",
+            "remote_delete_supported": bool(remote_delete_supported),
             "filename": str(filename or "archivo")[:180],
             "size": max(0, int(size or 0)),
             "parts": [str(url) for url in parts if str(url).startswith("https://")],

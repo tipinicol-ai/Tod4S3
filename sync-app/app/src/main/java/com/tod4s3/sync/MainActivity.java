@@ -121,8 +121,13 @@ public final class MainActivity extends Activity {
     private TextView todusSessionStatusText;
     private String todusSessionStatusMessage = "No hay una sesión ToDus guardada.";
     private TextView planStatus;
+    private LinearLayout freeQuotaPanel;
+    private ProgressBar freeQuotaPanelProgress;
+    private TextView freeQuotaPanelUsage;
+    private TextView freeQuotaPanelReset;
     private LinearLayout deliveriesBox;
     private LinearLayout dashboardItemsBox;
+    private TextView dashboardStatusText;
     private LinearLayout quotaUsageBox;
     private ProgressBar quotaProgressBar;
     private TextView quotaUsageText;
@@ -302,6 +307,13 @@ public final class MainActivity extends Activity {
         free.addView(text("Gratis", 24, true), margin(0, 7, 0, 2));
         free.addView(text("1 GB cada 24 horas", 18, true));
         free.addView(bodyText("Usa Tod4S3 sin pagar. Puedes volver a elegir un plan Premium más adelante."), margin(0, 8, 0, 14));
+        freeQuotaPanel = new LinearLayout(this);
+        freeQuotaPanel.setOrientation(LinearLayout.VERTICAL);
+        free.addView(freeQuotaPanel, margin(0, 0, 0, 10));
+        freeQuotaPanelProgress = null;
+        freeQuotaPanelUsage = null;
+        freeQuotaPanelReset = null;
+        updateFreeQuotaPanel();
         Button chooseFree = primaryButton("Continuar con el plan gratis");
         chooseFree.setOnClickListener(v -> chooseFreePlan());
         free.addView(chooseFree);
@@ -309,15 +321,6 @@ public final class MainActivity extends Activity {
 
         page.addView(text("Planes Premium", 20, true), margin(0, 4, 0, 4));
         page.addView(bodyText("Descargas sin límite mientras el plan esté activo."), margin(0, 0, 0, 10));
-        LinearLayout premiumActions = card();
-        premiumActions.addView(text("¿Ya tienes Premium o quieres comprarlo?", 15, true));
-        Button alreadyPremium = secondaryButton("Ya soy premium");
-        alreadyPremium.setOnClickListener(v -> promptPremiumActivationToken());
-        premiumActions.addView(alreadyPremium, margin(0, 9, 0, 0));
-        Button buyPremium = goldButton("Comprar premium");
-        buyPremium.setOnClickListener(v -> showPremiumPurchaseOptions());
-        premiumActions.addView(buyPremium, margin(0, 8, 0, 0));
-        page.addView(premiumActions, margin(0, 2, 0, 12));
         page.addView(planOffer("Premium 15 días", "250 CUP", "Descargas sin límite y entrega directa por ToDus.", "Premium 15 días · 250 CUP"), margin(0, 0, 0, 10));
         page.addView(planOffer("Premium 20 días", "300 CUP", "Descargas sin límite durante 20 días.", "Premium 20 días · 300 CUP"), margin(0, 0, 0, 10));
         page.addView(planOffer("Premium 30 días", "500 CUP", "Un mes completo de descargas sin límite.", "Premium 30 días · 500 CUP"), margin(0, 0, 0, 10));
@@ -349,21 +352,21 @@ public final class MainActivity extends Activity {
         priceLabel.setTextColor(Color.rgb(242, 198, 106));
         offer.addView(priceLabel, margin(0, 4, 0, 0));
         offer.addView(bodyText(detail), margin(0, 5, 0, 10));
-        Button requestPlan = goldButton("Solicitar por Telegram");
-        requestPlan.setOnClickListener(v -> openPremiumRequest(purchasePlan));
-        offer.addView(requestPlan);
+        LinearLayout actions = new LinearLayout(this);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+        actions.setGravity(Gravity.CENTER_VERTICAL);
+        Button buyPlan = goldButton("Comprar premium");
+        buyPlan.setTextSize(12);
+        buyPlan.setOnClickListener(v -> openPremiumRequest(purchasePlan));
+        LinearLayout.LayoutParams buyParams = new LinearLayout.LayoutParams(0, dp(50), 1f);
+        buyParams.setMargins(0, 0, dp(7), 0);
+        actions.addView(buyPlan, buyParams);
+        Button alreadyPremium = secondaryButton("Ya soy premium");
+        alreadyPremium.setTextSize(12);
+        alreadyPremium.setOnClickListener(v -> promptPremiumActivationToken());
+        actions.addView(alreadyPremium, new LinearLayout.LayoutParams(0, dp(50), 1f));
+        offer.addView(actions);
         return offer;
-    }
-
-    private void showPremiumPurchaseOptions() {
-        String[] offers = {"Premium 15 días · 250 CUP", "Premium 20 días · 300 CUP", "Premium 30 días · 500 CUP"};
-        new AlertDialog.Builder(this)
-                .setTitle("Comprar Premium")
-                .setItems(offers, (dialog, which) -> {
-                    if (which >= 0 && which < offers.length) openPremiumRequest(offers[which]);
-                })
-                .setNegativeButton("Cancelar", null)
-                .show();
     }
 
     private void promptPremiumActivationToken() {
@@ -684,10 +687,32 @@ public final class MainActivity extends Activity {
     }
 
     private void showDashboard(String filter, boolean animated) {
+        boolean alreadyOnDashboard = viewingDashboard && currentPage != null && dashboardItemsBox != null;
         showingPlansPage = false;
         viewingDashboard = true;
         dashboardFilter = filter;
         viewingDownloadsTab = "completed".equals(filter);
+        if (alreadyOnDashboard) {
+            deliveriesBox = null;
+            todusSessionStatusText = null;
+            if (currentPage.getChildCount() > 1) {
+                currentPage.removeViewAt(1);
+                currentPage.addView(dashboardTabs(), 1, margin(0, 12, 0, 0));
+            }
+            if (currentPage.getChildCount() > 0) {
+                currentPage.removeViewAt(0);
+                currentPage.addView(dashboardToolbar(), 0, margin(0, 0, 0, 0));
+            }
+            if (dashboardStatusText != null) {
+                dashboardStatusText.setText("all".equals(filter) ? "Entregas recibidas por ToDus" : "Descargas de Tod4S3 Sync");
+            }
+            renderDashboardItems();
+            if (token != null && !token.isEmpty()) {
+                refreshDeliveries();
+                refreshAppTasks();
+            }
+            return;
+        }
         deliveriesBox = null;
         todusSessionStatusText = null;
         LinearLayout page = new LinearLayout(this);
@@ -700,6 +725,7 @@ public final class MainActivity extends Activity {
         page.addView(tabDivider, new LinearLayout.LayoutParams(-1, dp(1)));
         TextView status = bodyText("all".equals(filter) ? "Entregas recibidas por ToDus" : "Descargas de Tod4S3 Sync");
         status.setTextSize(12);
+        dashboardStatusText = status;
         page.addView(status, margin(2, 12, 2, 0));
         quotaUsageBox = new LinearLayout(this);
         quotaUsageBox.setOrientation(LinearLayout.VERTICAL);
@@ -2867,6 +2893,7 @@ public final class MainActivity extends Activity {
                             .putString("active_plan_expires_v1", premiumExpiresAt).apply();
                     if (planStatus != null) planStatus.setText(accountPlanStatusText());
                     updateQuotaUsageCard();
+                    updateFreeQuotaPanel();
                     if (changed && viewingDashboard && "all".equals(dashboardFilter)) {
                         showDashboard(dashboardFilter, false);
                     }
@@ -2932,6 +2959,41 @@ public final class MainActivity extends Activity {
         quotaResetText.setText("La cuota gratis se renueva en " + quotaCountdownLabel(freeQuotaResetInSeconds));
     }
 
+    private void updateFreeQuotaPanel() {
+        if (freeQuotaPanel == null) return;
+        if (token == null || token.isEmpty() || !"free".equals(activePlan) || freeQuotaLimitBytes <= 0) {
+            freeQuotaPanel.setVisibility(View.GONE);
+            freeQuotaPanel.removeAllViews();
+            freeQuotaPanelProgress = null;
+            freeQuotaPanelUsage = null;
+            freeQuotaPanelReset = null;
+            return;
+        }
+        freeQuotaPanel.setVisibility(View.VISIBLE);
+        if (freeQuotaPanelProgress == null || freeQuotaPanelUsage == null || freeQuotaPanelReset == null) {
+            freeQuotaPanelProgress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+            freeQuotaPanelProgress.setMax(100);
+            freeQuotaPanelProgress.setProgressTintList(ColorStateList.valueOf(accentColor()));
+            freeQuotaPanel.addView(freeQuotaPanelProgress, margin(0, 0, 0, 0));
+            freeQuotaPanelUsage = bodyText("");
+            freeQuotaPanelUsage.setTextSize(12);
+            freeQuotaPanel.addView(freeQuotaPanelUsage, margin(0, 5, 0, 0));
+            freeQuotaPanelReset = bodyText("");
+            freeQuotaPanelReset.setTextSize(11);
+            freeQuotaPanel.addView(freeQuotaPanelReset, margin(0, 3, 0, 0));
+            freeQuotaPanel.setAlpha(0f);
+            freeQuotaPanel.setTranslationY(dp(4));
+            freeQuotaPanel.animate().alpha(1f).translationY(0f).setDuration(190)
+                    .setInterpolator(new DecelerateInterpolator()).start();
+        }
+        int percent = Math.max(0, Math.min(100, freeQuotaPercent));
+        freeQuotaPanelProgress.setProgress(percent);
+        freeQuotaPanelUsage.setText(percent + "% usado · " + formatBytes(freeQuotaUsedBytes)
+                + " de " + formatBytes(freeQuotaLimitBytes) + " · quedan "
+                + formatBytes(freeQuotaRemainingBytes));
+        freeQuotaPanelReset.setText("Reinicio de cuota en " + quotaCountdownLabel(freeQuotaResetInSeconds));
+    }
+
     private String quotaCountdownLabel(long seconds) {
         long safe = Math.max(0, seconds);
         long hours = safe / 3600;
@@ -2992,6 +3054,7 @@ public final class MainActivity extends Activity {
                     String name = row.optString("filename", "archivo");
                     long size = row.optLong("size", 0);
                     boolean cloudDeletable = row.optBoolean("cloud_deletable", false);
+                    boolean todusDeletable = row.optBoolean("todus_deletable", false);
                     JSONArray parts = deliveryParts(row);
                     int partCount = parts.length();
                     if (partCount == 0) continue;
@@ -3067,14 +3130,14 @@ public final class MainActivity extends Activity {
                     final long copySize = size;
                     download.setOnClickListener(v -> startToDusDelivery(taskId, copyName, copy, copySize));
                     cloudActions.addView(download, new LinearLayout.LayoutParams(0, -2, 1f));
-                    if (!taskId.isEmpty() && cloudDeletable) {
-                        Button deleteCloud = secondaryButton("Eliminar nube");
+                    if (!taskId.isEmpty() && (cloudDeletable || todusDeletable)) {
+                        Button deleteCloud = secondaryButton(todusDeletable ? "Eliminar entrega" : "Eliminar nube");
                         deleteCloud.setTextSize(12);
                         deleteCloud.setMinHeight(dp(46));
                         LinearLayout.LayoutParams deleteLayout = new LinearLayout.LayoutParams(0, -2, 0.85f);
                         deleteLayout.setMargins(dp(8), 0, 0, 0);
                         cloudActions.addView(deleteCloud, deleteLayout);
-                        deleteCloud.setOnClickListener(v -> confirmDeleteCloudDelivery(taskId, copyName));
+                        deleteCloud.setOnClickListener(v -> confirmDeleteCloudDelivery(taskId, copyName, todusDeletable));
                     } else if (!taskId.isEmpty()) {
                         TextView storageNote = bodyText("Entrega alojada en ToDus; no se puede borrar desde Nube S3.");
                         storageNote.setTextSize(11);
@@ -3083,10 +3146,6 @@ public final class MainActivity extends Activity {
                     }
                     card.addView(cloudActions, margin(0, 8, 0, 0));
                     deliveriesBox.addView(card, margin(0, 0, 0, 8));
-                    card.setAlpha(0f);
-                    card.setTranslationY(dp(4));
-                    card.animate().alpha(1f).translationY(0f).setStartDelay(Math.min(shown * 25L, 150L))
-                            .setDuration(180).setInterpolator(new DecelerateInterpolator()).start();
                     shown++;
                 } catch (Exception ignored) { }
             }
@@ -3447,15 +3506,19 @@ public final class MainActivity extends Activity {
         }
     }
 
-    private void confirmDeleteCloudDelivery(String taskId, String filename) {
-        new AlertDialog.Builder(this).setTitle("Eliminar entrega de ToDus")
-                .setMessage("Se eliminará la entrega de la nube y se cancelará cualquier descarga en curso. Los archivos que ya guardaste en el teléfono no se borrarán.")
+    private void confirmDeleteCloudDelivery(String taskId, String filename, boolean nativeToDus) {
+        String title = nativeToDus ? "Eliminar entrega de ToDus" : "Eliminar de Nube S3";
+        String message = nativeToDus
+                ? "Se eliminarán del chat ToDus las partes enviadas por el bot. Los archivos ya guardados en el teléfono no se borrarán."
+                : "Se eliminarán de Nube S3 las partes de esta entrega. Los archivos ya guardados en el teléfono no se borrarán.";
+        new AlertDialog.Builder(this).setTitle(title)
+                .setMessage(message)
                 .setNegativeButton("Cancelar", null)
-                .setPositiveButton("Eliminar de la nube", (dialog, which) -> deleteCloudDelivery(taskId, filename))
+                .setPositiveButton("Eliminar", (dialog, which) -> deleteCloudDelivery(taskId, filename, nativeToDus))
                 .show();
     }
 
-    private void deleteCloudDelivery(String taskId, String filename) {
+    private void deleteCloudDelivery(String taskId, String filename, boolean nativeToDus) {
         if (taskId == null || taskId.trim().isEmpty()) {
             Toast.makeText(this, "Esta entrega no tiene task_id; no se puede solicitar el borrado remoto.", Toast.LENGTH_LONG).show();
             return;
@@ -3476,7 +3539,7 @@ public final class MainActivity extends Activity {
                 }
                 rememberHiddenDelivery(taskId);
                 runOnUiThread(() -> {
-                    Toast.makeText(this, "Entrega eliminada de ToDus.", Toast.LENGTH_LONG).show();
+                    Toast.makeText(this, nativeToDus ? "Entrega eliminada de ToDus." : "Entrega eliminada de Nube S3.", Toast.LENGTH_LONG).show();
                     refreshDeliveries();
                 });
             } catch (Exception e) {

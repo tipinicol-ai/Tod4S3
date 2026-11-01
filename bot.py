@@ -2061,24 +2061,20 @@ class DownloadPaused(RuntimeError):
 
 
 def normalize_apk_filename(path: Path, filename: str) -> str:
-    """Corrige webs que entregan un APK real con extensión .zip.
+    """Normaliza APKs individuales y conserva XAPK/APKS como archivos completos.
 
-    Un XAPK/APKS no se renombra: contiene varios APK y necesita instalación
-    dividida, por lo que presentarlo como un APK único solo produce el menú
-    «Ver/Funciones» en administradores de archivos Android.
+    El bot solo los transporta; no instala, extrae ni convierte paquetes de apps.
     """
     suffix = Path(filename).suffix.lower()
+    if suffix in {".xapk", ".apks"}:
+        return clean_filename(filename, "application" + suffix)
     try:
         with zipfile.ZipFile(path) as package:
             names = set(package.namelist())
             split_members = [name for name in names if name.lower().endswith(".apk")]
-            if (
-                "base.apk" in names
-                or len(split_members) > 0
-                or suffix in {".xapk", ".apks"}
-            ):
+            if "base.apk" in names or len(split_members) > 0:
                 raise ValueError(
-                    "El enlace contiene un paquete dividido (XAPK/APKS), no un APK único instalable."
+                    "El ZIP contiene varias APK. Descárgalo como archivo .xapk/.apks para conservar el paquete completo."
                 )
             is_apk = (
                 "AndroidManifest.xml" in names
@@ -3176,7 +3172,8 @@ def set_user_todus_number(user_id: int, number: str) -> None:
         log.error("Error guardando número ToDus de %s", user_id, exc_info=True)
 
 
-def record_todus_sent_message(target_number: str, message_id: str) -> None:
+def record_todus_sent_message(target_number: str, message_id: str,
+                              user_id: int | None = None, task_id: str | None = None) -> None:
     """Registra el ID del mensaje que acaba de crear la cuenta del bot."""
     target = _normalize_todus_number(target_number) or str(target_number).strip()
     message_id = str(message_id or "").strip()
@@ -3194,11 +3191,16 @@ def record_todus_sent_message(target_number: str, message_id: str) -> None:
             for item in entries
         )
         if not exists:
-            entries.append({
+            record = {
                 "target": target,
                 "message_id": message_id,
                 "sent_at": datetime.now(timezone.utc).isoformat(),
-            })
+            }
+            if user_id is not None and int(user_id) > 0:
+                record["user_id"] = int(user_id)
+            if task_id:
+                record["task_id"] = str(task_id)[:200]
+            entries.append(record)
         _save_json(TODUS_SENT_MESSAGES_FILE, {"messages": entries[-10000:]})
     except Exception:
         log.warning("No se pudo registrar un mensaje ToDus para limpieza.", exc_info=True)
@@ -3231,6 +3233,117 @@ def cleanup_todus_sent_messages() -> tuple[int, int, int]:
                 log.warning("No se pudo borrar el mensaje ToDus %s (%s).", message_id, type(exc).__name__)
         _save_json(TODUS_SENT_MESSAGES_FILE, {"messages": remaining})
         return len(entries), deleted, failed
+
+
+def todus_messages_for_delivery(user_id: int, task_id: str) -> list[dict]:
+    """Return only current-format ToDus message records owned by this user/task."""
+    target = get_user_todus_number(user_id)
+    if not target:
+        return []
+    data = _load_json(TODUS_SENT_MESSAGES_FILE)
+    entries = data.get("messages", []) if isinstance(data, dict) else []
+    def belongs(item: object) -> bool:
+        if not isinstance(item, dict):
+            return False
+        try:
+            record_user = int(item.get("user_id", 0) or 0)
+        except (TypeError, ValueError):
+            return False
+        return (item.get("target") == target and record_user == int(user_id)
+                and str(item.get("task_id", "")) == str(task_id)
+                and bool(item.get("message_id")))
+    return [item for item in entries if belongs(item)] if isinstance(entries, list) else []
+
+
+def delete_todus_messages_for_delivery(user_id: int, task_id: str) -> tuple[int, int, bool]:
+    """Delete registered ToDus messages for one authenticated owner's delivery."""
+    target = get_user_todus_number(user_id)
+    if not target:
+        return 0, 0, False
+    with _todus_cleanup_lock:
+        data = _load_json(TODUS_SENT_MESSAGES_FILE)
+        entries = data.get("messages", []) if isinstance(data, dict) else []
+        if not isinstance(entries, list):
+            return 0, 0, False
+        selected = todus_messages_for_delivery(user_id, task_id)
+        if not selected:
+            return 0, 0, False
+        client = get_todus_client()
+        selected_ids = {str(item["message_id"]) for item in selected}
+        remaining = []
+        deleted = 0
+        failed = 0
+        for item in entries:
+            if not isinstance(item, dict):
+                continue
+            try:
+                record_user = int(item.get("user_id", 0) or 0)
+            except (TypeError, ValueError):
+                record_user = 0
+            if (item.get("target") != target
+                    or record_user != int(user_id)
+                    or str(item.get("task_id", "")) != str(task_id)
+                    or str(item.get("message_id", "")) not in selected_ids):
+                remaining.append(item)
+                continue
+            try:
+                client.delete_message(target, str(item["message_id"]))
+                deleted += 1
+            except Exception as exc:
+                failed += 1
+                remaining.append(item)
+                log.warning("No se pudo borrar la parte ToDus task=%s (%s).", task_id, type(exc).__name__)
+        _save_json(TODUS_SENT_MESSAGES_FILE, {"messages": remaining})
+        return len(selected), deleted, failed == 0 and deleted == len(selected)
+
+
+def delete_todus_messages_for_user(user_id: int) -> tuple[int, int, bool]:
+    """Delete only bot-sent ToDus messages explicitly bound to this Telegram user."""
+    target = get_user_todus_number(user_id)
+    if not target:
+        return 0, 0, True
+    with _todus_cleanup_lock:
+        data = _load_json(TODUS_SENT_MESSAGES_FILE)
+        entries = data.get("messages", []) if isinstance(data, dict) else []
+        if not isinstance(entries, list):
+            return 0, 0, False
+        selected = []
+        for item in entries:
+            if not isinstance(item, dict) or item.get("target") != target or not item.get("message_id"):
+                continue
+            try:
+                if int(item.get("user_id", 0) or 0) == int(user_id):
+                    selected.append(item)
+            except (TypeError, ValueError):
+                continue
+        if not selected:
+            return 0, 0, True
+        selected_ids = {str(item.get("message_id", "")) for item in selected}
+        client = get_todus_client()
+        remaining = []
+        deleted = 0
+        failed = 0
+        for item in entries:
+            if not isinstance(item, dict):
+                continue
+            try:
+                record_user = int(item.get("user_id", 0) or 0)
+            except (TypeError, ValueError):
+                record_user = 0
+            if (item.get("target") != target or record_user != int(user_id)
+                    or str(item.get("message_id", "")) not in selected_ids):
+                remaining.append(item)
+                continue
+            try:
+                client.delete_message(target, str(item["message_id"]))
+                deleted += 1
+            except Exception as exc:
+                failed += 1
+                remaining.append(item)
+                log.warning("No se pudo borrar el mensaje ToDus del user=%s (%s).",
+                            user_id, type(exc).__name__)
+        _save_json(TODUS_SENT_MESSAGES_FILE, {"messages": remaining})
+        return len(selected), deleted, failed == 0 and deleted == len(selected)
 
 
 def get_todus_bot_phone() -> str:
@@ -3321,7 +3434,8 @@ def _todus_file_type(filename: str):
 
 
 def deliver_part_via_todus(part_path: Path, part_name: str, part_size: int,
-                           target_number: str) -> str:
+                           target_number: str, user_id: int | None = None,
+                           task_id: str | None = None) -> str:
     """Sube el archivo real con ToDus y lo manda al chat del usuario.
 
     ``ToDusClient2.upload_file`` recibe bytes, no una ruta. Para no cargar
@@ -3351,7 +3465,7 @@ def deliver_part_via_todus(part_path: Path, part_name: str, part_size: int,
                 target_number, download_url, file_type,
                 caption=part_name, file_name=part_name, file_size=part_size,
             )
-            record_todus_sent_message(target_number, message_id)
+            record_todus_sent_message(target_number, message_id, user_id, task_id)
             return download_url
         except Exception as exc:
             last_error = exc
@@ -3765,7 +3879,7 @@ async def process_task(job: TransferTask, application: Application) -> None:
                     pass
                 link = await asyncio.to_thread(
                     deliver_part_via_todus, part_path, part_name,
-                    part_total, target_number,
+                    part_total, target_number, job.user_id, job.task_id,
                 )
                 job.part_urls[index] = link
             else:
@@ -3814,12 +3928,15 @@ async def process_task(job: TransferTask, application: Application) -> None:
 
         if delivery_mode == "todus" and not force_chat_delivery:
             try:
+                delivered_parts = [job.part_urls[i] for i in sorted(job.part_urls) if job.part_urls[i]]
+                registered_messages = todus_messages_for_delivery(job.user_id, job.task_id)
                 record_delivery(
                     job.user_id,
                     job.task_id,
                     filename,
                     size,
-                    [job.part_urls[i] for i in sorted(job.part_urls) if job.part_urls[i]],
+                    delivered_parts,
+                    remote_delete_supported=len(registered_messages) == len(delivered_parts),
                 )
             except Exception as e:
                 log.warning("No se pudo publicar la entrega para Tod4S3 Sync: %s", type(e).__name__)
@@ -6996,6 +7113,77 @@ def sync_app_profile_photo(user_id: int) -> bytes | None:
 async def sync_app_task_request(application: Application, action: str, user_id: int,
                                 payload: dict) -> tuple[dict, int]:
     """Acciones de cola solicitadas por un dispositivo emparejado."""
+    if action == "delete_delivery":
+        task_id = str(payload.get("task_id", "")).strip()
+        if not task_id or len(task_id) > 200:
+            return {"ok": False, "error": "invalid_task_id"}, 400
+        row = sync_api.delivery_for_user(user_id, task_id)
+        if (not isinstance(row, dict) or row.get("storage_backend") != "todus_native"
+                or row.get("remote_delete_supported") is not True):
+            return {"ok": False, "error": "delivery_not_deletable",
+                    "message": "No hay identificadores ToDus propios para borrar esta entrega."}, 409
+        expected_parts = row.get("parts")
+        messages = todus_messages_for_delivery(user_id, task_id)
+        if not isinstance(expected_parts, list) or not expected_parts or len(messages) != len(expected_parts):
+            return {"ok": False, "error": "delivery_messages_incomplete",
+                    "message": "No están registrados todos los mensajes ToDus; no se intentó borrar."}, 409
+        history_snapshot = all_task_history().get(str(user_id), [])
+        if not isinstance(history_snapshot, list):
+            history_snapshot = []
+        matching_history = [entry for entry in history_snapshot
+                            if isinstance(entry, dict) and entry.get("task_id") == task_id]
+        if len(matching_history) > 1:
+            return {"ok": False, "error": "delivery_state_ambiguous"}, 409
+        manager: FairTaskQueue | None = application.bot_data.get("task_queue")
+        completed_jobs = []
+        if manager is not None:
+            async with manager.lock:
+                completed_jobs = [job for job in manager.jobs.values()
+                                  if job.user_id == user_id and job.task_id == task_id and job.state == "done"]
+                if any(job.part_urls and len(job.part_urls) != len(expected_parts) for job in completed_jobs):
+                    return {"ok": False, "error": "delivery_state_ambiguous"}, 409
+        selected, deleted, ok = await asyncio.to_thread(
+            delete_todus_messages_for_delivery, user_id, task_id,
+        )
+        if not ok or selected != len(expected_parts) or deleted != selected:
+            return {"ok": False, "error": "remote_delete_failed",
+                    "deleted_parts": deleted,
+                    "message": "No se borraron todas las partes; la entrega se conserva para reintentar."}, 502
+
+        async def finish_delete() -> bool:
+            with _HISTORY_LOCK, sync_api._LOCK:
+                current_history = _load_json(HISTORY_DATA_FILE)
+                rows = current_history.get(str(user_id), [])
+                if rows != history_snapshot or sync_api.delivery_for_user(user_id, task_id) != row:
+                    return False
+                rollback = copy.deepcopy(current_history)
+                if matching_history:
+                    remaining_rows = [entry for entry in rows
+                                      if not (isinstance(entry, dict) and entry.get("task_id") == task_id)]
+                    if remaining_rows:
+                        current_history[str(user_id)] = remaining_rows
+                    else:
+                        current_history.pop(str(user_id), None)
+                    _save_json(HISTORY_DATA_FILE, current_history)
+                if not sync_api.remove_delivery_for_user(user_id, task_id, row):
+                    _save_json(HISTORY_DATA_FILE, rollback)
+                    return False
+                return True
+
+        if manager is not None:
+            async with manager.lock:
+                cleared = await finish_delete()
+                if cleared:
+                    for job in completed_jobs:
+                        job.part_urls.clear()
+        else:
+            cleared = await finish_delete()
+        if not cleared:
+            return {"ok": False, "error": "delivery_changed",
+                    "message": "El registro cambió; conserva la fila y consulta de nuevo."}, 409
+        schedule_data_backup(application, "borrado individual de entrega ToDus desde Android")
+        return {"ok": True, "task_id": task_id, "deleted_parts": deleted}, 200
+
     if action == "clear_cloud":
         history_snapshot = all_task_history()
         entries = history_snapshot.get(str(user_id), [])
@@ -7012,6 +7200,19 @@ async def sync_app_task_request(application: Application, action: str, user_id: 
                              if job.user_id == user_id and job.state == "done"]
                 job_parts_snapshot = {job.task_id: copy.deepcopy(job.part_urls) for job in done_jobs}
         urls = []
+        native_rows = {}
+        for row in deliveries:
+            if not isinstance(row, dict) or row.get("storage_backend") != "todus_native":
+                continue
+            task_id = row.get("task_id")
+            parts = row.get("parts")
+            if (not isinstance(task_id, str) or not task_id.strip()
+                    or row.get("remote_delete_supported") is not True
+                    or not isinstance(parts, list) or not parts
+                    or len(todus_messages_for_delivery(user_id, task_id)) != len(parts)):
+                return {"ok": False, "error": "todus_delivery_not_deletable",
+                        "message": "Hay una entrega ToDus antigua sin referencias seguras de borrado; no se vació el historial."}, 409
+            native_rows[task_id] = row
         for entry in entries:
             if not isinstance(entry, dict):
                 continue
@@ -7019,18 +7220,27 @@ async def sync_app_task_request(application: Application, action: str, user_id: 
             if not isinstance(entry_urls, list) or any(not isinstance(url, str) or not url for url in entry_urls):
                 return {"ok": False, "error": "invalid_cloud_object",
                         "message": "Hay una referencia de nube no válida; no se borraron los registros."}, 409
+            task_id = entry.get("task_id")
+            native_row = native_rows.get(task_id)
+            if native_row is not None and entry_urls == native_row.get("parts"):
+                continue
             urls.extend(entry_urls)
         for row in deliveries:
             parts = row.get("parts", []) if isinstance(row, dict) else []
             if not isinstance(parts, list) or any(not isinstance(url, str) or not url for url in parts):
                 return {"ok": False, "error": "invalid_cloud_object",
                         "message": "Hay una referencia de nube no válida; no se borraron los registros."}, 409
+            if isinstance(row, dict) and row.get("storage_backend") == "todus_native":
+                continue
             urls.extend(parts)
         for job in done_jobs:
             parts = getattr(job, "part_urls", {})
             if not isinstance(parts, dict) or any(not isinstance(url, str) or not url for url in parts.values()):
                 return {"ok": False, "error": "invalid_cloud_object",
                         "message": "Hay una referencia de nube no válida; no se borraron los registros."}, 409
+            native_row = native_rows.get(getattr(job, "task_id", ""))
+            if native_row is not None and list(parts.values()) == native_row.get("parts"):
+                continue
             urls.extend(parts.values())
         urls = list(dict.fromkeys(urls))
         if any(not _user_owned_cloud_url(url, user_id) for url in urls):
@@ -7052,6 +7262,15 @@ async def sync_app_task_request(application: Application, action: str, user_id: 
                 "deleted_files": len(ordered_urls) - failed,
                 "failed_files": failed,
             }, 502
+        native_deleted = 0
+        if native_rows:
+            selected, native_deleted, native_ok = await asyncio.to_thread(
+                delete_todus_messages_for_user, user_id,
+            )
+            if not native_ok or native_deleted < sum(len(row["parts"]) for row in native_rows.values()):
+                return {"ok": False, "error": "todus_delete_failed",
+                        "deleted_files": len(ordered_urls) + native_deleted,
+                        "message": "No se borraron todas las partes de ToDus; los registros se conservaron para reintentar."}, 502
         def finish_personal_clear() -> bool:
             with _HISTORY_LOCK, sync_api._LOCK:
                 if _load_json(HISTORY_DATA_FILE) != history_snapshot:
@@ -7087,7 +7306,7 @@ async def sync_app_task_request(application: Application, action: str, user_id: 
             }, 409
         if ordered_urls or entries or deliveries:
             schedule_data_backup(application, "vaciado personal de archivos de nube desde Android")
-        return {"ok": True, "deleted_files": len(ordered_urls),
+        return {"ok": True, "deleted_files": len(ordered_urls) + native_deleted,
                 "deleted_records": len(entries) + len(deliveries)}, 200
 
     manager: FairTaskQueue = application.bot_data["task_queue"]

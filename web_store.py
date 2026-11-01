@@ -53,6 +53,11 @@ def _dispatch_app_task(token: str, action: str, payload: dict) -> tuple[dict, in
         if not isinstance(task_id, str) or not task_id.strip() or len(task_id) > 200:
             return {"ok": False, "error": "invalid_task_id"}, 400
         payload = {"task_id": task_id.strip()}
+    elif action == "delete_delivery":
+        task_id = payload.get("task_id")
+        if not isinstance(task_id, str) or not task_id.strip() or len(task_id) > 200:
+            return {"ok": False, "error": "invalid_task_id"}, 400
+        payload = {"task_id": task_id.strip()}
     elif action == "clear_cloud":
         payload = {}
     elif action != "list":
@@ -95,6 +100,14 @@ def _delivery_cloud_deletable(row: dict, user_id: int) -> bool:
                 and all(_validated_delivery_url(part, user_id) for part in parts))
 
 
+def _delivery_todus_deletable(row: dict) -> bool:
+    parts = row.get("parts")
+    return bool(row.get("storage_backend") == "todus_native"
+                and row.get("remote_delete_supported") is True
+                and isinstance(row.get("task_id"), str) and row["task_id"].strip()
+                and isinstance(parts, list) and parts)
+
+
 def delete_delivery_for_token(token: str, task_id: str) -> tuple[dict, int]:
     """Delete an owned delivery; network calls occur outside sync_api's lock."""
     user_id = sync_api.user_id_for_token(token)
@@ -117,6 +130,8 @@ def delete_delivery_for_token(token: str, task_id: str) -> tuple[dict, int]:
         return {"ok": False, "error": "legacy_delivery_incomplete",
                 "message": "La entrega no contiene un task_id o partes válidas; no se intentó borrar."}, 409
     if not _delivery_cloud_deletable(row, user_id):
+        if _delivery_todus_deletable(row):
+            return _dispatch_app_task(token, "delete_delivery", {"task_id": task_id})
         return {"ok": False, "error": "delivery_not_deletable",
                 "message": "La entrega no es un objeto Nube S3 propio; no se borró ningún archivo."}, 409
     unique_parts = list(dict.fromkeys(parts))
@@ -258,6 +273,7 @@ class StoreHandler(SimpleHTTPRequestHandler):
             else:
                 for row in deliveries:
                     row["cloud_deletable"] = _delivery_cloud_deletable(row, user_id)
+                    row["todus_deletable"] = _delivery_todus_deletable(row)
                 self._json_response({"ok": True, "deliveries": deliveries})
             return
         if path == "/api/app/tasks":
@@ -393,7 +409,13 @@ class StoreHandler(SimpleHTTPRequestHandler):
             self._json_response(payload, status)
             return
         if parsed.path == "/api/app/deliveries/delete":
-            payload, status = delete_delivery_for_token(token, body.get("task_id"))
+            task_id = body.get("task_id")
+            user_id = sync_api.user_id_for_token(token)
+            row = sync_api.delivery_for_user(user_id, task_id) if user_id is not None and isinstance(task_id, str) else None
+            if _delivery_todus_deletable(row or {}):
+                payload, status = _dispatch_app_task(token, "delete_delivery", {"task_id": task_id})
+            else:
+                payload, status = delete_delivery_for_token(token, task_id)
             self._json_response(payload, status)
             return
         if not revoke_token(token):

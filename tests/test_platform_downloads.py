@@ -342,12 +342,36 @@ class ResponseFilenameTests(unittest.TestCase):
             self.assertEqual(normalize_apk_filename(path, "download.zip"), "download.apk")
             validate_downloaded_file(path, "download.apk")
 
-    def test_rejects_split_package_as_single_apk(self):
+    def test_keeps_xapk_archive_as_downloadable_file(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "package.xapk"
+            with ZipFile(path, "w") as package:
+                package.writestr("base.apk", b"split")
+            self.assertEqual(normalize_apk_filename(path, "package.xapk"), "package.xapk")
+            validate_downloaded_file(path, "package.xapk")
+
+    def test_encoded_xapk_url_keeps_name_and_extension(self):
+        headers = {"Content-Type": "application/octet-stream"}
+        url = "https://cdn.example.com/Farlight%2084%20v2.11.0.163969%20-%20espacioapp.com.xapk"
+        self.assertEqual(
+            filename_from_response(headers, url),
+            "Farlight 84 v2.11.0.163969 - espacioapp.com.xapk",
+        )
+
+    def test_keeps_apks_bundle_archive_as_downloadable_file(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "bundle.apks"
+            with ZipFile(path, "w") as package:
+                package.writestr("splits/base-master.apk", b"split")
+            self.assertEqual(normalize_apk_filename(path, "bundle.apks"), "bundle.apks")
+            validate_downloaded_file(path, "bundle.apks")
+
+    def test_still_rejects_split_apk_bundle_mislabeled_as_zip(self):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "bundle.zip"
             with ZipFile(path, "w") as package:
                 package.writestr("base.apk", b"split")
-            with self.assertRaisesRegex(ValueError, "paquete dividido"):
+            with self.assertRaisesRegex(ValueError, "varias APK"):
                 normalize_apk_filename(path, "bundle.zip")
 
 
