@@ -50,7 +50,6 @@ import android.widget.PopupWindow;
 import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
-import android.widget.VideoView;
 import android.webkit.MimeTypeMap;
 import android.graphics.Color;
 import android.graphics.Typeface;
@@ -170,7 +169,6 @@ public final class MainActivity extends Activity {
     private boolean bannedScreenVisible;
     private volatile boolean unbannedScreenVisible;
     private volatile int appAccessGeneration;
-    private VideoView introVideoView;
     private boolean premiumActive;
     private boolean premiumVerified;
     private int freeQuotaPercent;
@@ -212,7 +210,6 @@ public final class MainActivity extends Activity {
         loadToDusCredentials();
         buildUi();
         ensureDownloadNotificationChannel();
-        playIntroVideo();
         handler.postDelayed(this::requestNotificationPermissionIfNeeded, 1_200L);
 
         if (!prefs.getString(PREF_SELECTED_PLAN, "").isEmpty()
@@ -323,36 +320,6 @@ public final class MainActivity extends Activity {
         } else {
             showPhoneStep(false);
         }
-    }
-
-    private void playIntroVideo() {
-        if (appRoot == null) return;
-        VideoView video = new VideoView(this);
-        video.setBackgroundColor(Color.rgb(7, 18, 42));
-        introVideoView = video;
-        appRoot.addView(video, new FrameLayout.LayoutParams(-1, -1));
-        video.setOnPreparedListener(player -> player.setVolume(0.82f, 0.82f));
-        video.setOnCompletionListener(player -> dismissIntroVideo(video));
-        video.setOnErrorListener((player, what, extra) -> {
-            dismissIntroVideo(video);
-            return true;
-        });
-        try {
-            video.setVideoURI(Uri.parse("android.resource://" + getPackageName() + "/" + R.raw.intro_epic));
-            video.start();
-            handler.postDelayed(() -> {
-                if (introVideoView == video) dismissIntroVideo(video);
-            }, 8_000L);
-        } catch (Exception ignored) {
-            dismissIntroVideo(video);
-        }
-    }
-
-    private void dismissIntroVideo(VideoView video) {
-        if (video == null || introVideoView != video) return;
-        introVideoView = null;
-        try { video.stopPlayback(); } catch (Exception ignored) { }
-        if (appRoot != null) appRoot.removeView(video);
     }
 
     private void ensureDownloadNotificationChannel() {
@@ -4314,7 +4281,6 @@ public final class MainActivity extends Activity {
 
     @Override protected void onDestroy() {
         handler.removeCallbacks(poller);
-        if (introVideoView != null) dismissIntroVideo(introVideoView);
         super.onDestroy();
     }
 }
