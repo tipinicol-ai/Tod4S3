@@ -15,3 +15,6 @@ __pycache__/
 *.session
 *.session-journal
 *.enc
+/Tod4S3-Sync-debug.apk
+/sync-app/.gradle/
+/sync-app/**/build/

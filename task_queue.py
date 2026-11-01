@@ -33,6 +33,7 @@ class TransferTask:
     error: str | None = None
     cancel_requested: bool = False
     delivery_mode: str | None = None
+    submission_source: str = "telegram"
 
     def set_state(self, state: str) -> None:
         self.state = state

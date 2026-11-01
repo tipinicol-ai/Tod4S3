@@ -6192,6 +6192,23 @@ def schedule_data_backup(application: Application, reason: str = "cambio de dato
 
 
 async def post_init(application: Application) -> None:
+    loop = asyncio.get_running_loop()
+    from web_store import configure_app_task_bridge
+
+    def app_task_bridge(action: str, user_id: int, payload: dict) -> tuple[dict, int]:
+        future = asyncio.run_coroutine_threadsafe(
+            sync_app_task_request(application, action, user_id, payload), loop
+        )
+        try:
+            return future.result(timeout=25)
+        except TimeoutError:
+            future.cancel()
+            return {"ok": False, "error": "task_api_timeout"}, 504
+        except Exception as exc:
+            log.warning("API móvil de tareas no disponible (%s)", type(exc).__name__)
+            return {"ok": False, "error": "task_api_unavailable"}, 503
+
+    configure_app_task_bridge(app_task_bridge)
     backup_chat_id = configured_backup_chat_id()
     backup_layout = telegram_backup_layout()
     backup_layout.auth_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -6415,6 +6432,89 @@ async def post_shutdown(application: Application) -> None:
 def sync_app_profile(user_id: int) -> dict:
     plan = get_user_plan(user_id)
     return {"premium": is_owner(user_id) or plan == "premium", "plan": plan}
+
+
+async def sync_app_task_request(application: Application, action: str, user_id: int,
+                                payload: dict) -> tuple[dict, int]:
+    """Acciones de cola solicitadas por un dispositivo emparejado."""
+    manager: FairTaskQueue = application.bot_data["task_queue"]
+    if action == "enqueue":
+        try:
+            url = validate_url_syntax(payload.get("url", ""))
+        except (AttributeError, TypeError, ValueError):
+            return {"ok": False, "error": "invalid_url",
+                    "message": "Pega un enlace HTTP/HTTPS válido."}, 400
+        target_number = get_user_todus_number(user_id)
+        if not target_number:
+            return {"ok": False, "error": "todus_number_required",
+                    "message": "Configura primero tu número en el bot con /todus <tu número>."}, 409
+        queue_limit = get_user_queue_limit(user_id)
+        try:
+            status_message = await application.bot.send_message(
+                chat_id=user_id,
+                text=card("⏳ ᴇɴ ᴄᴏʟᴀ", ["Solicitud desde Tod4S3 Sync", "Esperando turno..."]),
+            )
+        except Exception:
+            return {"ok": False, "error": "bot_chat_unavailable",
+                    "message": "Abre el chat privado del bot y vuelve a intentarlo."}, 409
+        job = TransferTask(
+            user_id=user_id, chat_id=user_id, source_kind="url", source_message=None,
+            status_message=status_message, source_url=url,
+            delivery_mode="todus", display_name="Tod4S3 Sync",
+            submission_source="android_app",
+        )
+        try:
+            accepted = await manager.enqueue(job, queue_limit)
+        except Exception:
+            try:
+                await status_message.delete()
+            except Exception:
+                pass
+            log.exception("No se pudo encolar una URL enviada desde Android user=%s", user_id)
+            return {"ok": False, "error": "queue_unavailable"}, 503
+        if not accepted:
+            await status_message.edit_text(card("🚫 ᴄᴜᴘᴏ ᴄᴏᴍᴘʟᴇᴛᴏ", [
+                f"Tu plan permite {queue_limit} tareas en cola.",
+                "Espera a que termine una y vuelve a intentarlo.",
+            ]))
+            return {"ok": False, "error": "queue_limit",
+                    "message": f"Tu plan permite {queue_limit} tareas en cola."}, 429
+        ensure_task_workers(application)
+        await _edit_task_status(job, card("⏳ ᴇɴ ᴄᴏʟᴀ", ["Solicitud desde Tod4S3 Sync", "Esperando turno..."]))
+        return {"ok": True, "task_id": job.task_id, "state": job.state}, 202
+
+    if action == "list":
+        async with manager.lock:
+            jobs = [
+                job for job in manager.jobs.values()
+                if job.user_id == user_id and job.submission_source == "android_app"
+            ]
+            jobs.sort(key=lambda job: job.created_at, reverse=True)
+            rows = [{
+                "task_id": job.task_id,
+                "state": job.state,
+                "filename": (job.filename or "").replace("\n", " ")[:180],
+                "size": max(0, int(job.size or 0)),
+                "created_at": int(job.created_at),
+                "error": "La tarea falló; puedes volver a enviarla." if job.state == "error" else "",
+            } for job in jobs[:30]]
+        return {"ok": True, "tasks": rows}, 200
+
+    if action == "cancel":
+        task_id = payload.get("task_id", "")
+        async with manager.lock:
+            candidate = manager.jobs.get(task_id)
+            if (candidate is None or candidate.user_id != user_id
+                    or candidate.submission_source != "android_app"):
+                return {"ok": False, "error": "task_not_found"}, 404
+        job = await manager.cancel(task_id, user_id)
+        if job is None:
+            return {"ok": False, "error": "task_not_found"}, 404
+        if job.state == "paused":
+            await _edit_task_status(job, task_detail_text(job))
+        return {"ok": True, "task_id": job.task_id, "state": job.state}, 200
+
+    return {"ok": False, "error": "invalid_action"}, 400
 
 
 def main() -> None:

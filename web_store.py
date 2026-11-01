@@ -26,6 +26,48 @@ _MAX_VISITORS = 5000
 _VISITOR_RE = re.compile(r"^[A-Za-z0-9-]{8,96}$")
 _DEFAULT_ORIGIN = "https://tod4s3-production.up.railway.app"
 _PROFILE_CHECKER: Callable[[int], dict] | None = None
+_APP_TASK_BRIDGE: Callable[[str, int, dict], tuple[dict, int]] | None = None
+_APP_TASK_BRIDGE_LOCK = Lock()
+
+
+def configure_app_task_bridge(bridge: Callable[[str, int, dict], tuple[dict, int]] | None) -> None:
+    """Conecta las rutas móviles con el worker, respetando su event loop."""
+    global _APP_TASK_BRIDGE
+    with _APP_TASK_BRIDGE_LOCK:
+        _APP_TASK_BRIDGE = bridge
+
+
+def _dispatch_app_task(token: str, action: str, payload: dict) -> tuple[dict, int]:
+    user_id = sync_api.user_id_for_token(token)
+    if user_id is None:
+        return {"ok": False, "error": "unauthorized"}, 401
+    if action == "enqueue":
+        url = payload.get("url")
+        if (not isinstance(url, str) or not url.strip() or len(url.strip()) > 2048
+                or any(ord(char) < 32 for char in url)):
+            return {"ok": False, "error": "invalid_url"}, 400
+        payload = {"url": url.strip()}
+    elif action == "cancel":
+        task_id = payload.get("task_id")
+        if not isinstance(task_id, str) or not task_id.strip() or len(task_id) > 200:
+            return {"ok": False, "error": "invalid_task_id"}, 400
+        payload = {"task_id": task_id.strip()}
+    elif action != "list":
+        return {"ok": False, "error": "invalid_action"}, 400
+    with _APP_TASK_BRIDGE_LOCK:
+        bridge = _APP_TASK_BRIDGE
+    if bridge is None:
+        return {"ok": False, "error": "task_service_unavailable"}, 503
+    try:
+        result = bridge(action, user_id, payload)
+    except TimeoutError:
+        return {"ok": False, "error": "task_api_timeout"}, 504
+    except Exception:
+        return {"ok": False, "error": "task_api_unavailable"}, 503
+    if (not isinstance(result, tuple) or len(result) != 2
+            or not isinstance(result[0], dict) or not isinstance(result[1], int)):
+        return {"ok": False, "error": "task_api_unavailable"}, 503
+    return result
 
 
 def _validated_delivery_url(url: str, user_id: int) -> bool:
@@ -151,6 +193,12 @@ class StoreHandler(SimpleHTTPRequestHandler):
             else:
                 self._json_response({"ok": True, "deliveries": deliveries})
             return
+        if path == "/api/app/tasks":
+            authorization = self.headers.get("Authorization", "")
+            token = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
+            payload, status = _dispatch_app_task(token, "list", {})
+            self._json_response(payload, status)
+            return
         if path == "/api/site-stats":
             visitor = parse_qs(parsed.query).get("visitor", [""])[0][:96]
             if not _VISITOR_RE.fullmatch(visitor):
@@ -208,7 +256,10 @@ class StoreHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self):  # noqa: N802
         parsed = urlsplit(unquote(self.path))
-        if parsed.path not in {"/api/app/pair", "/api/app/revoke", "/api/app/deliveries/delete"}:
+        if parsed.path not in {
+            "/api/app/pair", "/api/app/revoke", "/api/app/deliveries/delete",
+            "/api/app/download", "/api/app/tasks/cancel",
+        }:
             self._json_response({"ok": False, "error": "not_found"}, 404)
             return
         try:
@@ -230,6 +281,14 @@ class StoreHandler(SimpleHTTPRequestHandler):
             return
         token = self.headers.get("Authorization", "")
         token = token[7:].strip() if token.lower().startswith("bearer ") else ""
+        if parsed.path == "/api/app/download":
+            payload, status = _dispatch_app_task(token, "enqueue", body)
+            self._json_response(payload, status)
+            return
+        if parsed.path == "/api/app/tasks/cancel":
+            payload, status = _dispatch_app_task(token, "cancel", body)
+            self._json_response(payload, status)
+            return
         if parsed.path == "/api/app/deliveries/delete":
             payload, status = delete_delivery_for_token(token, body.get("task_id"))
             self._json_response(payload, status)
