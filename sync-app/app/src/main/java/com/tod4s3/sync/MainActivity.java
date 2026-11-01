@@ -78,6 +78,7 @@ import javax.crypto.spec.GCMParameterSpec;
 
 public final class MainActivity extends Activity {
     private static final String API_BASE = "https://tod4s3-production.up.railway.app";
+    private static final String UDYAT_PACKAGE = "com.udyat.downloader.udyat_downloader";
     private static final String KEY_ALIAS = "tod4s3.sync.todus.credentials.v1";
     private static final String PREF_TODUS_PHONE = "todus_phone_enc";
     private static final String PREF_TODUS_PASSWORD = "todus_password_enc";
@@ -820,6 +821,30 @@ public final class MainActivity extends Activity {
         content.addView(importButton, margin(0, 12, 0, 0));
         Button submit = primaryButton("Iniciar descarga");
         content.addView(submit, margin(0, 10, 0, 0));
+        Button downloadWithUdyat = secondaryButton("Abrir enlace con UDYAT Downloader");
+        downloadWithUdyat.setOnClickListener(v -> {
+            ArrayList<String> links = extractLinks(linkInput.getText().toString());
+            if (links.isEmpty()) {
+                status.setText("Pega primero un enlace HTTP/HTTPS válido.");
+                return;
+            }
+            if (links.size() != 1) {
+                status.setText("UDYAT Downloader recibirá un enlace por vez. Deja solo un enlace en el cuadro.");
+                return;
+            }
+            Intent shareLink = new Intent(Intent.ACTION_SEND);
+            shareLink.setType("text/plain");
+            shareLink.putExtra(Intent.EXTRA_TEXT, links.get(0));
+            shareLink.setPackage(UDYAT_PACKAGE);
+            try {
+                startActivity(shareLink);
+            } catch (android.content.ActivityNotFoundException e) {
+                status.setText("Instala UDYAT Downloader para usar su motor de descarga. El enlace no se envió a la cola del bot.");
+            } catch (Exception e) {
+                status.setText("No se pudo abrir UDYAT Downloader. Comprueba que esté instalada.");
+            }
+        });
+        content.addView(downloadWithUdyat, margin(0, 9, 0, 0));
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle("Nueva descarga")
                 .setView(content)
