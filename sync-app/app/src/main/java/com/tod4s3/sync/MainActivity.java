@@ -116,6 +116,8 @@ public final class MainActivity extends Activity {
     private EditText pinInput;
     private TextView syncStatus;
     private TextView todusStatus;
+    private TextView todusSessionStatusText;
+    private String todusSessionStatusMessage = "No hay una sesión ToDus guardada.";
     private TextView planStatus;
     private LinearLayout deliveriesBox;
     private LinearLayout dashboardItemsBox;
@@ -578,6 +580,7 @@ public final class MainActivity extends Activity {
         dashboardFilter = filter;
         viewingDownloadsTab = "completed".equals(filter);
         deliveriesBox = null;
+        todusSessionStatusText = null;
         LinearLayout page = new LinearLayout(this);
         page.setOrientation(LinearLayout.VERTICAL);
         page.setPadding(dp(14), dp(12), dp(14), dp(24));
@@ -708,6 +711,7 @@ public final class MainActivity extends Activity {
         dashboardItemsBox.removeAllViews();
         int shown = 0;
         boolean toDusTab = "all".equals(dashboardFilter);
+        if (toDusTab) addToDusSessionStatus(dashboardItemsBox);
         if ("active".equals(dashboardFilter)) {
             shown += renderDirectLinkTasks();
         }
@@ -2401,6 +2405,7 @@ public final class MainActivity extends Activity {
                 runOnUiThread(() -> {
                     toDusValidationInFlight = false;
                     showHomeStep(true);
+                    setToDusSessionStatus("Sesión ToDus conectada correctamente.");
                     if (syncStatus != null) syncStatus.setText("Sesión iniciada. Tus credenciales quedaron cifradas.");
                 });
             } catch (Exception e) {
@@ -2417,9 +2422,11 @@ public final class MainActivity extends Activity {
         final String phone = todusPhone;
         final String password = todusPassword;
         if (phone.isEmpty() || password.isEmpty()) {
+            setToDusSessionStatus("No hay una sesión ToDus guardada.");
             if (todusStatus != null) todusStatus.setText("No hay una sesión ToDus guardada para restaurar.");
             return;
         }
+        setToDusSessionStatus("Restaurando sesión ToDus…");
         if (syncStatus != null) syncStatus.setText("Restaurando sesión ToDus…");
         new Thread(() -> {
             try {
@@ -2427,11 +2434,13 @@ public final class MainActivity extends Activity {
                 putEncrypted(PREF_TODUS_TOKEN, newToken);
                 todusToken = newToken;
                 runOnUiThread(() -> {
+                    setToDusSessionStatus("Sesión ToDus restaurada correctamente.");
                     if (syncStatus != null) syncStatus.setText("Sesión ToDus restaurada.");
                     if (deliveriesBox == null && !showingPlansPage) showHomeStep(true);
                 });
             } catch (Exception e) {
                 runOnUiThread(() -> {
+                    setToDusSessionStatus("No se pudo restaurar; vuelve a conectar ToDus.");
                     if (!showingPlansPage) showPhoneStep(true);
                     if (todusStatus != null) todusStatus.setText("No se pudo restaurar la sesión: " + e.getMessage());
                 });
@@ -2491,6 +2500,9 @@ public final class MainActivity extends Activity {
             todusPhone = readEncrypted(PREF_TODUS_PHONE);
             todusPassword = readEncrypted(PREF_TODUS_PASSWORD);
             todusToken = readEncrypted(PREF_TODUS_TOKEN);
+            setToDusSessionStatus(!todusPhone.isEmpty() && !todusPassword.isEmpty()
+                    ? "Sesión guardada; comprobando conexión con ToDus…"
+                    : "No hay una sesión ToDus guardada.");
         } catch (Exception e) {
             savedCredentialsCouldNotBeDecrypted = true;
             clearToDusCredentials();
@@ -2511,6 +2523,7 @@ public final class MainActivity extends Activity {
         todusPhone = "";
         todusPassword = "";
         todusToken = "";
+        setToDusSessionStatus("Sesión ToDus desconectada.");
     }
 
     private void refreshDeliveries() {
@@ -2612,6 +2625,43 @@ public final class MainActivity extends Activity {
         return token == null || token.isEmpty()
                 ? "Vincula tu cuenta para sincronizar el plan activado por el bot."
                 : "Plan actual: Gratis · se actualizará automáticamente si activan Premium.";
+    }
+
+    private void addToDusSessionStatus(LinearLayout parent) {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(13), dp(10), dp(13), dp(10));
+        card.setBackground(roundRect(Color.rgb(11, 31, 48), 15, borderColor()));
+        TextView title = text("SESIÓN TODUS", 10, true);
+        title.setTextColor(accentColor());
+        card.addView(title);
+        TextView detail = bodyText(todusSessionStatusMessage);
+        detail.setTextSize(13);
+        detail.setSingleLine(false);
+        card.addView(detail, margin(0, 4, 0, 0));
+        parent.addView(card, margin(0, 0, 0, 9));
+        todusSessionStatusText = detail;
+        colorToDusSessionStatus(detail, todusSessionStatusMessage);
+    }
+
+    private void setToDusSessionStatus(String message) {
+        todusSessionStatusMessage = message;
+        if (todusSessionStatusText != null) {
+            todusSessionStatusText.setText(message);
+            colorToDusSessionStatus(todusSessionStatusText, message);
+        }
+    }
+
+    private void colorToDusSessionStatus(TextView view, String message) {
+        String lower = message == null ? "" : message.toLowerCase(java.util.Locale.ROOT);
+        if (lower.contains("restaurada") || lower.contains("conectada")) {
+            view.setTextColor(Color.rgb(99, 230, 216));
+        } else if (lower.contains("no se pudo") || lower.contains("desconectada")
+                || lower.contains("no hay una sesión")) {
+            view.setTextColor(Color.rgb(255, 174, 160));
+        } else {
+            view.setTextColor(Color.rgb(242, 198, 106));
+        }
     }
 
     private void renderDeliveries(JSONArray rows) {
