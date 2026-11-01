@@ -89,6 +89,7 @@ public final class MainActivity extends Activity {
     private static final String PREF_TODUS_DOWNLOAD_TASKS = "todus_download_tasks_v1";
     private static final String PREF_ACTIVE_PLAN = "active_plan_v1";
     private static final String PREF_ACTIVE_PREMIUM = "active_premium_v1";
+    private static final String PREF_PREMIUM_VERIFIED = "premium_verified_v1";
     private static final String PREF_HIDDEN_DELIVERIES = "hidden_delivery_ids_v1";
     private static final String PREF_UI_THEME = "ui_theme_v1";
     private static final String PREF_UI_ACCENT = "ui_accent_v1";
@@ -122,6 +123,10 @@ public final class MainActivity extends Activity {
     private TextView planStatus;
     private LinearLayout deliveriesBox;
     private LinearLayout dashboardItemsBox;
+    private LinearLayout quotaUsageBox;
+    private ProgressBar quotaProgressBar;
+    private TextView quotaUsageText;
+    private TextView quotaResetText;
     private View dashboardFab;
     private String token;
     private String todusPhone = "";
@@ -139,6 +144,12 @@ public final class MainActivity extends Activity {
     private boolean showingPlansPage;
     private boolean profileRefreshInFlight;
     private boolean premiumActive;
+    private boolean premiumVerified;
+    private int freeQuotaPercent;
+    private long freeQuotaUsedBytes;
+    private long freeQuotaLimitBytes;
+    private long freeQuotaRemainingBytes;
+    private long freeQuotaResetInSeconds = 24 * 60 * 60;
     private String activePlan = "free";
     private String premiumExpiresAt = "";
     private final Object downloadConcurrencyLock = new Object();
@@ -163,6 +174,7 @@ public final class MainActivity extends Activity {
         prefs = getSharedPreferences("tod4s3_sync", MODE_PRIVATE);
         token = prefs.getString("token", "");
         premiumActive = prefs.getBoolean(PREF_ACTIVE_PREMIUM, false);
+        premiumVerified = prefs.getBoolean(PREF_PREMIUM_VERIFIED, false);
         activePlan = prefs.getString(PREF_ACTIVE_PLAN, "free");
         premiumExpiresAt = prefs.getString("active_plan_expires_v1", "");
         loadDirectLinkTasks();
@@ -297,6 +309,15 @@ public final class MainActivity extends Activity {
 
         page.addView(text("Planes Premium", 20, true), margin(0, 4, 0, 4));
         page.addView(bodyText("Descargas sin límite mientras el plan esté activo."), margin(0, 0, 0, 10));
+        LinearLayout premiumActions = card();
+        premiumActions.addView(text("¿Ya tienes Premium o quieres comprarlo?", 15, true));
+        Button alreadyPremium = secondaryButton("Ya soy premium");
+        alreadyPremium.setOnClickListener(v -> promptPremiumActivationToken());
+        premiumActions.addView(alreadyPremium, margin(0, 9, 0, 0));
+        Button buyPremium = goldButton("Comprar premium");
+        buyPremium.setOnClickListener(v -> showPremiumPurchaseOptions());
+        premiumActions.addView(buyPremium, margin(0, 8, 0, 0));
+        page.addView(premiumActions, margin(0, 2, 0, 12));
         page.addView(planOffer("Premium 15 días", "250 CUP", "Descargas sin límite y entrega directa por ToDus.", "Premium 15 días · 250 CUP"), margin(0, 0, 0, 10));
         page.addView(planOffer("Premium 20 días", "300 CUP", "Descargas sin límite durante 20 días.", "Premium 20 días · 300 CUP"), margin(0, 0, 0, 10));
         page.addView(planOffer("Premium 30 días", "500 CUP", "Un mes completo de descargas sin límite.", "Premium 30 días · 500 CUP"), margin(0, 0, 0, 10));
@@ -332,6 +353,90 @@ public final class MainActivity extends Activity {
         requestPlan.setOnClickListener(v -> openPremiumRequest(purchasePlan));
         offer.addView(requestPlan);
         return offer;
+    }
+
+    private void showPremiumPurchaseOptions() {
+        String[] offers = {"Premium 15 días · 250 CUP", "Premium 20 días · 300 CUP", "Premium 30 días · 500 CUP"};
+        new AlertDialog.Builder(this)
+                .setTitle("Comprar Premium")
+                .setItems(offers, (dialog, which) -> {
+                    if (which >= 0 && which < offers.length) openPremiumRequest(offers[which]);
+                })
+                .setNegativeButton("Cancelar", null)
+                .show();
+    }
+
+    private void promptPremiumActivationToken() {
+        if (token == null || token.isEmpty()) {
+            Toast.makeText(this,
+                    "Primero continúa con Gratis y vincula tu cuenta de Telegram; luego podrás validar el token.",
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        LinearLayout form = new LinearLayout(this);
+        form.setOrientation(LinearLayout.VERTICAL);
+        form.setPadding(dp(8), dp(6), dp(8), dp(2));
+        form.addView(bodyText("Pega el código que te entregó el administrador. Solo sirve para tu ID de Telegram y este móvil."));
+        EditText codeField = input("Ejemplo: T4S3-…", android.text.InputType.TYPE_CLASS_TEXT
+                | android.text.InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
+                | android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        codeField.setSingleLine(true);
+        form.addView(codeField, margin(0, 10, 0, 6));
+        TextView status = bodyText("");
+        status.setTextColor(Color.rgb(255, 205, 116));
+        form.addView(status);
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("Ya soy Premium")
+                .setView(form)
+                .setNegativeButton("Cancelar", null)
+                .setPositiveButton("Verificar token", null)
+                .create();
+        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
+            String code = codeField.getText().toString().trim();
+            if (code.isEmpty()) {
+                status.setText("Pega el código que te entregó el administrador.");
+                return;
+            }
+            verifyPremiumActivationToken(code, dialog, status);
+        }));
+        dialog.show();
+        dialog.getWindow().setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN);
+    }
+
+    private void verifyPremiumActivationToken(String code, AlertDialog dialog, TextView status) {
+        final String currentToken = token == null ? "" : token;
+        status.setText("Verificando el ID, el plan y este móvil…");
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(false);
+        new Thread(() -> {
+            try {
+                JSONObject body = new JSONObject().put("token", code.toUpperCase(java.util.Locale.ROOT));
+                JSONObject result = request("POST", "/api/app/premium/claim", body.toString(), currentToken);
+                if (!result.optBoolean("verified", false)) throw new IOException("premium_not_verified");
+                runOnUiThread(() -> {
+                    premiumVerified = true;
+                    prefs.edit().putBoolean(PREF_PREMIUM_VERIFIED, true).apply();
+                    if (planStatus != null) planStatus.setText(accountPlanStatusText());
+                    dialog.dismiss();
+                    Toast.makeText(this, "Premium verificado para este móvil.", Toast.LENGTH_LONG).show();
+                    refreshAccountProfile();
+                });
+            } catch (Exception e) {
+                String raw = e.getMessage() == null ? "" : e.getMessage();
+                String message = raw.contains("premium_not_active")
+                        ? "El administrador todavía no ha activado Premium para esta cuenta."
+                        : raw.contains("device_mismatch")
+                        ? "Este código ya está vinculado a otro móvil. Contacta con el administrador."
+                        : raw.contains("plan_changed") || raw.contains("activation_expired")
+                        ? "El código venció o corresponde a un plan anterior. Pide uno nuevo al administrador."
+                        : raw.contains("invalid_token")
+                        ? "El código no es válido para esta cuenta. Comprueba que pertenece a tu ID."
+                        : "No se pudo verificar el código. Revisa la conexión e inténtalo de nuevo.";
+                runOnUiThread(() -> {
+                    status.setText(message);
+                    dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(true);
+                });
+            }
+        }, "premium-token-verify").start();
     }
 
     private LinearLayout paymentMethodChip(int iconResource, String label) {
@@ -596,6 +701,13 @@ public final class MainActivity extends Activity {
         TextView status = bodyText("all".equals(filter) ? "Entregas recibidas por ToDus" : "Descargas de Tod4S3 Sync");
         status.setTextSize(12);
         page.addView(status, margin(2, 12, 2, 0));
+        quotaUsageBox = new LinearLayout(this);
+        quotaUsageBox.setOrientation(LinearLayout.VERTICAL);
+        page.addView(quotaUsageBox, margin(0, 9, 0, 0));
+        quotaProgressBar = null;
+        quotaUsageText = null;
+        quotaResetText = null;
+        updateQuotaUsageCard();
         dashboardItemsBox = new LinearLayout(this);
         dashboardItemsBox.setOrientation(LinearLayout.VERTICAL);
         page.addView(dashboardItemsBox, margin(0, 12, 0, 0));
@@ -2153,9 +2265,11 @@ public final class MainActivity extends Activity {
         final String oldToken = token == null ? "" : token;
         token = "";
         prefs.edit().remove("token").remove(PREF_SELECTED_PLAN)
-                .remove(PREF_ACTIVE_PREMIUM).remove(PREF_ACTIVE_PLAN).remove("active_plan_expires_v1")
+                .remove(PREF_ACTIVE_PREMIUM).remove(PREF_PREMIUM_VERIFIED)
+                .remove(PREF_ACTIVE_PLAN).remove("active_plan_expires_v1")
                 .putBoolean(PREF_TODUS_PIN_REQUESTED, false).apply();
         premiumActive = false;
+        premiumVerified = false;
         activePlan = "free";
         premiumExpiresAt = "";
         clearToDusCredentials();
@@ -2720,23 +2834,39 @@ public final class MainActivity extends Activity {
             try {
                 JSONObject profile = request("GET", "/api/app/profile", "", current);
                 boolean newPremium = profile.optBoolean("premium", false);
+                boolean newPremiumVerified = profile.optBoolean("premium_verified", false);
                 String newPlan = profile.optString("plan", "free");
                 String newExpiry = profile.optString("expires", "");
+                JSONObject quota = profile.optJSONObject("quota");
+                long newQuotaLimit = quota == null ? 0 : Math.max(0, quota.optLong("limit_bytes", 0));
+                long newQuotaUsed = quota == null ? 0 : Math.max(0, quota.optLong("used_bytes", 0));
+                long newQuotaRemaining = quota == null ? 0 : Math.max(0, quota.optLong("remaining_bytes", 0));
+                int newQuotaPercent = quota == null ? 0 : Math.max(0, Math.min(100, quota.optInt("percent_used", 0)));
+                long newQuotaResetIn = quota == null ? 0 : Math.max(0, quota.optLong("reset_in_seconds", 0));
                 runOnUiThread(() -> {
                     if (!current.equals(token)) {
                         profileRefreshInFlight = false;
                         return;
                     }
-                    boolean changed = premiumActive != newPremium || !activePlan.equals(newPlan)
+                    boolean changed = premiumActive != newPremium || premiumVerified != newPremiumVerified
+                            || !activePlan.equals(newPlan)
                             || !premiumExpiresAt.equals(newExpiry);
                     premiumActive = newPremium;
+                    premiumVerified = newPremiumVerified;
                     activePlan = newPlan;
                     premiumExpiresAt = newExpiry;
+                    freeQuotaLimitBytes = newQuotaLimit;
+                    freeQuotaUsedBytes = newQuotaUsed;
+                    freeQuotaRemainingBytes = newQuotaRemaining;
+                    freeQuotaPercent = newQuotaPercent;
+                    freeQuotaResetInSeconds = newQuotaResetIn;
                     profileRefreshInFlight = false;
                     prefs.edit().putBoolean(PREF_ACTIVE_PREMIUM, premiumActive)
+                            .putBoolean(PREF_PREMIUM_VERIFIED, premiumVerified)
                             .putString(PREF_ACTIVE_PLAN, activePlan)
                             .putString("active_plan_expires_v1", premiumExpiresAt).apply();
                     if (planStatus != null) planStatus.setText(accountPlanStatusText());
+                    updateQuotaUsageCard();
                     if (changed && viewingDashboard && "all".equals(dashboardFilter)) {
                         showDashboard(dashboardFilter, false);
                     }
@@ -2749,14 +2879,66 @@ public final class MainActivity extends Activity {
 
     private String accountPlanStatusText() {
         if (premiumActive) {
-            String label = "Plan Premium activo";
+            String label = premiumVerified ? "Plan Premium activo y verificado en este móvil"
+                    : "Premium activo para tu ID · falta pegar el token del administrador";
             if (!premiumExpiresAt.isEmpty()) label += " · hasta " + premiumExpiresAt;
             else label += " · permanente";
             return label;
         }
+        if ("free".equals(activePlan) && freeQuotaLimitBytes > 0) {
+            return "Plan Gratis · " + freeQuotaPercent + "% de la cuota diaria usada · reinicio en "
+                    + quotaCountdownLabel(freeQuotaResetInSeconds);
+        }
         return token == null || token.isEmpty()
                 ? "Vincula tu cuenta para sincronizar el plan activado por el bot."
                 : "Plan actual: Gratis · se actualizará automáticamente si activan Premium.";
+    }
+
+    private void updateQuotaUsageCard() {
+        if (quotaUsageBox == null) return;
+        if (token == null || token.isEmpty() || !"free".equals(activePlan) || freeQuotaLimitBytes <= 0) {
+            quotaUsageBox.removeAllViews();
+            quotaUsageBox.setVisibility(View.GONE);
+            quotaProgressBar = null;
+            quotaUsageText = null;
+            quotaResetText = null;
+            return;
+        }
+        quotaUsageBox.setVisibility(View.VISIBLE);
+        if (quotaProgressBar == null || quotaUsageText == null || quotaResetText == null) {
+            LinearLayout quotaCard = card();
+            quotaCard.setPadding(dp(14), dp(11), dp(14), dp(11));
+            TextView title = text("CUOTA GRATUITA · 1 GB CADA 24 H", 11, true);
+            title.setTextColor(accentColor());
+            quotaCard.addView(title);
+            quotaProgressBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+            quotaProgressBar.setMax(100);
+            quotaProgressBar.setProgressTintList(ColorStateList.valueOf(accentColor()));
+            quotaCard.addView(quotaProgressBar, margin(0, 8, 0, 0));
+            quotaUsageText = bodyText("");
+            quotaUsageText.setTextSize(12);
+            quotaCard.addView(quotaUsageText, margin(0, 5, 0, 0));
+            quotaResetText = bodyText("");
+            quotaResetText.setTextSize(11);
+            quotaCard.addView(quotaResetText, margin(0, 3, 0, 0));
+            quotaUsageBox.removeAllViews();
+            quotaUsageBox.addView(quotaCard);
+        }
+        int percent = Math.max(0, Math.min(100, freeQuotaPercent));
+        quotaProgressBar.setProgress(percent);
+        quotaUsageText.setText(percent + "% usado · " + formatBytes(freeQuotaUsedBytes)
+                + " de " + formatBytes(freeQuotaLimitBytes) + " · quedan "
+                + formatBytes(freeQuotaRemainingBytes));
+        quotaResetText.setText("La cuota gratis se renueva en " + quotaCountdownLabel(freeQuotaResetInSeconds));
+    }
+
+    private String quotaCountdownLabel(long seconds) {
+        long safe = Math.max(0, seconds);
+        long hours = safe / 3600;
+        long minutes = (safe % 3600 + 59) / 60;
+        if (minutes >= 60) { hours++; minutes = 0; }
+        if (hours > 0) return hours + " h " + minutes + " min";
+        return Math.max(1, minutes) + " min";
     }
 
     private void addToDusSessionStatus(LinearLayout parent) {

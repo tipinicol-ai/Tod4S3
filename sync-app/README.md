@@ -36,7 +36,7 @@ Hay dos secciones: «Entregas» y «Descargas». En Entregas, «Ocultar» quita 
 
 Al pegar el enlace final recibido del bot y pulsar «Descargar enlace recibido», la app descarga ese archivo directamente al teléfono con el motor Java HTTP Range de hasta cuatro conexiones, checkpoints y reintentos; esta ruta es independiente de las entregas ToDus/XMPP, cuyo proceso multipart tradicional se conserva. La descarga aparece inmediatamente en «Activas» con progreso y controles para pausar, reanudar o eliminar. Pausar conserva los fragmentos locales; eliminar borra solo la tarea y sus temporales, no borra archivos ya completados del teléfono ni objetos remotos.
 
-El estado Premium se vuelve a consultar al abrir/volver a la app y cada 15 segundos, de modo que una activación hecha por el administrador del bot se refleja sin reinstalarla. «Vaciar mi nube» solicita al servidor borrar los objetos y registros S3 de la cuenta vinculada; requiere confirmación y no elimina los archivos guardados localmente. En el bot, el panel de administrador mantiene las acciones para vaciar la nube global o la nube de un usuario. Los archivos de `users/df/` conservan su expiración fija de 12 horas.
+El estado Premium y la cuota se vuelven a consultar al abrir/volver a la app y cada 15 segundos. En el plan Gratis, el dashboard muestra una barra con el porcentaje del 1 GB gastado, lo que queda de la cuota y una cuenta atrás del reinicio móvil de 24 horas; se sincroniza con el mismo bucket que limita las transferencias en el bot. En «Planes y ofertas» aparecen «Ya soy premium» y «Comprar premium». Tras la activación del administrador, este recibe un código secreto y se lo entrega al comprador; el usuario lo pega en «Ya soy premium». El servidor verifica el plan activo, el ID de Telegram asociado a la sesión y el móvil emparejado. El primer canje liga el código a ese dispositivo; no puede reutilizarse en otro móvil. El código vence junto con el plan o se invalida si el plan se cambia; el panel permite consultar por ID si Premium está activo y si el código ya fue validado, y reemitirlo cuando corresponda. «Vaciar mi nube» solicita al servidor borrar los objetos y registros S3 de la cuenta vinculada; requiere confirmación y no elimina los archivos guardados localmente. En el bot, el panel de administrador mantiene las acciones para vaciar la nube global o la nube de un usuario. Los archivos de `users/df/` conservan su expiración fija de 12 horas.
 
 ## API usada
 
@@ -45,13 +45,14 @@ El estado Premium se vuelve a consultar al abrir/volver a la app y cada 15 segun
 - `POST /api/app/deliveries/delete`: elimina solo entregas cuyas partes sean objetos S3 comprobados como propios.
 - `POST /api/app/cloud/clear`: borra archivos de nube del usuario autenticado desde el worker del bot.
 - `GET /api/app/profile`: devuelve el plan Premium actual y su vencimiento.
+- `POST /api/app/premium/claim`: valida el token admin de Premium y lo liga al ID y móvil autenticados.
 - `POST /api/app/download`, `GET /api/app/tasks`, `POST /api/app/tasks/cancel`: gestiona solicitudes enviadas a la cola del bot.
 - `GET /api/app/profile/photo`: sirve la foto de perfil de Telegram asociada al token.
 - `POST /api/app/revoke`: revoca el token del dispositivo.
 
 ## Estado
 
-La versión 1.3.9 mantiene las funciones anteriores, actualiza el progreso de descarga sin reconstruir la pantalla en cada avance y solo muestra el borrado remoto cuando la API confirma que el archivo pertenece a la cuenta y está en S3. Los enlaces nativos ToDus se mantienen descargables y se identifican como no eliminables desde Nube S3. Las tareas de enlaces directos permanecen separadas y el historial local en «Completadas». Ajustes se desplaza verticalmente para recorrer sus secciones. El APK conserva el relleno inerte para quedar cerca de 1.9 MB.
+La versión 1.4.0 mantiene las funciones anteriores, añade la barra de cuota gratuita de 24 horas, el canje seguro de códigos Premium ligados al usuario y al dispositivo, y el control administrativo de Premium por ID. También actualiza el progreso de descarga sin reconstruir la pantalla en cada avance y solo muestra el borrado remoto cuando la API confirma que el archivo pertenece a la cuenta y está en S3. Los enlaces nativos ToDus se mantienen descargables y se identifican como no eliminables desde Nube S3. Las tareas de enlaces directos permanecen separadas y el historial local en «Completadas». Ajustes se desplaza verticalmente para recorrer sus secciones. El APK conserva el relleno inerte para quedar cerca de 1.9 MB.
 
 
 ## Tamaño del APK

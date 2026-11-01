@@ -20,7 +20,7 @@ _TOKEN_TTL = 365 * 24 * 60 * 60
 
 
 def _default_state() -> dict[str, Any]:
-    return {"pairings": {}, "tokens": {}, "deliveries": {}}
+    return {"pairings": {}, "tokens": {}, "deliveries": {}, "premium_activations": {}}
 
 
 def _read() -> dict[str, Any]:
@@ -103,6 +103,11 @@ def revoke_token(token: str) -> bool:
 
 
 def user_id_for_token(token: str) -> int | None:
+    identity = app_identity_for_token(token)
+    return identity["user_id"] if identity else None
+
+
+def app_identity_for_token(token: str) -> dict[str, Any] | None:
     token_hash = hashlib.sha256(str(token or "").encode("utf-8")).hexdigest()
     with _LOCK:
         state = _read()
@@ -113,7 +118,111 @@ def user_id_for_token(token: str) -> int | None:
             state["tokens"].pop(token_hash, None)
             _write(state)
             return None
-        return int(item["user_id"])
+        user_id = int(item.get("user_id", 0))
+        device_id = str(item.get("device_id", "")).strip()[:128]
+        if user_id <= 0 or not device_id:
+            return None
+        return {"user_id": user_id, "device_id": device_id}
+
+
+def issue_premium_activation_token(user_id: int, expires_at: str | None = None) -> str:
+    """Issue a one-user code; store only its digest and keep an existing device binding."""
+    user_id = int(user_id)
+    if user_id <= 0:
+        raise ValueError("invalid_user_id")
+    normalized_expiry = str(expires_at or "").strip()
+    if normalized_expiry:
+        from datetime import datetime, timezone
+        expiry = datetime.fromisoformat(normalized_expiry)
+        if expiry.tzinfo is None:
+            expiry = expiry.replace(tzinfo=timezone.utc)
+        if expiry <= datetime.now(timezone.utc):
+            raise ValueError("activation_expired")
+    code = "T4S3-" + secrets.token_hex(12).upper()
+    digest = hashlib.sha256(code.encode("ascii")).hexdigest()
+    with _LOCK:
+        state = _read()
+        records = state.get("premium_activations", {})
+        if not isinstance(records, dict):
+            records = {}
+        previous = records.get(str(user_id), {})
+        bound_device = str(previous.get("device_id", "")) if isinstance(previous, dict) else ""
+        records[str(user_id)] = {
+            "token_hash": digest,
+            "user_id": user_id,
+            "expires_at": normalized_expiry,
+            "issued_at": int(time.time()),
+            "device_id": bound_device,
+            "verified_at": None,
+        }
+        state["premium_activations"] = records
+        _write(state)
+    return code
+
+
+def revoke_premium_activation(user_id: int) -> bool:
+    with _LOCK:
+        state = _read()
+        records = state.get("premium_activations", {})
+        removed = isinstance(records, dict) and records.pop(str(int(user_id)), None) is not None
+        if removed:
+            state["premium_activations"] = records
+            _write(state)
+        return bool(removed)
+
+
+def premium_activation_status(user_id: int, device_id: str = "", expires_at: str | None = None) -> str:
+    """Return a non-secret status for admin/profile views."""
+    with _LOCK:
+        record = _read().get("premium_activations", {}).get(str(int(user_id)))
+        if not isinstance(record, dict) or not record.get("token_hash"):
+            return "missing"
+        if str(record.get("expires_at", "")) != str(expires_at or ""):
+            return "expired"
+        bound_device = str(record.get("device_id", ""))
+        if bound_device and device_id and not secrets.compare_digest(bound_device, device_id):
+            return "other_device"
+        return "verified" if bound_device and record.get("verified_at") else "pending"
+
+
+def claim_premium_activation_token(token: str, user_id: int, device_id: str,
+                                  expires_at: str | None = None) -> tuple[bool, str]:
+    """Verify the admin code against an active Premium assignment and bind it to this device."""
+    code = str(token or "").strip().upper()
+    device_id = str(device_id or "").strip()[:128]
+    if not code or not device_id or int(user_id) <= 0:
+        return False, "invalid_request"
+    digest = hashlib.sha256(code.encode("utf-8")).hexdigest()
+    with _LOCK:
+        state = _read()
+        records = state.get("premium_activations", {})
+        record = records.get(str(int(user_id))) if isinstance(records, dict) else None
+        if not isinstance(record, dict) or not secrets.compare_digest(
+                str(record.get("token_hash", "")), digest):
+            return False, "invalid_token"
+        token_expiry = str(record.get("expires_at", ""))
+        current_expiry = str(expires_at or "")
+        if token_expiry != current_expiry:
+            return False, "plan_changed"
+        if token_expiry:
+            from datetime import datetime, timezone
+            try:
+                expiry = datetime.fromisoformat(token_expiry)
+                if expiry.tzinfo is None:
+                    expiry = expiry.replace(tzinfo=timezone.utc)
+            except ValueError:
+                return False, "activation_expired"
+            if expiry <= datetime.now(timezone.utc):
+                return False, "activation_expired"
+        bound_device = str(record.get("device_id", ""))
+        if bound_device and not secrets.compare_digest(bound_device, device_id):
+            return False, "device_mismatch"
+        record["device_id"] = device_id
+        record["verified_at"] = record.get("verified_at") or int(time.time())
+        records[str(int(user_id))] = record
+        state["premium_activations"] = records
+        _write(state)
+        return True, "verified"
 
 
 def record_delivery(user_id: int, task_id: str, filename: str, size: int,

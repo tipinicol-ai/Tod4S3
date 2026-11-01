@@ -206,18 +206,47 @@ class StoreHandler(SimpleHTTPRequestHandler):
             except Exception:
                 self._json_response({"ok": False, "error": "profile_unavailable"}, 503)
                 return
+            identity = sync_api.app_identity_for_token(token)
+            if identity is None:
+                self._json_response({"ok": False, "error": "unauthorized"}, 401)
+                return
+            premium_verified = profile.get("plan") == "owner" or (
+                profile.get("premium") is True
+                and sync_api.premium_activation_status(
+                    user_id, identity["device_id"], profile.get("expires_at", ""),
+                ) == "verified"
+            )
             expires = profile.get("expires", "")
             if not isinstance(expires, str):
                 expires = ""
             remaining = profile.get("days_remaining")
             if isinstance(remaining, bool) or not isinstance(remaining, int) or remaining < 0:
                 remaining = None
-            self._json_response({
+            payload = {
                 "premium": profile["premium"],
                 "plan": profile["plan"],
                 "expires": expires[:32],
                 "days_remaining": remaining,
-            })
+                "premium_verified": premium_verified,
+            }
+            quota = profile.get("quota")
+            if isinstance(quota, dict):
+                limit = quota.get("limit_bytes")
+                used = quota.get("used_bytes")
+                quota_remaining = quota.get("remaining_bytes")
+                percent = quota.get("percent_used")
+                reset_in = quota.get("reset_in_seconds")
+                if (all(isinstance(value, int) and not isinstance(value, bool) and value >= 0
+                        for value in (limit, used, quota_remaining, percent, reset_in))
+                        and limit > 0 and percent <= 100):
+                    payload["quota"] = {
+                        "limit_bytes": limit,
+                        "used_bytes": min(used, limit),
+                        "remaining_bytes": min(quota_remaining, limit),
+                        "percent_used": percent,
+                        "reset_in_seconds": reset_in,
+                    }
+            self._json_response(payload)
             return
         if path == "/api/app/deliveries":
             token = self.headers.get("Authorization", "")
@@ -297,6 +326,7 @@ class StoreHandler(SimpleHTTPRequestHandler):
         if parsed.path not in {
             "/api/app/pair", "/api/app/revoke", "/api/app/deliveries/delete",
             "/api/app/download", "/api/app/tasks/cancel", "/api/app/cloud/clear",
+            "/api/app/premium/claim",
         }:
             self._json_response({"ok": False, "error": "not_found"}, 404)
             return
@@ -319,6 +349,37 @@ class StoreHandler(SimpleHTTPRequestHandler):
             return
         token = self.headers.get("Authorization", "")
         token = token[7:].strip() if token.lower().startswith("bearer ") else ""
+        if parsed.path == "/api/app/premium/claim":
+            identity = sync_api.app_identity_for_token(token)
+            checker = _PROFILE_CHECKER
+            if identity is None:
+                self._json_response({"ok": False, "error": "unauthorized"}, 401)
+                return
+            if checker is None:
+                self._json_response({"ok": False, "error": "profile_unavailable"}, 503)
+                return
+            try:
+                profile = checker(identity["user_id"])
+                if not isinstance(profile, dict) or profile.get("premium") is not True or profile.get("plan") != "premium":
+                    self._json_response({"ok": False, "error": "premium_not_active"}, 409)
+                    return
+                expires_at = profile.get("expires_at", "")
+                ok, error = sync_api.claim_premium_activation_token(
+                    body.get("token", ""), identity["user_id"],
+                    identity["device_id"], expires_at,
+                )
+                if not ok:
+                    status = 403 if error in {"invalid_token", "device_mismatch"} else 409
+                    self._json_response({"ok": False, "error": error}, status)
+                    return
+            except Exception:
+                self._json_response({"ok": False, "error": "profile_unavailable"}, 503)
+                return
+            self._json_response({
+                "ok": True, "verified": True,
+                "expires": str(profile.get("expires", ""))[:32],
+            })
+            return
         if parsed.path == "/api/app/download":
             payload, status = _dispatch_app_task(token, "enqueue", body)
             self._json_response(payload, status)

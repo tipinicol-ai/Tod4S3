@@ -255,3 +255,72 @@ def test_delete_delivery_http_post_endpoint_with_bearer_token_is_mocked(tmp_path
         server.shutdown()
         server.server_close()
         worker.join(timeout=2)
+
+
+def test_premium_activation_code_is_bound_to_user_and_first_device(tmp_path, monkeypatch):
+    monkeypatch.setattr(sync_api, "STATE_FILE", tmp_path / "sync_app.json")
+    expires = "2099-07-01T12:00:00+00:00"
+    code = sync_api.issue_premium_activation_token(42, expires)
+    assert code.startswith("T4S3-")
+    assert code not in json.dumps(sync_api._read())
+
+    first_pairing = sync_api.create_pairing_code(42)
+    first_device_token = sync_api.consume_pairing_code(first_pairing, "device-1")
+    other_pairing = sync_api.create_pairing_code(42)
+    other_device_token = sync_api.consume_pairing_code(other_pairing, "device-2")
+    assert sync_api.app_identity_for_token(first_device_token) == {
+        "user_id": 42, "device_id": "device-1",
+    }
+
+    assert sync_api.claim_premium_activation_token(code, 43, "device-1", expires) == (False, "invalid_token")
+    assert sync_api.claim_premium_activation_token(code, 42, "device-1", "2099-08-01T12:00:00+00:00") == (
+        False, "plan_changed",
+    )
+    assert sync_api.claim_premium_activation_token(code, 42, "device-1", expires) == (True, "verified")
+    assert sync_api.premium_activation_status(42, "device-1", expires) == "verified"
+    assert sync_api.claim_premium_activation_token(code, 42, "device-2", expires) == (
+        False, "device_mismatch",
+    )
+    assert sync_api.user_id_for_token(other_device_token) == 42
+
+
+def test_premium_claim_http_endpoint_checks_active_plan_and_returns_verified_profile(tmp_path, monkeypatch):
+    monkeypatch.setattr(sync_api, "STATE_FILE", tmp_path / "sync_app.json")
+    expires = "2099-07-01T12:00:00+00:00"
+    pairing = sync_api.create_pairing_code(4242)
+    mobile_token = sync_api.consume_pairing_code(pairing, "device-4242")
+    code = sync_api.issue_premium_activation_token(4242, expires)
+    monkeypatch.setattr(web_store, "_PROFILE_CHECKER", lambda user_id: {
+        "premium": user_id == 4242,
+        "plan": "premium" if user_id == 4242 else "free",
+        "expires": "01/07/2099",
+        "expires_at": expires,
+        "days_remaining": 26000,
+    })
+    server = ThreadingHTTPServer(("127.0.0.1", 0), web_store.StoreHandler)
+    worker = Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    claim_request = Request(
+        f"{base}/api/app/premium/claim",
+        data=json.dumps({"token": code}).encode(),
+        headers={"Authorization": f"Bearer {mobile_token}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urlopen(claim_request, timeout=3) as response:
+            claimed = json.loads(response.read())
+        profile_request = Request(
+            f"{base}/api/app/profile",
+            headers={"Authorization": f"Bearer {mobile_token}"},
+        )
+        with urlopen(profile_request, timeout=3) as response:
+            profile = json.loads(response.read())
+        assert claimed == {"ok": True, "verified": True, "expires": "01/07/2099"}
+        assert profile["premium"] is True
+        assert profile["premium_verified"] is True
+        assert profile["plan"] == "premium"
+    finally:
+        server.shutdown()
+        server.server_close()
+        worker.join(timeout=2)

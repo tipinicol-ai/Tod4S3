@@ -2808,6 +2808,7 @@ def admin_section_keyboard(section: str) -> InlineKeyboardMarkup:
             [btn("🆓 ᴀᴄᴛɪᴠᴀʀ ɢʀᴀᴛɪꜱ", callback_data="admin:plan:free")],
             [btn("⭐ ᴀᴄᴛɪᴠᴀʀ ᴠɪᴘ ʙáꜱɪᴄᴏ", callback_data="admin:plan:vip_basic")],
             [btn("💎 ᴀᴄᴛɪᴠᴀʀ ᴠɪᴘ ᴍᴇᴅɪᴏ", callback_data="admin:plan:vip_medium")],
+            [btn("👑 ᴇꜱᴛᴀᴅᴏ ᴘʀᴇᴍɪᴜᴍ ᴘᴏʀ ɪᴅ", callback_data="admin:premium_status")],
             [btn("🔍 ᴄᴏɴꜱᴜʟᴛᴀʀ ᴜꜱᴜᴀʀɪᴏ", callback_data="admin:check")],
             [btn("👥 ᴜꜱᴜᴀʀɪᴏꜱ ʀᴇɢɪꜱᴛʀᴀᴅᴏꜱ", callback_data="admin:users:0")],
         ],
@@ -5245,6 +5246,45 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             )
             return
 
+        if query.data == "admin:premium_status":
+            context.user_data["admin_state"] = {"step": "premium_status_user"}
+            await edit_query_message_text(query.message,
+                card("👑 ᴇꜱᴛᴀᴅᴏ ᴘʀᴇᴍɪᴜᴍ", [
+                    "Envía el ID numérico de Telegram",
+                    "para consultar si tiene Premium activo",
+                    "y si su código ya fue validado",
+                    "en el móvil vinculado.",
+                ]),
+                reply_markup=InlineKeyboardMarkup([[btn("⬅️ ᴘᴀɴᴇʟ ᴀᴅᴍɪɴ", callback_data="admin:back")]]),
+            )
+            return
+
+        if query.data.startswith("admin:premium_reissue:"):
+            try:
+                target_id = int(query.data.rsplit(":", 1)[-1])
+                entry = get_user_plan_entry(target_id)
+                if target_id <= 0 or entry.get("plan") != "premium":
+                    raise ValueError("premium_not_active")
+                activation_code = sync_api.issue_premium_activation_token(
+                    target_id, entry.get("expires_at", ""),
+                )
+            except Exception:
+                await query.answer("Ese usuario no tiene Premium activo o no se pudo generar el token.", show_alert=True)
+                return
+            schedule_data_backup(context.application, "código Premium reemitido")
+            await query.answer("Código nuevo generado.")
+            await edit_query_message_text(query.message,
+                card("🔐 ᴄóᴅɪɢᴏ ᴘʀᴇᴍɪᴜᴍ", [
+                    f"ID: {{mono:{target_id}}}",
+                    "Código para entregar al usuario:",
+                    f"{{mono:{activation_code}}}",
+                    "Válido solo para su ID y el móvil",
+                    "que lo verifique primero.",
+                ]),
+                reply_markup=InlineKeyboardMarkup([[btn("⬅️ ᴘᴀɴᴇʟ ᴀᴅᴍɪɴ", callback_data="admin:back")]]),
+            )
+            return
+
         if query.data.startswith("admin:plan:"):
             plan_key = query.data.split(":", 2)[2]
             if plan_key not in PLANS:
@@ -5387,6 +5427,17 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             context.user_data.pop("admin_state", None)
 
             entry = set_user_plan(target_id, plan_key, days if days > 0 else None, custom_name=custom_name)
+            activation_code = None
+            try:
+                stored_entry = get_user_plan_entry(target_id)
+                if plan_key == "premium" and stored_entry.get("plan") == "premium":
+                    activation_code = sync_api.issue_premium_activation_token(
+                        target_id, stored_entry.get("expires_at", ""),
+                    )
+                elif stored_entry.get("plan") != "premium":
+                    sync_api.revoke_premium_activation(target_id)
+            except Exception:
+                log.exception("No se pudo preparar el código Premium del usuario %s", target_id)
             offer_prices = {15: 250, 20: 300, 30: 500}
             price_cup = offer_prices.get(days) if plan_key == "premium" else None
             record_admin_audit(
@@ -5414,6 +5465,16 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 lines_admin.append(f"Precio: {price_cup} CUP")
             if exp_date:
                 lines_admin.append(f"Vence: {exp_date}")
+            if plan_key == "premium":
+                lines_admin.append("")
+                if activation_code:
+                    lines_admin.extend([
+                        "Código para entregar al usuario:",
+                        f"{{mono:{activation_code}}}",
+                        "El código queda ligado a su ID y al primer móvil que lo valide.",
+                    ])
+                else:
+                    lines_admin.append("No se generó el código; consulta el estado Premium por ID y reinténtalo.")
             lines_admin.append("")
             lines_admin.append("💾 Guardado correctamente")
 
@@ -5453,6 +5514,11 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 if exp_date:
                     user_msg_lines.append(f"📅 Vence el: {exp_date}")
                 user_msg_lines += [
+                    "",
+                    "En la APK, abre Planes y ofertas",
+                    "y pulsa «Ya soy Premium».",
+                    "Pega el código de verificación",
+                    "que te entregará el administrador.",
                     "",
                     "⚡ ¡Disfruta al máximo",
                     "tus descargas!",
@@ -6191,6 +6257,53 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             )
             return
 
+        if step == "premium_status_user":
+            context.user_data.pop("admin_state", None)
+            try:
+                target_id = int(text)
+                if target_id <= 0:
+                    raise ValueError
+            except ValueError:
+                await message.reply_text(
+                    card("❌ ᴇʀʀᴏʀ", ["Envía un ID numérico válido."]),
+                    reply_markup=InlineKeyboardMarkup([[btn("⬅️ ᴘᴀɴᴇʟ ᴀᴅᴍɪɴ", callback_data="admin:back")]]),
+                )
+                return
+            entry = get_user_plan_entry(target_id)
+            plan_key = str(entry.get("plan", "free"))
+            plan = get_plan_info(plan_key)
+            expiry = str(entry.get("expires_at", ""))
+            exp_date, rem_days = get_plan_expiry_info(target_id)
+            lines = [
+                f"🆔 ID: {{mono:{target_id}}}",
+                f"🏷 Plan: {plan['badge']} {plan['display']}",
+                f"👑 Premium activo: {'Sí' if plan_key in {'premium', 'owner'} else 'No'}",
+            ]
+            if exp_date:
+                lines.append(f"📅 Vence: {exp_date}")
+            elif plan_key in {"premium", "owner"}:
+                lines.append("📅 Duración: permanente")
+            if rem_days is not None:
+                lines.append(f"⏳ Restan: {rem_days} días")
+            if plan_key == "premium":
+                activation_status = sync_api.premium_activation_status(target_id, expires_at=expiry)
+                status_label = {
+                    "verified": "Verificado en un móvil vinculado",
+                    "pending": "Token emitido · pendiente de validar",
+                    "missing": "Sin token emitido",
+                    "expired": "Token vencido o pertenece a un plan anterior",
+                }.get(activation_status, "Estado del token no disponible")
+                lines.append(f"📱 Código APK: {status_label}")
+            markup_rows = []
+            if plan_key == "premium":
+                markup_rows.append([btn("🔐 ʀᴇᴇᴍɪᴛɪʀ ᴄóᴅɪɢᴏ", callback_data=f"admin:premium_reissue:{target_id}")])
+            markup_rows.append([btn("⬅️ ᴘᴀɴᴇʟ ᴀᴅᴍɪɴ", callback_data="admin:back")])
+            await message.reply_text(
+                card("👑 ᴇꜱᴛᴀᴅᴏ ᴘʀᴇᴍɪᴜᴍ", lines),
+                reply_markup=InlineKeyboardMarkup(markup_rows),
+            )
+            return
+
         if step == "check_user":
             context.user_data.pop("admin_state", None)
             try:
@@ -6793,14 +6906,46 @@ async def post_shutdown(application: Application) -> None:
 
 
 def sync_app_profile(user_id: int) -> dict:
-    plan = get_user_plan(user_id)
+    entry = get_user_plan_entry(user_id)
+    plan = str(entry.get("plan", "free"))
     expires_label, remaining_days = get_plan_expiry_info(user_id)
-    return {
+    profile = {
         "premium": is_owner(user_id) or plan == "premium",
         "plan": plan,
         "expires": expires_label or "",
+        "expires_at": str(entry.get("expires_at", "")),
         "days_remaining": remaining_days,
     }
+    if plan == "free":
+        # Reutiliza el mismo bucket que limita las transferencias en el bot y
+        # su marca de inicio para mantener exactamente el periodo rodante de 24 h.
+        get_remaining_quota(user_id)
+        users_data = _load_json(USERS_DATA_FILE)
+        users = users_data.get("users", {})
+        account = users.get(str(user_id), {}) if isinstance(users, dict) else {}
+        account = account if isinstance(account, dict) else {}
+        try:
+            free_remaining = max(0, min(FREE_JOIN_QUOTA_BYTES,
+                                        int(account.get("free_quota_remaining_bytes", FREE_JOIN_QUOTA_BYTES))))
+        except (TypeError, ValueError):
+            free_remaining = FREE_JOIN_QUOTA_BYTES
+        reset_in_seconds = 24 * 60 * 60
+        try:
+            reset_at = datetime.fromisoformat(str(account.get("free_quota_reset_at", "")))
+            if reset_at.tzinfo is None:
+                reset_at = reset_at.replace(tzinfo=timezone.utc)
+            reset_in_seconds = max(0, int((reset_at + timedelta(hours=24) - datetime.now(timezone.utc)).total_seconds()))
+        except (TypeError, ValueError):
+            pass
+        used = FREE_JOIN_QUOTA_BYTES - free_remaining
+        profile["quota"] = {
+            "limit_bytes": FREE_JOIN_QUOTA_BYTES,
+            "used_bytes": used,
+            "remaining_bytes": free_remaining,
+            "percent_used": min(100, int(used * 100 / FREE_JOIN_QUOTA_BYTES)),
+            "reset_in_seconds": reset_in_seconds,
+        }
+    return profile
 
 
 def sync_app_profile_photo(user_id: int) -> bytes | None:

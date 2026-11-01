@@ -63,6 +63,36 @@ def all_buttons(markup):
 
 
 class RequestedFeatureTests(unittest.TestCase):
+    def test_admin_user_section_exposes_premium_status_lookup_by_telegram_id(self):
+        callbacks = [button.callback_data for button in all_buttons(admin_section_keyboard("users"))]
+        self.assertIn("admin:premium_status", callbacks)
+
+    def test_mobile_profile_reports_free_quota_percentage_and_24h_reset(self):
+        import bot
+        with tempfile.TemporaryDirectory() as directory:
+            old_paths = (bot.USERS_DATA_FILE, bot.PLAN_DATA_FILE, bot.USAGE_DATA_FILE)
+            bot.USERS_DATA_FILE = str(Path(directory) / "users.json")
+            bot.PLAN_DATA_FILE = str(Path(directory) / "plans.json")
+            bot.USAGE_DATA_FILE = str(Path(directory) / "usage.json")
+            now = datetime.now(timezone.utc)
+            bot._save_json(bot.PLAN_DATA_FILE, {})
+            bot._save_json(bot.USERS_DATA_FILE, {"users": {"4242": {
+                "free_quota_remaining_bytes": bot.FREE_JOIN_QUOTA_BYTES // 2,
+                "data_bonus_remaining_bytes": 0,
+                "data_quota_remaining_bytes": bot.FREE_JOIN_QUOTA_BYTES // 2,
+                "data_quota_total_bytes": bot.FREE_JOIN_QUOTA_BYTES,
+                "free_quota_reset_at": (now - timedelta(hours=2)).isoformat(),
+            }}})
+            try:
+                quota = bot.sync_app_profile(4242)["quota"]
+                assert quota["limit_bytes"] == bot.FREE_JOIN_QUOTA_BYTES
+                assert quota["used_bytes"] == bot.FREE_JOIN_QUOTA_BYTES // 2
+                assert quota["remaining_bytes"] == bot.FREE_JOIN_QUOTA_BYTES // 2
+                assert quota["percent_used"] == 50
+                assert 21 * 3600 < quota["reset_in_seconds"] < 22 * 3600 + 60
+            finally:
+                bot.USERS_DATA_FILE, bot.PLAN_DATA_FILE, bot.USAGE_DATA_FILE = old_paths
+
     def test_referral_menu_keeps_share_copy_and_all_data_package_actions(self):
         markup = plans_keyboard(123, "jk_bot")
         buttons = all_buttons(markup)
