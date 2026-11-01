@@ -1286,14 +1286,13 @@ public final class MainActivity extends Activity {
         popup.setBackgroundDrawable(new ColorDrawable(surfaceColor()));
         popup.setOutsideTouchable(true);
         popup.setElevation(dp(18));
-        account.setOnClickListener(v -> {
-            popup.dismiss();
-            if (token == null || token.isEmpty()) {
+        if (token == null || token.isEmpty()) {
+            account.setOnClickListener(v -> {
+                popup.dismiss();
                 if (prefs.getString(PREF_SELECTED_PLAN, "").isEmpty()) showPlansStep(true);
                 else showBotStep(true);
-            }
-            else showAccountMenu(v);
-        });
+            });
+        }
         addDrawerRow(content, popup, "★", "Planes y ofertas", "Ver opciones y precios", () -> showPlansStep(true));
         addDrawerRow(content, popup, "▣", "Archivos en la Nube", "Entregas del bot", () -> showDashboard("all", true));
         if (token != null && !token.isEmpty()) {
@@ -1947,7 +1946,7 @@ public final class MainActivity extends Activity {
         circle.setStroke(dp(2), Color.rgb(99, 230, 216));
         avatar.setBackground(circle);
         avatar.setElevation(dp(3));
-        avatar.setContentDescription("Abrir menú de cuenta");
+        avatar.setContentDescription("Abrir menú ☰");
         ImageView logo = new ImageView(this);
         logo.setImageResource(R.drawable.ic_launcher_foreground);
         logo.setScaleType(ImageView.ScaleType.FIT_CENTER);
@@ -1960,7 +1959,7 @@ public final class MainActivity extends Activity {
         bars.setBackground(roundRect(Color.rgb(242, 198, 106), 10, Color.rgb(7, 17, 31)));
         FrameLayout.LayoutParams badge = new FrameLayout.LayoutParams(dp(20), dp(20), Gravity.BOTTOM | Gravity.END);
         avatar.addView(bars, badge);
-        avatar.setOnClickListener(this::showAccountMenu);
+        avatar.setOnClickListener(this::showNavigationDrawer);
         avatar.setOnTouchListener((view, event) -> {
             if (event.getAction() == MotionEvent.ACTION_DOWN) view.animate().scaleX(0.94f).scaleY(0.94f).setDuration(80).start();
             else if (event.getAction() == MotionEvent.ACTION_UP || event.getAction() == MotionEvent.ACTION_CANCEL)
@@ -2032,79 +2031,6 @@ public final class MainActivity extends Activity {
         target.setBackground(clip);
         target.setClipToOutline(true);
         target.setImageBitmap(photo);
-    }
-
-    private void showAccountMenu(View anchor) {
-        LinearLayout menu = new LinearLayout(this);
-        menu.setOrientation(LinearLayout.VERTICAL);
-        menu.setPadding(dp(10), dp(10), dp(10), dp(10));
-        menu.setBackground(roundRect(Color.rgb(10, 29, 48), 20, Color.rgb(49, 94, 122)));
-        TextView heading = text("MENÚ DE CUENTA", 11, true);
-        heading.setTextColor(Color.rgb(99, 230, 216));
-        menu.addView(heading, margin(dp(5), dp(2), 0, 2));
-        TextView account = bodyText(todusPhone.isEmpty() ? "Sesión conectada" : "ToDus · " + todusPhone);
-        account.setTextSize(12);
-        menu.addView(account, margin(dp(5), 0, 0, 8));
-
-        int screenWidthDp = (int) (getResources().getDisplayMetrics().widthPixels / getResources().getDisplayMetrics().density);
-        int menuWidth = dp(Math.min(284, Math.max(240, screenWidthDp - 28)));
-        PopupWindow popup = new PopupWindow(menu, menuWidth, -2, true);
-        popup.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
-        popup.setOutsideTouchable(true);
-        popup.setElevation(dp(18));
-        menu.addView(accountMenuItem("★", "Planes y ofertas", "Ver opciones y precios", Color.rgb(242, 198, 106), popup,
-                () -> showPlansStep(true)), margin(0, 0, 0, 7));
-        menu.addView(accountMenuItem("↻", "Cambiar cuenta ToDus", "Conectar otro número", Color.rgb(99, 230, 216), popup,
-                () -> new AlertDialog.Builder(this)
-                        .setTitle("Cambiar cuenta ToDus")
-                        .setMessage("Se borrarán de este teléfono las credenciales ToDus guardadas. Tus archivos de Descargas no se tocarán.")
-                        .setNegativeButton("Cancelar", null)
-                        .setPositiveButton("Continuar", (dialog, which) -> changeToDusAccount())
-                        .show()), margin(0, 0, 0, 7));
-        menu.addView(accountMenuItem("⇥", "Cerrar sesión", "Desvincular este teléfono", Color.rgb(255, 157, 164), popup,
-                this::confirmLogout));
-        menu.setAlpha(0f);
-        menu.setTranslationY(-dp(9));
-        popup.showAsDropDown(anchor, 0, dp(8), Gravity.END);
-        menu.animate().alpha(1f).translationY(0f).setDuration(190)
-                .setInterpolator(new DecelerateInterpolator()).start();
-    }
-
-    private View accountMenuItem(String glyph, String title, String subtitle, int accent,
-                                 PopupWindow popup, Runnable action) {
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(dp(10), dp(8), dp(9), dp(8));
-        row.setBackground(roundRect(Color.rgb(17, 42, 66), 14, Color.rgb(37, 73, 98)));
-        FrameLayout badge = new FrameLayout(this);
-        badge.setBackground(roundRect(Color.rgb(7, 23, 39), 12, 0));
-        TextView icon = text(glyph, 20, true);
-        icon.setGravity(Gravity.CENTER);
-        icon.setTextColor(accent);
-        badge.addView(icon, new FrameLayout.LayoutParams(dp(38), dp(38), Gravity.CENTER));
-        row.addView(badge, new LinearLayout.LayoutParams(dp(38), dp(38)));
-        LinearLayout labels = new LinearLayout(this);
-        labels.setOrientation(LinearLayout.VERTICAL);
-        labels.addView(text(title, 14, true));
-        TextView detail = bodyText(subtitle);
-        detail.setTextSize(11);
-        labels.addView(detail, margin(0, 2, 0, 0));
-        LinearLayout.LayoutParams labelsLayout = new LinearLayout.LayoutParams(0, -2, 1f);
-        labelsLayout.setMargins(dp(10), 0, 0, 0);
-        row.addView(labels, labelsLayout);
-        row.setContentDescription(title + ". " + subtitle);
-        row.setOnClickListener(v -> {
-            popup.dismiss();
-            action.run();
-        });
-        row.setOnTouchListener((view, event) -> {
-            if (event.getAction() == MotionEvent.ACTION_DOWN) view.animate().scaleX(0.98f).scaleY(0.98f).setDuration(75).start();
-            else if (event.getAction() == MotionEvent.ACTION_UP || event.getAction() == MotionEvent.ACTION_CANCEL)
-                view.animate().scaleX(1f).scaleY(1f).setDuration(100).start();
-            return false;
-        });
-        return row;
     }
 
     private void confirmLogout() {
