@@ -85,6 +85,16 @@ def _validated_delivery_url(url: str, user_id: int) -> bool:
     return True
 
 
+def _delivery_cloud_deletable(row: dict, user_id: int) -> bool:
+    """Whether every part is an S3 object in this authenticated user's namespace."""
+    backend = row.get("storage_backend")
+    if backend and backend != "s3":
+        return False
+    parts = row.get("parts")
+    return bool(isinstance(parts, list) and parts
+                and all(_validated_delivery_url(part, user_id) for part in parts))
+
+
 def delete_delivery_for_token(token: str, task_id: str) -> tuple[dict, int]:
     """Delete an owned delivery; network calls occur outside sync_api's lock."""
     user_id = sync_api.user_id_for_token(token)
@@ -106,9 +116,9 @@ def delete_delivery_for_token(token: str, task_id: str) -> tuple[dict, int]:
     if row.get("task_id") != task_id or not isinstance(parts, list) or not parts:
         return {"ok": False, "error": "legacy_delivery_incomplete",
                 "message": "La entrega no contiene un task_id o partes válidas; no se intentó borrar."}, 409
-    if any(not _validated_delivery_url(url, user_id) for url in parts):
-        return {"ok": False, "error": "invalid_delivery_url",
-                "message": "La entrega contiene una URL que no pertenece al espacio ToDus de este usuario."}, 409
+    if not _delivery_cloud_deletable(row, user_id):
+        return {"ok": False, "error": "delivery_not_deletable",
+                "message": "La entrega no es un objeto Nube S3 propio; no se borró ningún archivo."}, 409
     unique_parts = list(dict.fromkeys(parts))
     try:
         for url in unique_parts:
@@ -213,9 +223,12 @@ class StoreHandler(SimpleHTTPRequestHandler):
             token = self.headers.get("Authorization", "")
             token = token[7:].strip() if token.lower().startswith("bearer ") else ""
             deliveries = deliveries_for_token(token)
-            if deliveries is None:
+            user_id = sync_api.user_id_for_token(token)
+            if deliveries is None or user_id is None:
                 self._json_response({"ok": False, "error": "unauthorized"}, 401)
             else:
+                for row in deliveries:
+                    row["cloud_deletable"] = _delivery_cloud_deletable(row, user_id)
                 self._json_response({"ok": True, "deliveries": deliveries})
             return
         if path == "/api/app/tasks":

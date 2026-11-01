@@ -808,6 +808,7 @@ public final class MainActivity extends Activity {
         TextView detail = bodyText(detailText);
         detail.setTextSize(12);
         item.addView(detail, margin(0, 4, 0, 0));
+        task.progressTextView = detail;
         ProgressBar progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
         progress.setMax(100);
         progress.setProgressTintList(ColorStateList.valueOf(accentColor()));
@@ -816,6 +817,7 @@ public final class MainActivity extends Activity {
         progress.setIndeterminate(running && task.total <= 0);
         progress.setProgress(percent);
         item.addView(progress, margin(0, 8, 0, 0));
+        task.progressBarView = progress;
         if (task.state.equals("error") && !task.error.isEmpty()) item.addView(bodyText(task.error), margin(0, 5, 0, 0));
         LinearLayout actions = new LinearLayout(this);
         actions.setOrientation(LinearLayout.HORIZONTAL);
@@ -879,6 +881,7 @@ public final class MainActivity extends Activity {
         TextView detail = bodyText(detailText);
         detail.setTextSize(12);
         item.addView(detail, margin(0, 4, 0, 0));
+        task.progressTextView = detail;
 
         ProgressBar progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
         progress.setMax(100);
@@ -888,6 +891,7 @@ public final class MainActivity extends Activity {
         progress.setIndeterminate(running && task.total <= 0);
         progress.setProgress(percent);
         item.addView(progress, margin(0, 8, 0, 0));
+        task.progressBarView = progress;
         if (task.state.equals("error") && !task.error.isEmpty()) {
             item.addView(bodyText(task.error), margin(0, 5, 0, 0));
         }
@@ -1128,6 +1132,7 @@ public final class MainActivity extends Activity {
             persistDirectLinkTasks();
         }
         worker.start();
+        postDirectLinkTaskRefresh();
         return true;
     }
 
@@ -1203,8 +1208,32 @@ public final class MainActivity extends Activity {
         }
         if (update) {
             persistDirectLinkTasks();
-            postDirectLinkTaskRefresh();
+            postDirectLinkProgressUpdate(task);
         }
+    }
+
+    private void postDirectLinkProgressUpdate(DirectLinkTask task) {
+        runOnUiThread(() -> {
+            TextView detail = task.progressTextView;
+            ProgressBar progress = task.progressBarView;
+            if (!viewingDashboard || detail == null || progress == null
+                    || detail.getParent() == null || progress.getParent() == null) return;
+            int percent = task.total > 0
+                    ? (int) Math.min(100L, task.bytes * 100L / task.total) : 0;
+            String stateLabel = task.state.equals("downloading") ? "Descargando"
+                    : task.state.equals("saving") ? "Guardando en Descargas"
+                    : task.state.equals("pausing") ? "Pausando…"
+                    : task.state.equals("deleting") ? "Eliminando…"
+                    : task.state.equals("error") ? "Error · puedes reanudar" : "Pausada";
+            String text = stateLabel;
+            if (task.total > 0) text += " · " + percent + "% · " + formatBytes(task.bytes)
+                    + " / " + formatBytes(task.total);
+            else if (task.bytes > 0) text += " · " + formatBytes(task.bytes);
+            detail.setText(text);
+            boolean running = task.state.equals("downloading") || task.state.equals("saving");
+            progress.setIndeterminate(running && task.total <= 0);
+            progress.setProgress(percent);
+        });
     }
 
     private void pauseDirectLinkTask(String key) {
@@ -1226,9 +1255,7 @@ public final class MainActivity extends Activity {
     private void resumeDirectLinkTask(String key) {
         DirectLinkTask task;
         synchronized (directLinkDownloadLock) { task = directLinkTasks.get(key); }
-        if (task != null && (task.state.equals("paused") || task.state.equals("error"))) {
-            if (startDirectLinkTask(task)) postDirectLinkTaskRefresh();
-        }
+        if (task != null && (task.state.equals("paused") || task.state.equals("error"))) startDirectLinkTask(task);
     }
 
     private void confirmDeleteDirectLinkTask(String key, String filename) {
@@ -2622,9 +2649,11 @@ public final class MainActivity extends Activity {
                 runOnUiThread(() -> {
                     deliveryRefreshInFlight = false;
                     if (trigger != null) trigger.setEnabled(true);
-                    latestDeliveryRows = rows == null ? new JSONArray() : rows;
-                    if (viewingDashboard) renderDashboardItems();
-                    else renderDeliveries(latestDeliveryRows);
+                    JSONArray nextRows = rows == null ? new JSONArray() : rows;
+                    boolean changed = !jsonArraysEqual(latestDeliveryRows, nextRows);
+                    latestDeliveryRows = nextRows;
+                    if (viewingDashboard && changed) renderDashboardItems();
+                    else if (!viewingDashboard) renderDeliveries(latestDeliveryRows);
                     if (syncStatus != null) syncStatus.setText("Entregas actualizadas.");
                 });
             } catch (Exception e) {
@@ -2647,13 +2676,40 @@ public final class MainActivity extends Activity {
                 JSONArray rows = result.optJSONArray("tasks");
                 runOnUiThread(() -> {
                     appTaskRefreshInFlight = false;
-                    latestAppTaskRows = rows == null ? new JSONArray() : rows;
-                    if (viewingDashboard) renderDashboardItems();
+                    JSONArray nextRows = rows == null ? new JSONArray() : rows;
+                    boolean changed = !appTaskRowsVisiblyEqual(latestAppTaskRows, nextRows);
+                    latestAppTaskRows = nextRows;
+                    if (viewingDashboard && changed) renderDashboardItems();
                 });
             } catch (Exception ignored) {
                 runOnUiThread(() -> appTaskRefreshInFlight = false);
             }
         }, "app-task-refresh").start();
+    }
+
+    private boolean jsonArraysEqual(JSONArray first, JSONArray second) {
+        return (first == null ? "[]" : first.toString())
+                .equals(second == null ? "[]" : second.toString());
+    }
+
+    private boolean appTaskRowsVisiblyEqual(JSONArray first, JSONArray second) {
+        int firstLength = first == null ? 0 : first.length();
+        int secondLength = second == null ? 0 : second.length();
+        if (firstLength != secondLength) return false;
+        String[] visibleFields = {"task_id", "filename", "state", "error"};
+        for (int i = 0; i < firstLength; i++) {
+            JSONObject left = first.optJSONObject(i);
+            JSONObject right = second.optJSONObject(i);
+            if (left == null || right == null) {
+                if (left != right) return false;
+                continue;
+            }
+            for (String field : visibleFields) {
+                if (!left.optString(field, "").equals(right.optString(field, ""))) return false;
+            }
+            if (left.optLong("size", 0) != right.optLong("size", 0)) return false;
+        }
+        return true;
     }
 
     private void refreshAccountProfile() {
@@ -2753,6 +2809,7 @@ public final class MainActivity extends Activity {
                     if (isDeliveryHidden(taskId)) continue;
                     String name = row.optString("filename", "archivo");
                     long size = row.optLong("size", 0);
+                    boolean cloudDeletable = row.optBoolean("cloud_deletable", false);
                     JSONArray parts = deliveryParts(row);
                     int partCount = parts.length();
                     if (partCount == 0) continue;
@@ -2828,7 +2885,7 @@ public final class MainActivity extends Activity {
                     final long copySize = size;
                     download.setOnClickListener(v -> startToDusDelivery(taskId, copyName, copy, copySize));
                     cloudActions.addView(download, new LinearLayout.LayoutParams(0, -2, 1f));
-                    if (!taskId.isEmpty()) {
+                    if (!taskId.isEmpty() && cloudDeletable) {
                         Button deleteCloud = secondaryButton("Eliminar nube");
                         deleteCloud.setTextSize(12);
                         deleteCloud.setMinHeight(dp(46));
@@ -2836,6 +2893,11 @@ public final class MainActivity extends Activity {
                         deleteLayout.setMargins(dp(8), 0, 0, 0);
                         cloudActions.addView(deleteCloud, deleteLayout);
                         deleteCloud.setOnClickListener(v -> confirmDeleteCloudDelivery(taskId, copyName));
+                    } else if (!taskId.isEmpty()) {
+                        TextView storageNote = bodyText("Entrega alojada en ToDus; no se puede borrar desde Nube S3.");
+                        storageNote.setTextSize(11);
+                        storageNote.setTextColor(Color.rgb(180, 190, 205));
+                        cloudActions.addView(storageNote, new LinearLayout.LayoutParams(0, -2, 1f));
                     }
                     card.addView(cloudActions, margin(0, 8, 0, 0));
                     deliveriesBox.addView(card, margin(0, 0, 0, 8));
@@ -3118,8 +3180,34 @@ public final class MainActivity extends Activity {
         }
         if (update) {
             persistToDusDownloadTasks();
-            postToDusDownloadRefresh();
+            postToDusDownloadProgressUpdate(task);
         }
+    }
+
+    private void postToDusDownloadProgressUpdate(ToDusDownloadTask task) {
+        runOnUiThread(() -> {
+            TextView detail = task.progressTextView;
+            ProgressBar progress = task.progressBarView;
+            if (!viewingDashboard || detail == null || progress == null
+                    || detail.getParent() == null || progress.getParent() == null) return;
+            int percent = task.total > 0
+                    ? (int) Math.min(100L, task.bytes * 100L / task.total) : 0;
+            String stateLabel = task.state.equals("downloading") ? "Descargando desde ToDus"
+                    : task.state.equals("saving") ? "Guardando en Descargas"
+                    : task.state.equals("pausing") ? "Pausando…"
+                    : task.state.equals("deleting") ? "Cancelando y limpiando…"
+                    : task.state.equals("error") ? "Error · puedes reanudar"
+                    : "Pausada · se conserva el progreso";
+            String text = stateLabel;
+            if (task.total > 0) text += " · " + percent + "% · " + formatBytes(task.bytes)
+                    + " / " + formatBytes(task.total);
+            else if (task.bytes > 0) text += " · " + formatBytes(task.bytes);
+            detail.setText(text);
+            boolean running = task.state.equals("downloading") || task.state.equals("saving")
+                    || task.state.equals("pausing");
+            progress.setIndeterminate(running && task.total <= 0);
+            progress.setProgress(percent);
+        });
     }
 
     private void pauseToDusDownload(String key) {
@@ -3211,7 +3299,11 @@ public final class MainActivity extends Activity {
                 });
             } catch (Exception e) {
                 String message = e.getMessage() == null ? "No se pudo eliminar la entrega remota." : e.getMessage();
-                runOnUiThread(() -> Toast.makeText(this, "No se eliminó la entrega: " + message, Toast.LENGTH_LONG).show());
+                if (message.contains("delivery_not_deletable")) {
+                    message = "Esta entrega es de ToDus, no de Nube S3. No se borró.";
+                }
+                final String userMessage = message;
+                runOnUiThread(() -> Toast.makeText(this, "No se eliminó la entrega: " + userMessage, Toast.LENGTH_LONG).show());
             }
         }, "todus-cloud-delete").start();
     }
@@ -3460,6 +3552,8 @@ public final class MainActivity extends Activity {
         volatile Thread worker;
         volatile ParallelRangeDownloader.DownloadControl control;
         volatile DownloadTarget target;
+        volatile TextView progressTextView;
+        volatile ProgressBar progressBarView;
 
         ToDusDownloadTask(String key, String taskId, String filename, JSONArray parts, long expectedSize) {
             this.key = key;
@@ -3486,6 +3580,8 @@ public final class MainActivity extends Activity {
         volatile long lastPersistAt;
         volatile Thread worker;
         volatile ParallelRangeDownloader.DownloadControl control;
+        volatile TextView progressTextView;
+        volatile ProgressBar progressBarView;
 
         DirectLinkTask(String key, String url, String filename) {
             this.key = key;

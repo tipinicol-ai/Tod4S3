@@ -117,7 +117,7 @@ def user_id_for_token(token: str) -> int | None:
 
 
 def record_delivery(user_id: int, task_id: str, filename: str, size: int,
-                    parts: list[str]) -> None:
+                    parts: list[str], *, storage_backend: str = "todus_native") -> None:
     """Publica una entrega reciente para el usuario vinculado."""
     if not parts:
         return
@@ -130,6 +130,7 @@ def record_delivery(user_id: int, task_id: str, filename: str, size: int,
         deliveries.insert(0, {
             "task_id": str(task_id),
             "source": "tod4s3_bot",
+            "storage_backend": storage_backend if storage_backend in {"todus_native", "s3"} else "todus_native",
             "filename": str(filename or "archivo")[:180],
             "size": max(0, int(size or 0)),
             "parts": [str(url) for url in parts if str(url).startswith("https://")],

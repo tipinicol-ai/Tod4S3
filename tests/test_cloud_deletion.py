@@ -158,9 +158,9 @@ async def test_global_remote_failure_preserves_task_delivery_and_job_references(
 
 def test_global_delivery_clear_uses_expected_snapshot_and_preserves_new_rows(monkeypatch, tmp_path):
     _deliveries(monkeypatch, tmp_path)
-    sync_api.record_delivery(42, "old", "f", 1, [_owned_url(42, "old.bin")])
+    sync_api.record_delivery(42, "old", "f", 1, [_owned_url(42, "old.bin")], storage_backend="s3")
     snapshot = sync_api.all_deliveries_snapshot()
-    sync_api.record_delivery(43, "new", "f", 1, [_owned_url(43, "new.bin")])
+    sync_api.record_delivery(43, "new", "f", 1, [_owned_url(43, "new.bin")], storage_backend="s3")
 
     assert sync_api.clear_all_deliveries(snapshot) is None
     assert set(sync_api.all_deliveries_snapshot()) == {"42", "43"}
@@ -169,7 +169,7 @@ def test_global_delivery_clear_uses_expected_snapshot_and_preserves_new_rows(mon
 def test_android_delivery_delete_post_endpoint_uses_bearer_token_and_never_real_s3(monkeypatch, tmp_path):
     _deliveries(monkeypatch, tmp_path)
     url = _owned_url(42, "part.bin")
-    sync_api.record_delivery(42, "endpoint-task", "f", 10, [url])
+    sync_api.record_delivery(42, "endpoint-task", "f", 10, [url], storage_backend="s3")
     monkeypatch.setattr(sync_api, "user_id_for_token", lambda token: 42 if token == "app-token" else None)
     deleted = []
     monkeypatch.setattr(web_store, "delete_from_todus_s3", deleted.append)
@@ -200,7 +200,7 @@ async def test_job_cloud_delete_callback_keeps_references_when_remote_delete_fai
     url = _owned_url(42, "job-part.bin")
     _history(monkeypatch, tmp_path, {"42": [{"task_id": "job-task", "urls": [url]}]})
     _deliveries(monkeypatch, tmp_path)
-    sync_api.record_delivery(42, "job-task", "f", 10, [url])
+    sync_api.record_delivery(42, "job-task", "f", 10, [url], storage_backend="s3")
     job = SimpleNamespace(
         task_id="job-task", user_id=42, state="done", part_urls={0: url},
         chat_id=42, error=None,
