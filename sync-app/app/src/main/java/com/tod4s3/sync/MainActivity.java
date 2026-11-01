@@ -2627,8 +2627,8 @@ public final class MainActivity extends Activity {
                     if (isDeliveryHidden(taskId)) continue;
                     String name = row.optString("filename", "archivo");
                     long size = row.optLong("size", 0);
-                    JSONArray parts = row.optJSONArray("parts");
-                    int partCount = parts == null ? 0 : parts.length();
+                    JSONArray parts = deliveryParts(row);
+                    int partCount = parts.length();
                     if (partCount == 0) continue;
                     LinearLayout card = new LinearLayout(this);
                     card.setOrientation(LinearLayout.VERTICAL);
@@ -2689,7 +2689,8 @@ public final class MainActivity extends Activity {
                     LinearLayout.LayoutParams progressLayout = new LinearLayout.LayoutParams(-1, dp(8));
                     progressLayout.setMargins(0, 0, 0, dp(8));
                     card.addView(progressBar, progressLayout);
-                    Button download = primaryButton(partCount > 1 ? "Descargar y unir" : "Descargar");
+                    Button download = primaryButton(partCount > 1
+                            ? "Descargar y unir · " + partCount : "Descargar");
                     download.setTextSize(13);
                     download.setMinHeight(dp(46));
                     download.setPadding(dp(10), dp(5), dp(10), dp(5));
@@ -2714,6 +2715,47 @@ public final class MainActivity extends Activity {
             empty.setPadding(dp(12), dp(20), dp(12), dp(20));
             deliveriesBox.addView(empty, new LinearLayout.LayoutParams(-1, -2));
         }
+    }
+
+    private JSONArray deliveryParts(JSONObject row) {
+        java.util.LinkedHashSet<String> urls = new java.util.LinkedHashSet<>();
+        String[] listKeys = {"parts", "urls", "part_urls", "links"};
+        for (String key : listKeys) {
+            Object value = row.opt(key);
+            if (value instanceof JSONArray) {
+                JSONArray candidates = (JSONArray) value;
+                for (int i = 0; i < candidates.length(); i++) {
+                    Object candidate = candidates.opt(i);
+                    String url = "";
+                    if (candidate instanceof JSONObject) {
+                        JSONObject part = (JSONObject) candidate;
+                        url = part.optString("url", part.optString("download_url",
+                                part.optString("link", "")));
+                    } else if (candidate instanceof String) {
+                        url = (String) candidate;
+                    }
+                    if (url.startsWith("https://")) urls.add(url);
+                }
+            } else if (value instanceof String) {
+                String raw = ((String) value).trim();
+                if (raw.startsWith("https://")) {
+                    urls.add(raw);
+                } else if (raw.startsWith("[")) {
+                    try {
+                        JSONArray candidates = new JSONArray(raw);
+                        for (int i = 0; i < candidates.length(); i++) {
+                            String url = candidates.optString(i, "");
+                            if (url.startsWith("https://")) urls.add(url);
+                        }
+                    } catch (Exception ignored) { }
+                }
+            }
+        }
+        for (String key : new String[]{"url", "download_url"}) {
+            String url = row.optString(key, "");
+            if (url.startsWith("https://")) urls.add(url);
+        }
+        return new JSONArray(urls);
     }
 
     private String hiddenDeliveryPreferenceKey() {
