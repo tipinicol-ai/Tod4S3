@@ -77,7 +77,7 @@ from sync_api import create_pairing_code, record_delivery
 
 TELEGRAM_BOT_TOKEN = ""
 OWNER_TELEGRAM_ID = ""
-WELCOME_IMAGE_PATH = Path(__file__).with_name("toduss3_welcome_option_1.png")
+WELCOME_IMAGE_PATH = Path(__file__).with_name("IMG_20261102_161854_801.jpg")
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO").upper(),
@@ -4437,10 +4437,11 @@ def welcome_text(user_id: int, user_name: str, username: str | None = None) -> s
 
 async def send_welcome_message(message, user_id: int, user_name: str, username: str | None,
                                reply_markup: InlineKeyboardMarkup, extra_text: str = "") -> None:
-    """Muestra la imagen de marca y usa la ficha textual como fallback."""
+    """Muestra la nueva imagen de marca con la ficha del usuario como caption."""
     if WELCOME_IMAGE_PATH.is_file() and hasattr(message, "reply_photo"):
         with WELCOME_IMAGE_PATH.open("rb") as photo:
-            await message.reply_photo(photo=photo, caption=extra_text or None, reply_markup=reply_markup)
+            caption = welcome_text(user_id, user_name, username) + extra_text
+            await message.reply_photo(photo=photo, caption=caption, reply_markup=reply_markup)
         return
     await message.reply_text(
         welcome_text(user_id, user_name, username) + extra_text,
@@ -4454,7 +4455,7 @@ async def edit_welcome_message(message, user_id: int, user_name: str, username: 
     if WELCOME_IMAGE_PATH.is_file() and hasattr(message, "edit_media"):
         with WELCOME_IMAGE_PATH.open("rb") as photo:
             await message.edit_media(
-                media=InputMediaPhoto(media=photo, caption=extra_text or None),
+                media=InputMediaPhoto(media=photo, caption=welcome_text(user_id, user_name, username) + extra_text),
                 reply_markup=reply_markup,
             )
         return

@@ -186,6 +186,17 @@ class RequestedFeatureTests(unittest.TestCase):
         self.assertIn("<code>https://t.me/jk_bot?start=ref_123</code>", text)
         self.assertNotIn("<ᴄᴏᴅᴇ>", text)
 
+    def test_bot_start_uses_latest_uploaded_welcome_image_and_keeps_account_info(self):
+        import bot
+        self.assertEqual(bot.WELCOME_IMAGE_PATH.name, "IMG_20261102_161854_801.jpg")
+        self.assertTrue(bot.WELCOME_IMAGE_PATH.is_file())
+        source = (Path(__file__).resolve().parents[1] / "bot.py").read_text()
+        sender = source.split("async def send_welcome_message", 1)[1].split("async def edit_welcome_message", 1)[0]
+        start = source.split("async def start_command", 1)[1].split("async def ", 1)[0]
+        self.assertIn("caption = welcome_text(user_id, user_name, username) + extra_text", sender)
+        self.assertIn("reply_photo(photo=photo, caption=caption, reply_markup=reply_markup)", sender)
+        self.assertIn("await send_welcome_message(", start)
+
     def test_referral_adds_five_to_inviter_only_once(self):
         import bot
         with tempfile.TemporaryDirectory() as directory:
