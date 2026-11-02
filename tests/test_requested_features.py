@@ -79,9 +79,19 @@ class RequestedFeatureTests(unittest.TestCase):
         chat = source.split("private void showAiChat", 1)[1].split("private void renderAiConversation", 1)[0]
         self.assertIn("← Volver", chat)
         self.assertIn("dp(270)", chat)
-        self.assertIn('primaryButton("↑")', chat)
+        self.assertIn('primaryButton("➤")', chat)
         self.assertNotIn("addHomeTabs(page, false, true)", chat)
         self.assertNotIn("Ver planes y ofertas", chat)
+
+    def test_android_ai_keyboard_resizes_and_clears_scroll_after_ime_closes(self):
+        root = Path(__file__).resolve().parents[1]
+        source = (root / "sync-app/app/src/main/java/com/tod4s3/sync/MainActivity.java").read_text()
+        manifest = (root / "sync-app/app/src/main/AndroidManifest.xml").read_text()
+        self.assertIn('android:windowSoftInputMode="adjustResize|stateAlwaysHidden"', manifest)
+        self.assertIn("if (aiKeyboardWasVisible && !keyboardVisible && showingAiChat)", source)
+        self.assertIn("appScroll.scrollTo(0, 0)", source)
+        self.assertIn('aiSendButton.setText("➤")', source)
+        self.assertNotIn('aiSendButton.setText("Enviar")', source)
 
     def test_android_todus_auth_has_recoverable_pin_and_validation_watchdogs(self):
         source = (Path(__file__).resolve().parents[1]

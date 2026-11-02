@@ -180,6 +180,7 @@ public final class MainActivity extends Activity {
     private EditText aiComposer;
     private Button aiSendButton;
     private TextView aiChatStatus;
+    private boolean aiKeyboardWasVisible;
     private final ArrayList<AiChatMessage> aiChatMessages = new ArrayList<>();
     private TextView appLogOutput;
     private volatile int appLogGeneration;
@@ -323,6 +324,28 @@ public final class MainActivity extends Activity {
         appScroll.setBackgroundColor(backgroundColor());
         appRoot.addView(appScroll, new FrameLayout.LayoutParams(-1, -1));
         setContentView(appRoot);
+        appRoot.setFocusableInTouchMode(true);
+        appRoot.getViewTreeObserver().addOnGlobalLayoutListener(() -> {
+            android.graphics.Rect visibleFrame = new android.graphics.Rect();
+            appRoot.getWindowVisibleDisplayFrame(visibleFrame);
+            int rootHeight = appRoot.getRootView().getHeight();
+            int screenHeight = getResources().getDisplayMetrics().heightPixels;
+            int obscuredHeight = Math.max(rootHeight - visibleFrame.bottom,
+                    screenHeight - visibleFrame.bottom);
+            boolean keyboardVisible = obscuredHeight > dp(160);
+            if (aiKeyboardWasVisible && !keyboardVisible && showingAiChat) {
+                handler.postDelayed(() -> {
+                    if (showingAiChat && appScroll != null) {
+                        appScroll.scrollTo(0, 0);
+                        appScroll.requestLayout();
+                        appRoot.requestLayout();
+                    }
+                }, 80L);
+            }
+            aiKeyboardWasVisible = keyboardVisible;
+        });
+        getWindow().setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
+                | android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN);
         applySystemBarTheme();
         if (prefs.getString(PREF_SELECTED_PLAN, "").isEmpty()) {
             showPlansStep(false);
@@ -2447,8 +2470,9 @@ public final class MainActivity extends Activity {
         aiComposer.setPadding(dp(12), dp(7), dp(12), dp(7));
         aiComposer.setBackground(roundRect(raisedSurfaceColor(), 24, borderColor()));
         composerRow.addView(aiComposer, new LinearLayout.LayoutParams(0, dp(48), 1f));
-        aiSendButton = primaryButton("↑");
-        aiSendButton.setTextSize(20);
+        aiSendButton = primaryButton("➤");
+        aiSendButton.setTextSize(18);
+        aiSendButton.setPadding(0, 0, 0, 0);
         aiSendButton.setContentDescription("Enviar pregunta");
         LinearLayout.LayoutParams sendParams = new LinearLayout.LayoutParams(dp(48), dp(48));
         sendParams.setMargins(dp(7), 0, 0, 0);
@@ -2473,11 +2497,12 @@ public final class MainActivity extends Activity {
         if (aiConversationBox == null || aiConversationScroll == null) return;
         aiConversationBox.removeAllViews();
         if (aiChatMessages.isEmpty()) {
-            TextView welcome = bodyText("Hola, soy AiTod4S3.\n\n¿Qué te gustaría saber hoy? Escribe abajo y comenzamos.");
+            TextView welcome = bodyText("✦\n\nHola, soy AiTod4S3.\n¿Qué te gustaría saber hoy?");
             welcome.setGravity(Gravity.CENTER);
-            welcome.setTextSize(15);
+            welcome.setTextSize(16);
             welcome.setLineSpacing(dp(3), 1f);
-            welcome.setPadding(dp(18), dp(50), dp(18), dp(50));
+            welcome.setTextColor(secondaryTextColor());
+            welcome.setPadding(dp(18), dp(24), dp(18), dp(24));
             aiConversationBox.addView(welcome, new LinearLayout.LayoutParams(-1, -2));
         }
         for (AiChatMessage message : aiChatMessages) {
@@ -2487,15 +2512,16 @@ public final class MainActivity extends Activity {
             row.setGravity(userMessage ? Gravity.END : Gravity.START);
             LinearLayout bubble = new LinearLayout(this);
             bubble.setOrientation(LinearLayout.VERTICAL);
-            bubble.setPadding(dp(12), dp(9), dp(12), dp(10));
-            bubble.setBackground(roundRect(userMessage ? Color.rgb(28, 86, 104) : raisedSurfaceColor(),
-                    16, userMessage ? accentColor() : borderColor()));
-            TextView author = text(userMessage ? "Tú" : "AiTod4S3", 11, true);
-            author.setTextColor(userMessage ? Color.rgb(126, 236, 226) : accentColor());
-            bubble.addView(author, margin(0, 0, 0, 4));
+            bubble.setPadding(dp(14), dp(10), dp(14), dp(11));
+            bubble.setBackground(roundRect(userMessage ? Color.rgb(29, 91, 108)
+                            : (isDarkTheme() ? Color.rgb(29, 36, 49) : Color.rgb(239, 242, 247)),
+                    18, userMessage ? Color.rgb(49, 143, 158) : borderColor()));
+            TextView author = text(userMessage ? "TÚ" : "✦  AiTod4S3", 10, true);
+            author.setTextColor(userMessage ? Color.rgb(151, 239, 228) : Color.rgb(241, 197, 111));
+            bubble.addView(author, margin(0, 0, 0, 5));
             TextView body = text(message.content, 14, false);
             body.setTextColor(primaryTextColor());
-            body.setLineSpacing(dp(2), 1f);
+            body.setLineSpacing(dp(3), 1.02f);
             bubble.addView(body);
             LinearLayout.LayoutParams bubbleParams = new LinearLayout.LayoutParams(-2, -2);
             bubbleParams.width = Math.min(dp(310), getResources().getDisplayMetrics().widthPixels - dp(96));
@@ -2518,6 +2544,11 @@ public final class MainActivity extends Activity {
             aiComposer.setError("Escribe una pregunta");
             return;
         }
+        android.view.inputmethod.InputMethodManager inputMethod =
+                (android.view.inputmethod.InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+        if (inputMethod != null) inputMethod.hideSoftInputFromWindow(aiComposer.getWindowToken(), 0);
+        aiComposer.clearFocus();
+        appRoot.requestFocus();
         final String currentToken = token == null ? "" : token;
         if (currentToken.isEmpty()) {
             aiChatStatus.setText("Vincula tu cuenta de Telegram para usar AiTod4S3.");
@@ -2607,7 +2638,7 @@ public final class MainActivity extends Activity {
                 }
                 if (aiSendButton != null) {
                     aiSendButton.setEnabled(true);
-                    aiSendButton.setText("Enviar");
+                    aiSendButton.setText("➤");
                 }
             });
         }, "aitod4s3-chat").start();
