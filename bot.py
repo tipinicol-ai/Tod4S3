@@ -4437,11 +4437,10 @@ def welcome_text(user_id: int, user_name: str, username: str | None = None) -> s
 
 async def send_welcome_message(message, user_id: int, user_name: str, username: str | None,
                                reply_markup: InlineKeyboardMarkup, extra_text: str = "") -> None:
-    """Muestra la nueva imagen de marca con la ficha del usuario como caption."""
+    """Muestra solo la imagen de marca con los botones del bot."""
     if WELCOME_IMAGE_PATH.is_file() and hasattr(message, "reply_photo"):
         with WELCOME_IMAGE_PATH.open("rb") as photo:
-            caption = welcome_text(user_id, user_name, username) + extra_text
-            await message.reply_photo(photo=photo, caption=caption, reply_markup=reply_markup)
+            await message.reply_photo(photo=photo, reply_markup=reply_markup)
         return
     await message.reply_text(
         welcome_text(user_id, user_name, username) + extra_text,
@@ -4451,18 +4450,17 @@ async def send_welcome_message(message, user_id: int, user_name: str, username: 
 
 async def edit_welcome_message(message, user_id: int, user_name: str, username: str | None,
                                reply_markup: InlineKeyboardMarkup, extra_text: str = "") -> None:
-    """Cambia la pantalla de verificación por la imagen de marca."""
-    caption = welcome_text(user_id, user_name, username) + extra_text
+    """Cambia la pantalla de verificación por la imagen de marca sin texto."""
     if WELCOME_IMAGE_PATH.is_file() and getattr(message, "photo", None) and hasattr(message, "edit_media"):
         with WELCOME_IMAGE_PATH.open("rb") as photo:
             await message.edit_media(
-                media=InputMediaPhoto(media=photo, caption=caption),
+                media=InputMediaPhoto(media=photo),
                 reply_markup=reply_markup,
             )
         return
     if WELCOME_IMAGE_PATH.is_file() and hasattr(message, "reply_photo"):
         with WELCOME_IMAGE_PATH.open("rb") as photo:
-            await message.reply_photo(photo=photo, caption=caption, reply_markup=reply_markup)
+            await message.reply_photo(photo=photo, reply_markup=reply_markup)
         if hasattr(message, "delete"):
             try:
                 await message.delete()
@@ -4474,19 +4472,18 @@ async def edit_welcome_message(message, user_id: int, user_name: str, username: 
 
 async def send_service_info_message(message, user_id: int, user_name: str,
                                     username: str | None) -> None:
-    """Muestra la ficha sobre la imagen, sin volver a una pantalla textual aislada."""
-    caption = welcome_text(user_id, user_name, username)
+    """Muestra solo la imagen de marca y conserva los botones."""
     markup = main_keyboard(user_id)
     if WELCOME_IMAGE_PATH.is_file() and hasattr(message, "reply_photo"):
         with WELCOME_IMAGE_PATH.open("rb") as photo:
-            await message.reply_photo(photo=photo, caption=caption, reply_markup=markup)
+            await message.reply_photo(photo=photo, reply_markup=markup)
         if hasattr(message, "delete"):
             try:
                 await message.delete()
             except Exception:
                 pass
         return
-    await message.edit_text(caption, reply_markup=markup)
+    await message.edit_text(welcome_text(user_id, user_name, username), reply_markup=markup)
 
 
 async def edit_query_message_text(message, text: str, **kwargs):
