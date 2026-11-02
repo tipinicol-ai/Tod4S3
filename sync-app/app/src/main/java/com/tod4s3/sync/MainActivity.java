@@ -166,6 +166,7 @@ public final class MainActivity extends Activity {
     private boolean appTaskRefreshInFlight;
     private boolean viewingDashboard;
     private boolean showingPlansPage;
+    private boolean relinkingBotAccount;
     private boolean profileRefreshInFlight;
     private boolean profileRefreshPending;
     private volatile boolean appBanned;
@@ -764,20 +765,35 @@ public final class MainActivity extends Activity {
         viewingDashboard = false;
         dashboardItemsBox = null;
         deliveriesBox = null;
-        LinearLayout page = createStepPage(1, "Vincula tu bot", "Un código de un solo uso conecta esta app con tus entregas de Tod4S3.");
+        LinearLayout page = createStepPage(1,
+                relinkingBotAccount ? "Renueva el vínculo con el bot" : "Vincula tu bot",
+                relinkingBotAccount
+                        ? "Genera un código nuevo en el bot. Se conservarán tu plan y la sesión de ToDus."
+                        : "Un código de un solo uso conecta esta app con tus entregas de Tod4S3.");
         LinearLayout box = card();
-        box.addView(text("Conecta tu cuenta", 18, true));
-        box.addView(bodyText("En el chat privado del bot pulsa “Vincular aplicación” (o envía /app). Pega aquí el código que recibas."), margin(0, 8, 0, 16));
+        box.addView(text(relinkingBotAccount ? "Vuelve a conectar Tod4S3" : "Conecta tu cuenta", 18, true));
+        box.addView(bodyText("En el chat privado del bot pulsa “Vincular aplicación” (o envía /app). Pega aquí el código que recibas."
+                + (relinkingBotAccount ? " No se cerrará tu sesión ToDus." : "")), margin(0, 8, 0, 16));
         codeInput = input("Código del bot", android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS);
         codeInput.setImeOptions(EditorInfo.IME_ACTION_DONE);
         box.addView(codeInput, margin(0, 0, 0, 14));
-        Button pair = primaryButton("Conectar con el bot");
+        Button pair = primaryButton(relinkingBotAccount ? "Volver a vincular" : "Conectar con el bot");
         pair.setOnClickListener(v -> pairDevice(v));
         box.addView(pair);
-        syncStatus = statusText("El código caduca a los 10 minutos.");
+        syncStatus = statusText(relinkingBotAccount
+                ? "El vínculo actual se reemplazará solo cuando el nuevo código se acepte."
+                : "El código caduca a los 10 minutos.");
         box.addView(syncStatus, margin(0, 12, 0, 0));
         page.addView(box, margin(0, 20, 0, 0));
         page.addView(infoCard("Privacidad", "El código solo vincula tus entregas. La app no lee tus chats privados."), margin(0, 12, 0, 0));
+        if (relinkingBotAccount) {
+            Button cancel = secondaryButton("Cancelar y volver a la aplicación");
+            cancel.setOnClickListener(v -> {
+                relinkingBotAccount = false;
+                showDashboard(dashboardFilter, true);
+            });
+            page.addView(cancel, margin(0, 12, 0, 0));
+        }
         showPage(page, animated);
     }
 
@@ -1777,6 +1793,13 @@ public final class MainActivity extends Activity {
         View divider = new View(this);
         divider.setBackgroundColor(borderColor());
         content.addView(divider, new LinearLayout.LayoutParams(-1, dp(1)));
+        if (token != null && !token.isEmpty()) {
+            addDrawerRow(content, popup, "↻", "Volver a vincular con el bot",
+                    "Renovar acceso de Telegram sin cerrar ToDus", () -> {
+                        relinkingBotAccount = true;
+                        showBotStep(true);
+                    });
+        }
         addDrawerRow(content, popup, "↔", "Cambiar cuenta ToDus", "Conectar otro número", () ->
                 new AlertDialog.Builder(this).setTitle("Cambiar cuenta ToDus")
                         .setMessage("Se quitará de este teléfono la sesión guardada de ToDus. Tus descargas no se borrarán.")
@@ -2447,8 +2470,11 @@ public final class MainActivity extends Activity {
         aiConversationScroll.addView(aiConversationBox, new ScrollView.LayoutParams(-1, -2));
         LinearLayout chatPanel = card();
         chatPanel.setPadding(dp(6), dp(6), dp(6), dp(6));
-        chatPanel.addView(aiConversationScroll, new LinearLayout.LayoutParams(-1, dp(270)));
-        page.addView(chatPanel, margin(0, 0, 0, 8));
+        chatPanel.setMinimumHeight(dp(190));
+        chatPanel.addView(aiConversationScroll, new LinearLayout.LayoutParams(-1, -1));
+        LinearLayout.LayoutParams chatPanelParams = new LinearLayout.LayoutParams(-1, 0, 1f);
+        chatPanelParams.setMargins(0, 0, 0, dp(8));
+        page.addView(chatPanel, chatPanelParams);
 
         LinearLayout composerRow = new LinearLayout(this);
         composerRow.setGravity(Gravity.CENTER_VERTICAL);
@@ -3388,6 +3414,7 @@ public final class MainActivity extends Activity {
 
     private void pairDevice(View trigger) {
         if (pairingInFlight) return;
+        final boolean renewExistingLink = relinkingBotAccount;
         final String code = codeInput.getText().toString().trim().toUpperCase(java.util.Locale.ROOT);
         if (code.isEmpty()) {
             if (syncStatus != null) syncStatus.setText("Escribe el código recibido con /app.");
@@ -3408,7 +3435,14 @@ public final class MainActivity extends Activity {
                 pendingPairingCode = "";
                 runOnUiThread(() -> {
                     pairingInFlight = false;
-                    showPhoneStep(true);
+                    if (renewExistingLink) {
+                        relinkingBotAccount = false;
+                        showDashboard(dashboardFilter, true);
+                        refreshAccountProfile();
+                        Toast.makeText(this, "Vínculo con el bot renovado. Tu sesión ToDus se conservó.", Toast.LENGTH_LONG).show();
+                    } else {
+                        showPhoneStep(true);
+                    }
                 });
             } catch (Exception e) {
                 runOnUiThread(() -> {

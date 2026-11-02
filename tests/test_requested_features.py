@@ -78,7 +78,8 @@ class RequestedFeatureTests(unittest.TestCase):
                  / "sync-app/app/src/main/java/com/tod4s3/sync/MainActivity.java").read_text()
         chat = source.split("private void showAiChat", 1)[1].split("private void renderAiConversation", 1)[0]
         self.assertIn("← Volver", chat)
-        self.assertIn("dp(270)", chat)
+        self.assertIn("new LinearLayout.LayoutParams(-1, 0, 1f)", chat)
+        self.assertIn("chatPanel.setMinimumHeight(dp(190))", chat)
         self.assertIn('primaryButton("➤")', chat)
         self.assertNotIn("addHomeTabs(page, false, true)", chat)
         self.assertNotIn("Ver planes y ofertas", chat)
@@ -92,6 +93,18 @@ class RequestedFeatureTests(unittest.TestCase):
         self.assertIn("appScroll.scrollTo(0, 0)", source)
         self.assertIn('aiSendButton.setText("➤")', source)
         self.assertNotIn('aiSendButton.setText("Enviar")', source)
+
+    def test_android_drawer_can_relink_bot_without_resetting_todus(self):
+        source = (Path(__file__).resolve().parents[1]
+                 / "sync-app/app/src/main/java/com/tod4s3/sync/MainActivity.java").read_text()
+        drawer = source.split("private void showNavigationDrawer", 1)[1].split("private void addDrawerRow", 1)[0]
+        pairing = source.split("private void pairDevice", 1)[1].split("private void requestToDusPin", 1)[0]
+        self.assertIn("Volver a vincular con el bot", drawer)
+        self.assertIn("relinkingBotAccount = true", drawer)
+        self.assertIn("Renueva el vínculo con el bot", source)
+        self.assertIn("Tu sesión ToDus se conservó", pairing)
+        self.assertIn("if (renewExistingLink)", pairing)
+        self.assertNotIn("changeToDusAccount()", pairing)
 
     def test_android_todus_auth_has_recoverable_pin_and_validation_watchdogs(self):
         source = (Path(__file__).resolve().parents[1]
