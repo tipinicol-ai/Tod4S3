@@ -216,8 +216,8 @@ class RequestedFeatureTests(unittest.TestCase):
     def test_service_button_opens_service_info(self):
         source = (Path(__file__).resolve().parents[1] / "bot.py").read_text()
         callback = source.split('if query.data == "service_info":', 1)[1].split('if query.data in {"balance", "plans", "referral:show"}', 1)[0]
-        self.assertIn("service_info_text()", callback)
-        self.assertIn("service_info_keyboard()", callback)
+        self.assertIn("welcome_text(", callback)
+        self.assertIn("reply_markup=main_keyboard(user.id)", callback)
         self.assertNotIn("send_service_info_message(", callback)
 
     def test_docker_image_contains_configured_welcome_photo(self):
