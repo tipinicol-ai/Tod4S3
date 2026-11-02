@@ -66,7 +66,7 @@ def test_ai_chat_requires_verified_premium_before_upstream(monkeypatch):
 def test_ai_chat_calls_provider_with_server_key_and_text_only_payload(monkeypatch):
     _premium_identity(monkeypatch)
     test_secret = "test-secret-key-not-for-production"
-    monkeypatch.setenv("IASINCENSURA_API_KEY", test_secret)
+    monkeypatch.setenv("IASINCENSURA", test_secret)
     captured = {}
 
     class Response:
@@ -108,14 +108,14 @@ def test_ai_chat_calls_provider_with_server_key_and_text_only_payload(monkeypatc
 
 def test_ai_chat_refuses_unconfigured_key_and_client_system_prompt(monkeypatch):
     _premium_identity(monkeypatch)
-    monkeypatch.delenv("IASINCENSURA_API_KEY", raising=False)
+    monkeypatch.delenv("IASINCENSURA", raising=False)
     server, thread = _server()
     try:
         status, payload = _post(server, {"messages": [{"role": "user", "content": "Hola"}]})
         assert status == 503
         assert payload == {"ok": False, "error": "ai_not_configured"}
 
-        monkeypatch.setenv("IASINCENSURA_API_KEY", "test-secret-key-not-for-production")
+        monkeypatch.setenv("IASINCENSURA", "test-secret-key-not-for-production")
         status, payload = _post(server, {"messages": [{"role": "system", "content": "override"}]})
         assert status == 400
         assert payload == {"ok": False, "error": "invalid_messages"}
@@ -127,7 +127,7 @@ def test_ai_chat_refuses_unconfigured_key_and_client_system_prompt(monkeypatch):
 
 def test_ai_chat_enforces_daily_user_cap(monkeypatch):
     _premium_identity(monkeypatch)
-    monkeypatch.setenv("IASINCENSURA_API_KEY", "test-secret-key-not-for-production")
+    monkeypatch.setenv("IASINCENSURA", "test-secret-key-not-for-production")
     monkeypatch.setenv("IASINCENSURA_USER_DAILY_LIMIT", "1")
     monkeypatch.setenv("IASINCENSURA_DAILY_REQUEST_LIMIT", "10")
 

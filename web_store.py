@@ -64,7 +64,7 @@ def _dispatch_ai_chat(token: str, body: dict) -> tuple[dict, int]:
     if not verified or (plan != "owner" and (not premium or plan != "premium")):
         return {"ok": False, "error": "premium_required"}, 403
 
-    api_key = os.getenv("IASINCENSURA_API_KEY", "").strip()
+    api_key = os.getenv("IASINCENSURA", "").strip()
     if not api_key:
         return {"ok": False, "error": "ai_not_configured"}, 503
     if len(api_key) < 24 or any(char.isspace() for char in api_key):
