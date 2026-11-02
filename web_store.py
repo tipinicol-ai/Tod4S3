@@ -590,7 +590,8 @@ class StoreHandler(SimpleHTTPRequestHandler):
                 return
             try:
                 profile = checker(identity["user_id"])
-                if not isinstance(profile, dict) or profile.get("premium") is not True or profile.get("plan") != "premium":
+                if (not isinstance(profile, dict) or profile.get("premium") is not True
+                        or profile.get("plan") not in {"premium", "owner"}):
                     self._json_response({"ok": False, "error": "premium_not_active"}, 409)
                     return
                 expires_at = profile.get("expires_at", "")

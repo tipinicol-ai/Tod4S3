@@ -1017,53 +1017,143 @@ public final class MainActivity extends Activity {
     }
 
     private LinearLayout toDusDownloadTaskCard(ToDusDownloadTask task) {
-        LinearLayout item = card();
-        item.setPadding(dp(14), dp(12), dp(14), dp(12));
-        item.addView(text(task.filename, 14, true));
-        String stateLabel = task.state.equals("downloading") ? "Descargando desde ToDus"
-                : task.state.equals("saving") ? "Guardando en Descargas"
-                : task.state.equals("pausing") ? "Pausando…"
-                : task.state.equals("deleting") ? "Cancelando y limpiando…"
-                : task.state.equals("error") ? "Error · puedes reanudar"
-                : "Pausada · se conserva el progreso";
-        int percent = task.total > 0 ? (int) Math.min(100L, task.bytes * 100L / task.total) : 0;
-        String detailText = stateLabel;
-        if (task.total > 0) detailText += " · " + percent + "% · " + formatBytes(task.bytes) + " / " + formatBytes(task.total);
-        else if (task.bytes > 0) detailText += " · " + formatBytes(task.bytes);
-        TextView detail = bodyText(detailText);
-        detail.setTextSize(12);
-        item.addView(detail, margin(0, 4, 0, 0));
-        task.progressTextView = detail;
-        ProgressBar progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
-        progress.setMax(100);
-        progress.setProgressTintList(ColorStateList.valueOf(accentColor()));
-        progress.setIndeterminateTintList(ColorStateList.valueOf(accentColor()));
-        boolean running = task.state.equals("downloading") || task.state.equals("saving") || task.state.equals("pausing");
-        progress.setIndeterminate(running && task.total <= 0);
-        progress.setProgress(percent);
-        item.addView(progress, margin(0, 8, 0, 0));
-        task.progressBarView = progress;
-        if (task.state.equals("error") && !task.error.isEmpty()) item.addView(bodyText(task.error), margin(0, 5, 0, 0));
-        LinearLayout actions = new LinearLayout(this);
-        actions.setOrientation(LinearLayout.HORIZONTAL);
-        if (task.state.equals("downloading") || task.state.equals("saving")) {
-            Button pause = secondaryButton("Pausar");
-            pause.setOnClickListener(v -> pauseToDusDownload(task.key));
-            LinearLayout.LayoutParams pauseParams = new LinearLayout.LayoutParams(0, -2, 1f);
-            pauseParams.setMargins(0, 0, dp(8), 0);
-            actions.addView(pause, pauseParams);
-        } else if (task.state.equals("paused") || task.state.equals("error")) {
-            Button resume = primaryButton("Reanudar");
-            resume.setOnClickListener(v -> resumeToDusDownload(task.key));
-            LinearLayout.LayoutParams resumeParams = new LinearLayout.LayoutParams(0, -2, 1f);
-            resumeParams.setMargins(0, 0, dp(8), 0);
-            actions.addView(resume, resumeParams);
-        }
-        Button cancel = secondaryButton("Cancelar");
-        cancel.setOnClickListener(v -> confirmCancelToDusDownload(task.key, task.filename));
-        actions.addView(cancel, new LinearLayout.LayoutParams(0, -2, actions.getChildCount() == 0 ? 1f : 1f));
-        item.addView(actions, margin(0, 9, 0, 0));
+        task.cardRefs = new DownloadCardRefs();
+        LinearLayout item = buildActiveDownloadCard(task.filename, task.bytes, task.total,
+                task.speedBytesPerSecond, task.state, task.cardRefs,
+                () -> pauseToDusDownload(task.key), () -> resumeToDusDownload(task.key),
+                () -> confirmCancelToDusDownload(task.key, task.filename));
+        task.progressTextView = task.cardRefs.percent;
+        task.progressBarView = task.cardRefs.progress;
+        if (task.state.equals("error") && !task.error.isEmpty()) item.addView(bodyText(task.error), margin(0, 7, 0, 0));
         return item;
+    }
+
+    private static final class DownloadCardRefs {
+        TextView size;
+        TextView percent;
+        TextView speed;
+        TextView state;
+        ProgressBar progress;
+    }
+
+    private LinearLayout buildActiveDownloadCard(String filename, long bytes, long total,
+                                                  long speed, String state, DownloadCardRefs refs,
+                                                  Runnable pause, Runnable resume, Runnable cancel) {
+        LinearLayout item = new LinearLayout(this);
+        item.setOrientation(LinearLayout.VERTICAL);
+        item.setPadding(dp(13), dp(12), dp(13), dp(12));
+        item.setBackground(roundRect(Color.rgb(17, 21, 33), 20, Color.rgb(43, 49, 65)));
+
+        LinearLayout header = new LinearLayout(this);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        header.addView(iconBadge(R.drawable.ic_download_arrow, Color.rgb(30, 190, 206),
+                Color.rgb(21, 27, 41)), new LinearLayout.LayoutParams(dp(44), dp(44)));
+
+        LinearLayout details = new LinearLayout(this);
+        details.setOrientation(LinearLayout.VERTICAL);
+        details.setGravity(Gravity.CENTER_VERTICAL);
+        TextView name = text(filename, 14, true);
+        name.setSingleLine(true);
+        name.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        details.addView(name);
+        refs.size = text(downloadSizeLabel(bytes, total), 12, false);
+        refs.size.setTextColor(Color.rgb(151, 160, 179));
+        refs.size.setSingleLine(true);
+        details.addView(refs.size, margin(0, 3, 0, 0));
+        LinearLayout.LayoutParams detailsParams = new LinearLayout.LayoutParams(0, -2, 1f);
+        detailsParams.setMargins(dp(9), 0, dp(5), 0);
+        header.addView(details, detailsParams);
+
+        refs.state = text("", 10, true);
+        refs.state.setGravity(Gravity.CENTER);
+        refs.state.setPadding(dp(7), dp(7), dp(7), dp(7));
+        refs.state.setMinWidth(dp(72));
+        LinearLayout.LayoutParams stateParams = new LinearLayout.LayoutParams(-2, dp(34));
+        stateParams.setMargins(0, 0, dp(5), 0);
+        header.addView(refs.state, stateParams);
+
+        boolean running = state.equals("downloading") || state.equals("saving") || state.equals("pausing");
+        TextView action = downloadCircleButton(running ? "Ⅱ" : "▶",
+                running ? Color.rgb(243, 177, 50) : Color.rgb(43, 203, 190),
+                running ? "Pausar descarga" : "Reanudar descarga");
+        action.setOnClickListener(v -> { if (running) pause.run(); else resume.run(); });
+        LinearLayout.LayoutParams actionParams = new LinearLayout.LayoutParams(dp(36), dp(36));
+        actionParams.setMargins(0, 0, dp(4), 0);
+        header.addView(action, actionParams);
+
+        TextView more = downloadCircleButton("⋯", Color.rgb(165, 174, 190), "Más opciones");
+        more.setOnClickListener(v -> new AlertDialog.Builder(this)
+                .setItems(new String[]{"Cancelar descarga"}, (dialog, which) -> cancel.run())
+                .show());
+        header.addView(more, new LinearLayout.LayoutParams(dp(32), dp(36)));
+        item.addView(header);
+
+        refs.progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        refs.progress.setMax(100);
+        refs.progress.setProgressTintList(ColorStateList.valueOf(Color.rgb(198, 32, 48)));
+        refs.progress.setProgressBackgroundTintList(ColorStateList.valueOf(Color.rgb(35, 41, 55)));
+        refs.progress.setIndeterminateTintList(ColorStateList.valueOf(Color.rgb(198, 32, 48)));
+        int percent = total > 0 ? (int) Math.min(100L, Math.max(0L, bytes * 100L / total)) : 0;
+        refs.progress.setProgress(percent);
+        refs.progress.setIndeterminate(running && total <= 0);
+        item.addView(refs.progress, margin(dp(2), 12, dp(2), 0));
+
+        LinearLayout bottom = new LinearLayout(this);
+        bottom.setGravity(Gravity.CENTER_VERTICAL);
+        refs.percent = text(percent + "%", 13, true);
+        refs.percent.setTextColor(Color.rgb(222, 77, 83));
+        refs.speed = text(downloadSpeedLabel(speed), 13, true);
+        refs.speed.setTextColor(Color.rgb(222, 77, 83));
+        bottom.addView(refs.percent, new LinearLayout.LayoutParams(0, -2, 1f));
+        refs.speed.setGravity(Gravity.END);
+        bottom.addView(refs.speed);
+        item.addView(bottom, margin(dp(2), 7, dp(2), 0));
+        updateDownloadCardViews(refs, bytes, total, speed, state);
+        return item;
+    }
+
+    private TextView downloadCircleButton(String label, int tint, String description) {
+        TextView button = text(label, 16, true);
+        button.setGravity(Gravity.CENTER);
+        button.setTextColor(tint);
+        button.setContentDescription(description);
+        button.setBackground(roundRect(Color.rgb(20, 25, 38), 50, tint));
+        return button;
+    }
+
+    private String downloadSizeLabel(long bytes, long total) {
+        if (total > 0) return formatBytes(Math.max(0L, bytes)) + " de " + formatBytes(total);
+        return formatBytes(Math.max(0L, bytes));
+    }
+
+    private String downloadSpeedLabel(long bytesPerSecond) {
+        return bytesPerSecond > 0 ? formatBytes(bytesPerSecond) + "/s" : "— KB/s";
+    }
+
+    private void updateDownloadCardViews(DownloadCardRefs refs, long bytes, long total,
+                                         long speed, String state) {
+        if (refs == null) return;
+        int percent = total > 0 ? (int) Math.min(100L, Math.max(0L, bytes * 100L / total)) : 0;
+        if (refs.size != null) refs.size.setText(downloadSizeLabel(bytes, total));
+        if (refs.percent != null) refs.percent.setText(percent + "%");
+        if (refs.speed != null) refs.speed.setText(downloadSpeedLabel(speed));
+        if (refs.progress != null) {
+            boolean running = state.equals("downloading") || state.equals("saving") || state.equals("pausing");
+            refs.progress.setIndeterminate(running && total <= 0);
+            refs.progress.setProgress(percent);
+        }
+        if (refs.state != null) {
+            String label = state.equals("downloading") ? "DESCARGANDO"
+                    : state.equals("saving") ? "GUARDANDO"
+                    : state.equals("pausing") ? "PAUSANDO"
+                    : state.equals("deleting") ? "CANCELANDO"
+                    : state.equals("error") ? "ERROR" : "PAUSADA";
+            int foreground = state.equals("paused") ? Color.rgb(243, 177, 50) : Color.rgb(222, 77, 83);
+            int background = state.equals("paused") ? Color.rgb(44, 37, 28) : Color.rgb(47, 25, 34);
+            refs.state.setText(label);
+            refs.state.setTextColor(foreground);
+            refs.state.setBackground(roundRect(background, 9, foreground));
+        }
     }
 
     private int renderDirectLinkTasks() {
@@ -1090,58 +1180,16 @@ public final class MainActivity extends Activity {
     }
 
     private LinearLayout directLinkTaskCard(DirectLinkTask task) {
-        LinearLayout item = card();
-        item.setPadding(dp(14), dp(12), dp(14), dp(12));
-        item.addView(text(task.filename, 14, true));
-        String stateLabel = task.state.equals("downloading") ? "Descargando"
-                : task.state.equals("saving") ? "Guardando en Descargas"
-                : task.state.equals("pausing") ? "Pausando…"
-                : task.state.equals("deleting") ? "Eliminando…"
-                : task.state.equals("error") ? "Error · puedes reanudar"
-                : "Pausada";
-        int percent = task.total > 0 ? (int) Math.min(100L, task.bytes * 100L / task.total) : 0;
-        String detailText = stateLabel;
-        if (task.total > 0) detailText += " · " + percent + "% · " + formatBytes(task.bytes) + " / " + formatBytes(task.total);
-        else if (task.bytes > 0) detailText += " · " + formatBytes(task.bytes);
-        TextView detail = bodyText(detailText);
-        detail.setTextSize(12);
-        item.addView(detail, margin(0, 4, 0, 0));
-        task.progressTextView = detail;
-
-        ProgressBar progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
-        progress.setMax(100);
-        progress.setProgressTintList(ColorStateList.valueOf(accentColor()));
-        progress.setIndeterminateTintList(ColorStateList.valueOf(accentColor()));
-        boolean running = task.state.equals("downloading") || task.state.equals("saving");
-        progress.setIndeterminate(running && task.total <= 0);
-        progress.setProgress(percent);
-        item.addView(progress, margin(0, 8, 0, 0));
-        task.progressBarView = progress;
+        task.cardRefs = new DownloadCardRefs();
+        LinearLayout item = buildActiveDownloadCard(task.filename, task.bytes, task.total,
+                task.speedBytesPerSecond, task.state, task.cardRefs,
+                () -> pauseDirectLinkTask(task.key), () -> resumeDirectLinkTask(task.key),
+                () -> confirmDeleteDirectLinkTask(task.key, task.filename));
+        task.progressTextView = task.cardRefs.percent;
+        task.progressBarView = task.cardRefs.progress;
         if (task.state.equals("error") && !task.error.isEmpty()) {
-            item.addView(bodyText(task.error), margin(0, 5, 0, 0));
+            item.addView(bodyText(task.error), margin(0, 7, 0, 0));
         }
-
-        LinearLayout actions = new LinearLayout(this);
-        actions.setOrientation(LinearLayout.HORIZONTAL);
-        if (task.state.equals("downloading") || task.state.equals("saving")) {
-            Button pause = secondaryButton("Pausar");
-            pause.setOnClickListener(v -> pauseDirectLinkTask(task.key));
-            LinearLayout.LayoutParams pauseParams = new LinearLayout.LayoutParams(0, -2, 1f);
-            pauseParams.setMargins(0, 0, dp(8), 0);
-            actions.addView(pause, pauseParams);
-        } else if (task.state.equals("paused") || task.state.equals("error")) {
-            Button resume = primaryButton("Reanudar");
-            resume.setOnClickListener(v -> resumeDirectLinkTask(task.key));
-            LinearLayout.LayoutParams resumeParams = new LinearLayout.LayoutParams(0, -2, 1f);
-            resumeParams.setMargins(0, 0, dp(8), 0);
-            actions.addView(resume, resumeParams);
-        }
-        Button delete = secondaryButton("Eliminar");
-        delete.setOnClickListener(v -> confirmDeleteDirectLinkTask(task.key, task.filename));
-        LinearLayout.LayoutParams deleteParams = new LinearLayout.LayoutParams(
-                actions.getChildCount() == 0 ? -1 : 0, -2, actions.getChildCount() == 0 ? 0f : 1f);
-        actions.addView(delete, deleteParams);
-        item.addView(actions, margin(0, 9, 0, 0));
         return item;
     }
 
@@ -1424,6 +1472,12 @@ public final class MainActivity extends Activity {
         synchronized (directLinkDownloadLock) {
             task.bytes = Math.max(0L, received);
             task.total = Math.max(0L, total);
+            if (task.speedSampleAt > 0L && now > task.speedSampleAt) {
+                task.speedBytesPerSecond = Math.max(0L,
+                        (task.bytes - task.speedSampleBytes) * 1000L / (now - task.speedSampleAt));
+            }
+            task.speedSampleAt = now;
+            task.speedSampleBytes = task.bytes;
             update = percent != task.lastProgressPercent || now - task.lastPersistAt >= 800L;
             if (update) {
                 task.lastProgressPercent = percent;
@@ -1439,25 +1493,9 @@ public final class MainActivity extends Activity {
 
     private void postDirectLinkProgressUpdate(DirectLinkTask task) {
         runOnUiThread(() -> {
-            TextView detail = task.progressTextView;
-            ProgressBar progress = task.progressBarView;
-            if (!viewingDashboard || detail == null || progress == null
-                    || detail.getParent() == null || progress.getParent() == null) return;
-            int percent = task.total > 0
-                    ? (int) Math.min(100L, task.bytes * 100L / task.total) : 0;
-            String stateLabel = task.state.equals("downloading") ? "Descargando"
-                    : task.state.equals("saving") ? "Guardando en Descargas"
-                    : task.state.equals("pausing") ? "Pausando…"
-                    : task.state.equals("deleting") ? "Eliminando…"
-                    : task.state.equals("error") ? "Error · puedes reanudar" : "Pausada";
-            String text = stateLabel;
-            if (task.total > 0) text += " · " + percent + "% · " + formatBytes(task.bytes)
-                    + " / " + formatBytes(task.total);
-            else if (task.bytes > 0) text += " · " + formatBytes(task.bytes);
-            detail.setText(text);
-            boolean running = task.state.equals("downloading") || task.state.equals("saving");
-            progress.setIndeterminate(running && task.total <= 0);
-            progress.setProgress(percent);
+            DownloadCardRefs refs = task.cardRefs;
+            if (!viewingDashboard || refs == null || refs.percent == null || refs.percent.getParent() == null) return;
+            updateDownloadCardViews(refs, task.bytes, task.total, task.speedBytesPerSecond, task.state);
         });
     }
 
@@ -4214,6 +4252,12 @@ public final class MainActivity extends Activity {
         synchronized (toDusDownloadLock) {
             task.bytes = Math.max(0L, received);
             if (total > 0L) task.total = Math.max(task.total, total);
+            if (task.speedSampleAt > 0L && now > task.speedSampleAt) {
+                task.speedBytesPerSecond = Math.max(0L,
+                        (task.bytes - task.speedSampleBytes) * 1000L / (now - task.speedSampleAt));
+            }
+            task.speedSampleAt = now;
+            task.speedSampleBytes = task.bytes;
             update = now - task.lastPersistAt >= 800L;
             if (update) {
                 task.lastPersistAt = now;
@@ -4228,27 +4272,9 @@ public final class MainActivity extends Activity {
 
     private void postToDusDownloadProgressUpdate(ToDusDownloadTask task) {
         runOnUiThread(() -> {
-            TextView detail = task.progressTextView;
-            ProgressBar progress = task.progressBarView;
-            if (!viewingDashboard || detail == null || progress == null
-                    || detail.getParent() == null || progress.getParent() == null) return;
-            int percent = task.total > 0
-                    ? (int) Math.min(100L, task.bytes * 100L / task.total) : 0;
-            String stateLabel = task.state.equals("downloading") ? "Descargando desde ToDus"
-                    : task.state.equals("saving") ? "Guardando en Descargas"
-                    : task.state.equals("pausing") ? "Pausando…"
-                    : task.state.equals("deleting") ? "Cancelando y limpiando…"
-                    : task.state.equals("error") ? "Error · puedes reanudar"
-                    : "Pausada · se conserva el progreso";
-            String text = stateLabel;
-            if (task.total > 0) text += " · " + percent + "% · " + formatBytes(task.bytes)
-                    + " / " + formatBytes(task.total);
-            else if (task.bytes > 0) text += " · " + formatBytes(task.bytes);
-            detail.setText(text);
-            boolean running = task.state.equals("downloading") || task.state.equals("saving")
-                    || task.state.equals("pausing");
-            progress.setIndeterminate(running && task.total <= 0);
-            progress.setProgress(percent);
+            DownloadCardRefs refs = task.cardRefs;
+            if (!viewingDashboard || refs == null || refs.percent == null || refs.percent.getParent() == null) return;
+            updateDownloadCardViews(refs, task.bytes, task.total, task.speedBytesPerSecond, task.state);
         });
     }
 
@@ -4592,6 +4618,9 @@ public final class MainActivity extends Activity {
         volatile int currentPart;
         volatile long updatedAt = System.currentTimeMillis();
         volatile long lastPersistAt;
+        volatile long speedBytesPerSecond;
+        volatile long speedSampleBytes;
+        volatile long speedSampleAt;
         volatile String error = "";
         volatile boolean pauseRequested;
         volatile boolean deleteRequested;
@@ -4600,6 +4629,7 @@ public final class MainActivity extends Activity {
         volatile DownloadTarget target;
         volatile TextView progressTextView;
         volatile ProgressBar progressBarView;
+        volatile DownloadCardRefs cardRefs;
 
         ToDusDownloadTask(String key, String taskId, String filename, JSONArray parts, long expectedSize) {
             this.key = key;
@@ -4619,6 +4649,9 @@ public final class MainActivity extends Activity {
         volatile long bytes;
         volatile long total;
         volatile long updatedAt = System.currentTimeMillis();
+        volatile long speedBytesPerSecond;
+        volatile long speedSampleBytes;
+        volatile long speedSampleAt;
         volatile String error = "";
         volatile boolean pauseRequested;
         volatile boolean deleteRequested;
@@ -4628,6 +4661,7 @@ public final class MainActivity extends Activity {
         volatile ParallelRangeDownloader.DownloadControl control;
         volatile TextView progressTextView;
         volatile ProgressBar progressBarView;
+        volatile DownloadCardRefs cardRefs;
 
         DirectLinkTask(String key, String url, String filename) {
             this.key = key;

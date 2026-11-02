@@ -324,3 +324,45 @@ def test_premium_claim_http_endpoint_checks_active_plan_and_returns_verified_pro
         server.shutdown()
         server.server_close()
         worker.join(timeout=2)
+
+
+def test_premium_claim_http_endpoint_accepts_permanent_owner_plan(tmp_path, monkeypatch):
+    monkeypatch.setattr(sync_api, "STATE_FILE", tmp_path / "sync_app.json")
+    pairing = sync_api.create_pairing_code(7777)
+    mobile_token = sync_api.consume_pairing_code(pairing, "creator-device")
+    code = sync_api.issue_premium_activation_token(7777, "")
+    monkeypatch.setattr(web_store, "_PROFILE_CHECKER", lambda user_id: {
+        "premium": user_id == 7777,
+        "plan": "owner" if user_id == 7777 else "free",
+        "expires": "",
+        "expires_at": "",
+        "days_remaining": None,
+    })
+    server = ThreadingHTTPServer(("127.0.0.1", 0), web_store.StoreHandler)
+    worker = Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    claim_request = Request(
+        f"{base}/api/app/premium/claim",
+        data=json.dumps({"token": code}).encode(),
+        headers={"Authorization": f"Bearer {mobile_token}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urlopen(claim_request, timeout=3) as response:
+            claimed = json.loads(response.read())
+        profile_request = Request(
+            f"{base}/api/app/profile",
+            headers={"Authorization": f"Bearer {mobile_token}"},
+        )
+        with urlopen(profile_request, timeout=3) as response:
+            profile = json.loads(response.read())
+        assert claimed == {"ok": True, "verified": True, "expires": ""}
+        assert profile["premium"] is True
+        assert profile["premium_verified"] is True
+        assert profile["plan"] == "owner"
+        assert sync_api.premium_activation_status(7777, "creator-device", "") == "verified"
+    finally:
+        server.shutdown()
+        server.server_close()
+        worker.join(timeout=2)

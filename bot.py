@@ -833,6 +833,21 @@ def get_user_plan(user_id: int) -> str:
     return get_user_plan_entry(user_id).get("plan", "free")
 
 
+def issue_app_premium_activation_code(user_id: int) -> str | None:
+    """Issue an APK claim code for active Premium users and permanent owners."""
+    entry = get_user_plan_entry(user_id)
+    plan = str(entry.get("plan", "free"))
+    if plan == "premium":
+        expires_at = str(entry.get("expires_at", ""))
+    elif plan == "owner" and is_owner(user_id):
+        # Creator access is perpetual; the claim endpoint must see the same
+        # empty expiry as the owner profile returned to the APK.
+        expires_at = ""
+    else:
+        return None
+    return sync_api.issue_premium_activation_token(user_id, expires_at)
+
+
 def get_user_queue_limit(user_id: int) -> int:
     """Devuelve el límite de tareas de la cola privada del usuario."""
     if is_owner(user_id):
@@ -5629,12 +5644,11 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if query.data.startswith("admin:premium_reissue:"):
             try:
                 target_id = int(query.data.rsplit(":", 1)[-1])
-                entry = get_user_plan_entry(target_id)
-                if target_id <= 0 or entry.get("plan") != "premium":
+                if target_id <= 0:
                     raise ValueError("premium_not_active")
-                activation_code = sync_api.issue_premium_activation_token(
-                    target_id, entry.get("expires_at", ""),
-                )
+                activation_code = issue_app_premium_activation_code(target_id)
+                if not activation_code:
+                    raise ValueError("premium_not_active")
             except Exception:
                 await query.answer("Ese usuario no tiene Premium activo o no se pudo generar el token.", show_alert=True)
                 return
@@ -5797,12 +5811,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             entry = set_user_plan(target_id, plan_key, days if days > 0 else None, custom_name=custom_name)
             activation_code = None
             try:
-                stored_entry = get_user_plan_entry(target_id)
-                if plan_key == "premium" and stored_entry.get("plan") == "premium":
-                    activation_code = sync_api.issue_premium_activation_token(
-                        target_id, stored_entry.get("expires_at", ""),
-                    )
-                elif stored_entry.get("plan") != "premium":
+                if plan_key == "premium":
+                    activation_code = issue_app_premium_activation_code(target_id)
+                else:
                     sync_api.revoke_premium_activation(target_id)
             except Exception:
                 log.exception("No se pudo preparar el código Premium del usuario %s", target_id)
