@@ -167,6 +167,7 @@ public final class MainActivity extends Activity {
     private boolean viewingDashboard;
     private boolean showingPlansPage;
     private boolean profileRefreshInFlight;
+    private boolean profileRefreshPending;
     private volatile boolean appBanned;
     private boolean bannedScreenVisible;
     private volatile boolean unbannedScreenVisible;
@@ -369,7 +370,11 @@ public final class MainActivity extends Activity {
         deliveriesBox = null;
         quotaUsageBox = null;
         dashboardPlanStatusText = null;
-        LinearLayout page = createStepPage(0, "Elige tu plan", "Empieza gratis. Los planes Premium son opcionales.");
+        boolean verifiedPremium = hasAiPremiumAccess();
+        LinearLayout page = createStepPage(0,
+                verifiedPremium ? "Tu plan Premium está activo" : "Elige tu plan",
+                verifiedPremium ? "Tu acceso Premium está verificado en este móvil."
+                        : "Empieza gratis. Los planes Premium son opcionales.");
         if (token != null && !token.isEmpty()) {
             Button returnToApp = secondaryButton("← Volver a mis archivos");
             returnToApp.setOnClickListener(v -> {
@@ -381,6 +386,26 @@ public final class MainActivity extends Activity {
         }
         planStatus = statusText(accountPlanStatusText());
         page.addView(planStatus, margin(0, 4, 0, 14));
+        if (verifiedPremium) {
+            LinearLayout active = card();
+            active.setBackground(roundRect(Color.rgb(18, 42, 42), 22, Color.rgb(52, 174, 148)));
+            TextView badge = text("✓  PREMIUM ACTIVO", 12, true);
+            badge.setTextColor(Color.rgb(99, 230, 190));
+            active.addView(badge);
+            active.addView(text("AiTod4S3 y tus funciones Premium están disponibles", 17, true), margin(0, 7, 0, 0));
+            if (!premiumExpiresAt.isEmpty()) {
+                active.addView(bodyText("Vigencia: " + premiumExpiresAt), margin(0, 5, 0, 0));
+            } else {
+                active.addView(bodyText("Plan permanente de creador"), margin(0, 5, 0, 0));
+            }
+            Button continuePremium = primaryButton("Continuar con mi plan Premium");
+            continuePremium.setOnClickListener(v -> continueWithActivePlan());
+            active.addView(continuePremium, margin(0, 13, 0, 0));
+            page.addView(active, margin(0, 8, 0, 8));
+            showPage(page, animated);
+            if (token != null && !token.isEmpty()) refreshAccountProfile();
+            return;
+        }
         LinearLayout free = card();
         TextView freeTag = text("RECOMENDADO PARA EMPEZAR", 11, true);
         freeTag.setTextColor(Color.rgb(99, 230, 216));
@@ -491,11 +516,26 @@ public final class MainActivity extends Activity {
                 JSONObject result = request("POST", "/api/app/premium/claim", body.toString(), currentToken);
                 if (!result.optBoolean("verified", false)) throw new IOException("premium_not_verified");
                 runOnUiThread(() -> {
+                    premiumActive = result.optBoolean("premium", true);
                     premiumVerified = true;
-                    prefs.edit().putBoolean(PREF_PREMIUM_VERIFIED, true).apply();
-                    if (planStatus != null) planStatus.setText(accountPlanStatusText());
+                    activePlan = result.optString("plan", "premium");
+                    if (!activePlan.equals("premium") && !activePlan.equals("owner")) activePlan = "premium";
+                    premiumExpiresAt = result.optString("expires", "");
+                    prefs.edit().putBoolean(PREF_ACTIVE_PREMIUM, premiumActive)
+                            .putBoolean(PREF_PREMIUM_VERIFIED, premiumVerified)
+                            .putString(PREF_ACTIVE_PLAN, activePlan)
+                            .putString("active_plan_expires_v1", premiumExpiresAt)
+                            .putString(PREF_SELECTED_PLAN, "premium")
+                            .apply();
                     dialog.dismiss();
                     Toast.makeText(this, "Premium verificado para este móvil.", Toast.LENGTH_LONG).show();
+                    if (showingPlansPage) {
+                        showPlansStep(false);
+                    } else if (homeTabPageVisible) {
+                        showHomeSection(viewingDownloadsTab, false);
+                    } else if (planStatus != null) {
+                        planStatus.setText(accountPlanStatusText());
+                    }
                     refreshAccountProfile();
                 });
             } catch (Exception e) {
@@ -667,6 +707,16 @@ public final class MainActivity extends Activity {
 
     private void chooseFreePlan() {
         prefs.edit().putString(PREF_SELECTED_PLAN, "free").apply();
+        continueToApp();
+    }
+
+    private void continueWithActivePlan() {
+        if (!hasAiPremiumAccess()) {
+            refreshAccountProfile();
+            Toast.makeText(this, "Comprobando el estado de tu Premium…", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        prefs.edit().putString(PREF_SELECTED_PLAN, "premium").apply();
         continueToApp();
     }
 
@@ -3619,7 +3669,11 @@ public final class MainActivity extends Activity {
 
     private void refreshAccountProfile() {
         final String current = token;
-        if (current == null || current.isEmpty() || profileRefreshInFlight) return;
+        if (current == null || current.isEmpty()) return;
+        if (profileRefreshInFlight) {
+            profileRefreshPending = true;
+            return;
+        }
         profileRefreshInFlight = true;
         final int profileAccessGeneration = appAccessGeneration;
         final boolean previousPremium = premiumActive;
@@ -3640,13 +3694,17 @@ public final class MainActivity extends Activity {
                 runOnUiThread(() -> {
                     if (!current.equals(token)) {
                         profileRefreshInFlight = false;
+                        profileRefreshPending = false;
                         return;
                     }
                     int profileAccess = acceptProfileAccess(profileAccessGeneration);
                     if (profileAccess < 0) {
                         profileRefreshInFlight = false;
+                        profileRefreshPending = false;
                         return;
                     }
+                    boolean refreshAgain = profileRefreshPending;
+                    profileRefreshPending = false;
                     boolean accessRestored = profileAccess == 1;
                     boolean entitlementChanged = previousPremium != newPremium || previousVerified != newPremiumVerified;
                     premiumActive = newPremium;
@@ -3669,6 +3727,8 @@ public final class MainActivity extends Activity {
                     updateFreeQuotaPanel();
                     if (accessRestored) {
                         showUnbannedScreen();
+                    } else if (entitlementChanged && showingPlansPage) {
+                        showPlansStep(false);
                     } else if (entitlementChanged && homeTabPageVisible) {
                         if (showingAiChat && !hasAiPremiumAccess()) {
                             showHomeSection(false, false);
@@ -3679,9 +3739,15 @@ public final class MainActivity extends Activity {
                             showHomeSection(viewingDownloadsTab, false);
                         }
                     }
+                    if (refreshAgain) handler.postDelayed(this::refreshAccountProfile, 120L);
                 });
             } catch (Exception ignored) {
-                runOnUiThread(() -> profileRefreshInFlight = false);
+                runOnUiThread(() -> {
+                    profileRefreshInFlight = false;
+                    boolean refreshAgain = profileRefreshPending;
+                    profileRefreshPending = false;
+                    if (refreshAgain) handler.postDelayed(this::refreshAccountProfile, 250L);
+                });
             }
         }, "account-profile-refresh").start();
     }

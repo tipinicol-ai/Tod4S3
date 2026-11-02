@@ -316,7 +316,10 @@ def test_premium_claim_http_endpoint_checks_active_plan_and_returns_verified_pro
         )
         with urlopen(profile_request, timeout=3) as response:
             profile = json.loads(response.read())
-        assert claimed == {"ok": True, "verified": True, "expires": "01/07/2099"}
+        assert claimed == {
+            "ok": True, "verified": True, "expires": "01/07/2099",
+            "premium": True, "plan": "premium",
+        }
         assert profile["premium"] is True
         assert profile["premium_verified"] is True
         assert profile["plan"] == "premium"
@@ -357,7 +360,10 @@ def test_premium_claim_http_endpoint_accepts_permanent_owner_plan(tmp_path, monk
         )
         with urlopen(profile_request, timeout=3) as response:
             profile = json.loads(response.read())
-        assert claimed == {"ok": True, "verified": True, "expires": ""}
+        assert claimed == {
+            "ok": True, "verified": True, "expires": "",
+            "premium": True, "plan": "owner",
+        }
         assert profile["premium"] is True
         assert profile["premium_verified"] is True
         assert profile["plan"] == "owner"

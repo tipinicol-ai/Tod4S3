@@ -609,6 +609,8 @@ class StoreHandler(SimpleHTTPRequestHandler):
             self._json_response({
                 "ok": True, "verified": True,
                 "expires": str(profile.get("expires", ""))[:32],
+                "premium": True,
+                "plan": str(profile.get("plan", "premium")),
             })
             return
         if parsed.path == "/api/app/download":
