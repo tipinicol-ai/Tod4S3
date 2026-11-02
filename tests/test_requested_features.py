@@ -69,8 +69,19 @@ class RequestedFeatureTests(unittest.TestCase):
         plans = source.split("private void showPlansStep", 1)[1].split("private LinearLayout planOffer", 1)[0]
         self.assertIn("← Volver a mis archivos", plans)
         self.assertIn("planStatus = statusText(accountPlanStatusText())", plans)
-        self.assertIn("dashboardPlanStatusText = bodyText(accountPlanStatusText())", source)
+        self.assertIn('dashboardPlanStatusText = bodyText(accountPlanStatusText() + "  ·  Toca para ver planes")', source)
+        self.assertIn('text(verifiedPremium ? "PLAN GRATUITO" : "RECOMENDADO PARA EMPEZAR"', plans)
         self.assertIn("viewingDashboard = false;", plans)
+
+    def test_android_ai_chat_is_compact_and_has_only_back_navigation(self):
+        source = (Path(__file__).resolve().parents[1]
+                 / "sync-app/app/src/main/java/com/tod4s3/sync/MainActivity.java").read_text()
+        chat = source.split("private void showAiChat", 1)[1].split("private void renderAiConversation", 1)[0]
+        self.assertIn("← Volver", chat)
+        self.assertIn("dp(270)", chat)
+        self.assertIn('primaryButton("↑")', chat)
+        self.assertNotIn("addHomeTabs(page, false, true)", chat)
+        self.assertNotIn("Ver planes y ofertas", chat)
 
     def test_android_todus_auth_has_recoverable_pin_and_validation_watchdogs(self):
         source = (Path(__file__).resolve().parents[1]

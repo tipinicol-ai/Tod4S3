@@ -370,6 +370,10 @@ public final class MainActivity extends Activity {
         deliveriesBox = null;
         quotaUsageBox = null;
         dashboardPlanStatusText = null;
+        freeQuotaPanel = null;
+        freeQuotaPanelProgress = null;
+        freeQuotaPanelUsage = null;
+        freeQuotaPanelReset = null;
         boolean verifiedPremium = hasAiPremiumAccess();
         LinearLayout page = createStepPage(0,
                 verifiedPremium ? "Tu plan Premium está activo" : "Elige tu plan",
@@ -403,26 +407,25 @@ public final class MainActivity extends Activity {
             active.addView(continuePremium, margin(0, 13, 0, 0));
             page.addView(active, margin(0, 8, 0, 8));
         }
-        if (!verifiedPremium) {
         LinearLayout free = card();
-        TextView freeTag = text("RECOMENDADO PARA EMPEZAR", 11, true);
+        TextView freeTag = text(verifiedPremium ? "PLAN GRATUITO" : "RECOMENDADO PARA EMPEZAR", 11, true);
         freeTag.setTextColor(Color.rgb(99, 230, 216));
         free.addView(freeTag);
         free.addView(text("Gratis", 24, true), margin(0, 7, 0, 2));
         free.addView(text("1 GB cada 24 horas", 18, true));
-        free.addView(bodyText("Usa Tod4S3 sin pagar. Puedes volver a elegir un plan Premium más adelante."), margin(0, 8, 0, 14));
-        freeQuotaPanel = new LinearLayout(this);
-        freeQuotaPanel.setOrientation(LinearLayout.VERTICAL);
-        free.addView(freeQuotaPanel, margin(0, 0, 0, 10));
-        freeQuotaPanelProgress = null;
-        freeQuotaPanelUsage = null;
-        freeQuotaPanelReset = null;
-        updateFreeQuotaPanel();
-        Button chooseFree = primaryButton("Continuar con el plan gratis");
-        chooseFree.setOnClickListener(v -> chooseFreePlan());
-        free.addView(chooseFree);
-        page.addView(free, margin(0, 20, 0, 18));
+        if (verifiedPremium) {
+            free.addView(bodyText("Plan gratuito disponible para cuentas sin Premium. Tu plan Premium activo no cambia."), margin(0, 8, 0, 0));
+        } else {
+            free.addView(bodyText("Usa Tod4S3 sin pagar. Puedes volver a elegir un plan Premium más adelante."), margin(0, 8, 0, 14));
+            freeQuotaPanel = new LinearLayout(this);
+            freeQuotaPanel.setOrientation(LinearLayout.VERTICAL);
+            free.addView(freeQuotaPanel, margin(0, 0, 0, 10));
+            updateFreeQuotaPanel();
+            Button chooseFree = primaryButton("Continuar con el plan gratis");
+            chooseFree.setOnClickListener(v -> chooseFreePlan());
+            free.addView(chooseFree);
         }
+        page.addView(free, margin(0, 20, 0, 18));
 
         page.addView(text("Planes Premium", 20, true), margin(0, 4, 0, 4));
         page.addView(bodyText("Descargas sin límite y acceso a AiTod4S3, el chat de IA de texto, mientras el plan esté activo y verificado."), margin(0, 0, 0, 10));
@@ -2559,6 +2562,11 @@ public final class MainActivity extends Activity {
                 if (reply.isEmpty()) failure = "La IA no devolvió texto. Inténtalo de nuevo.";
             } catch (Exception e) {
                 String raw = e.getMessage() == null ? "" : e.getMessage();
+                String safeStatus = raw.startsWith("HTTP ")
+                        ? raw.replaceAll("[^A-Za-z0-9 _:-]", "").substring(0, Math.min(100, raw.replaceAll("[^A-Za-z0-9 _:-]", "").length()))
+                        : "";
+                android.util.Log.e(LOG_TAG, "AiTod4S3 request failed: " + e.getClass().getSimpleName()
+                        + (safeStatus.isEmpty() ? "" : " " + safeStatus));
                 if (raw.contains("premium_required")) failure = "AiTod4S3 está disponible solo con Premium activo y verificado.";
                 else if (raw.contains("ai_not_configured")) failure = "El servicio AiTod4S3 todavía no está configurado en el servidor.";
                 else if (raw.contains("ai_credits_exhausted")) failure = "Se agotó el saldo de la clave de IA. Recárgalo en NoTrack → API Keys y vuelve a intentarlo.";
@@ -2572,8 +2580,13 @@ public final class MainActivity extends Activity {
                 else if (raw.contains("ai_provider_request")) failure = "El proveedor rechazó la solicitud. Revisa que el servidor tenga la clave IASINCENSURA completa y actualizada.";
                 else if (raw.contains("ai_provider_access")) failure = "La clave de IA no tiene acceso al servicio. El administrador debe revisar o renovar la clave.";
                 else if (raw.contains("ai_provider_error") || raw.contains("ai_invalid_response")) failure = "El proveedor de IA devolvió una respuesta inesperada. Inténtalo de nuevo más tarde.";
-                else if (raw.contains("ai_unavailable") || raw.contains("HTTP 502")) failure = "El servicio de IA no responde ahora. Espera un momento y vuelve a intentarlo.";
-                else failure = "No se pudo conectar con AiTod4S3. Revisa la conexión e inténtalo otra vez.";
+                else if (raw.contains("HTTP 404")) failure = "Railway todavía no tiene activa la ruta nueva de la IA. Espera a que termine el despliegue del backend y vuelve a probar.";
+                else if (raw.contains("HTTP 401")) failure = "La sesión de la aplicación venció. Vuelve a vincular la app desde el bot.";
+                else if (raw.contains("HTTP 500")) failure = "El backend de Railway devolvió un error interno. Revisa el despliegue y los logs del servicio.";
+                else if (raw.contains("ai_unavailable") || raw.contains("HTTP 502") || raw.contains("HTTP 503")) failure = "El servicio de IA no responde ahora. Espera un momento y vuelve a intentarlo.";
+                else if (e instanceof java.net.UnknownHostException || e instanceof java.net.ConnectException) failure = "No se pudo alcanzar el servidor de Railway. Comprueba Internet y que el servicio esté activo.";
+                else if (e instanceof java.net.SocketTimeoutException) failure = "La conexión tardó demasiado. Comprueba Internet e inténtalo otra vez.";
+                else failure = "No se pudo conectar con AiTod4S3 (" + e.getClass().getSimpleName() + "). Comprueba la conexión y el despliegue del servidor.";
             }
             final String finalReply = reply;
             final String finalFailure = failure;
