@@ -1,4 +1,5 @@
 import http.client
+import io
 import json
 import threading
 from http.server import ThreadingHTTPServer
@@ -178,3 +179,22 @@ def test_ai_chat_maps_provider_endpoint_error(monkeypatch):
 
     assert status == 502
     assert payload == {"ok": False, "error": "ai_provider_endpoint"}
+
+
+def test_ai_chat_distinguishes_no_credit_and_key_daily_cap(monkeypatch):
+    request = {"messages": [{"role": "user", "content": "Hola"}]}
+    for provider_type, expected in (
+        ("no_credit", "ai_credits_exhausted"),
+        ("key_daily_cap", "ai_provider_daily_cap"),
+    ):
+        _premium_identity(monkeypatch)
+        monkeypatch.setenv("IASINCENSURA", "sk-notrack-test-secret-not-for-production")
+
+        def payment_required(outgoing, timeout, error_type=provider_type):
+            body = json.dumps({"error": {"type": error_type, "message": "not persisted"}}).encode()
+            raise web_store.urllib.error.HTTPError(outgoing.full_url, 402, "Payment Required", {}, io.BytesIO(body))
+
+        monkeypatch.setattr(web_store.urllib.request, "urlopen", payment_required)
+        payload, status = web_store._dispatch_ai_chat("mobile-token", request)
+        assert status == 502
+        assert payload == {"ok": False, "error": expected}

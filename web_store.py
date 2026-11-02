@@ -155,12 +155,25 @@ def _dispatch_ai_chat(token: str, body: dict) -> tuple[dict, int]:
         with urllib.request.urlopen(outgoing, timeout=60) as response:
             provider_data = json.loads(response.read(1_000_000).decode("utf-8"))
     except urllib.error.HTTPError as exc:
+        provider_error_type = ""
+        try:
+            error_payload = json.loads(exc.read(8192).decode("utf-8"))
+            nested_error = error_payload.get("error", {}) if isinstance(error_payload, dict) else {}
+            if isinstance(nested_error, dict):
+                provider_error_type = str(nested_error.get("type", ""))[:64]
+        except (UnicodeDecodeError, ValueError, OSError):
+            pass
         provider_error = {
-            401: "ai_provider_auth", 402: "ai_credits_exhausted",
+            401: "ai_provider_auth",
             429: "ai_busy", 404: "ai_provider_endpoint",
             400: "ai_provider_request", 403: "ai_provider_access",
             503: "ai_unavailable",
         }.get(exc.code, "ai_provider_error" if exc.code < 500 else "ai_unavailable")
+        if exc.code == 402:
+            provider_error = {
+                "no_credit": "ai_credits_exhausted",
+                "key_daily_cap": "ai_provider_daily_cap",
+            }.get(provider_error_type, "ai_payment_required")
         status = 429 if exc.code == 429 else 502 if exc.code < 500 else 503
         return {"ok": False, "error": provider_error}, status
     except (TimeoutError, urllib.error.URLError, OSError, ValueError, json.JSONDecodeError):

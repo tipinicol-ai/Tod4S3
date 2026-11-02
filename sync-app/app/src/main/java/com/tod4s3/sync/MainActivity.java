@@ -2381,49 +2381,35 @@ public final class MainActivity extends Activity {
         showingAiChat = true;
         LinearLayout page = new LinearLayout(this);
         page.setOrientation(LinearLayout.VERTICAL);
-        page.setPadding(dp(16), dp(16), dp(16), dp(24));
+        page.setPadding(dp(12), dp(8), dp(12), dp(12));
         page.setBackgroundColor(backgroundColor());
 
         LinearLayout header = new LinearLayout(this);
         header.setGravity(Gravity.CENTER_VERTICAL);
         Button back = secondaryButton("← Volver");
-        back.setTextSize(13);
+        back.setTextSize(12);
+        back.setMinHeight(dp(38));
         back.setOnClickListener(v -> {
             showingAiChat = false;
             homeTabPageVisible = false;
             showDashboard(dashboardFilter, true);
         });
-        header.addView(back, new LinearLayout.LayoutParams(dp(92), dp(44)));
-        TextView title = text("AiTod4S3", 23, true);
-        title.setGravity(Gravity.CENTER);
+        header.addView(back, new LinearLayout.LayoutParams(dp(84), dp(38)));
+        TextView title = text("✦  AiTod4S3", 20, true);
+        title.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
         title.setTextColor(primaryTextColor());
         header.addView(title, new LinearLayout.LayoutParams(0, -2, 1f));
         TextView premiumBadge = text("PREMIUM", 10, true);
         premiumBadge.setGravity(Gravity.CENTER);
         premiumBadge.setTextColor(Color.rgb(255, 221, 141));
-        premiumBadge.setPadding(dp(9), dp(7), dp(9), dp(7));
+        premiumBadge.setPadding(dp(7), dp(4), dp(7), dp(4));
         premiumBadge.setBackground(roundRect(Color.rgb(60, 48, 28), 18, Color.rgb(143, 111, 48)));
-        header.addView(premiumBadge, new LinearLayout.LayoutParams(-2, dp(34)));
+        header.addView(premiumBadge, new LinearLayout.LayoutParams(-2, dp(26)));
         page.addView(header);
 
-        LinearLayout assistantCard = card();
-        assistantCard.setBackground(roundRect(raisedSurfaceColor(), 22, borderColor()));
-        assistantCard.setGravity(Gravity.CENTER_VERTICAL);
-        TextView sparkle = text("✦", 25, true);
-        sparkle.setGravity(Gravity.CENTER);
-        sparkle.setTextColor(Color.rgb(255, 221, 141));
-        sparkle.setBackground(roundRect(Color.rgb(54, 45, 30), 18, Color.rgb(143, 111, 48)));
-        assistantCard.addView(sparkle, new LinearLayout.LayoutParams(dp(48), dp(48)));
-        LinearLayout assistantText = new LinearLayout(this);
-        assistantText.setOrientation(LinearLayout.VERTICAL);
-        assistantText.addView(text("Tu asistente inteligente", 16, true));
-        TextView assistantState = bodyText("Listo para ayudarte · conversación privada");
-        assistantState.setTextSize(12);
-        assistantText.addView(assistantState, margin(0, 3, 0, 0));
-        LinearLayout.LayoutParams assistantTextParams = new LinearLayout.LayoutParams(0, -2, 1f);
-        assistantTextParams.setMargins(dp(12), 0, 0, 0);
-        assistantCard.addView(assistantText, assistantTextParams);
-        page.addView(assistantCard, margin(0, 15, 0, 12));
+        aiChatStatus = bodyText("●  Listo para responder");
+        aiChatStatus.setTextSize(11);
+        page.addView(aiChatStatus, margin(2, 6, 2, 6));
 
         aiConversationScroll = new ScrollView(this);
         aiConversationScroll.setFillViewport(true);
@@ -2434,23 +2420,19 @@ public final class MainActivity extends Activity {
         aiConversationBox.setPadding(dp(11), dp(12), dp(11), dp(12));
         aiConversationScroll.addView(aiConversationBox, new ScrollView.LayoutParams(-1, -2));
         LinearLayout chatPanel = card();
-        chatPanel.setPadding(dp(8), dp(8), dp(8), dp(8));
-        chatPanel.addView(aiConversationScroll, new LinearLayout.LayoutParams(-1, dp(350)));
-        page.addView(chatPanel, margin(0, 0, 0, 10));
+        chatPanel.setPadding(dp(6), dp(6), dp(6), dp(6));
+        chatPanel.addView(aiConversationScroll, new LinearLayout.LayoutParams(-1, dp(270)));
+        page.addView(chatPanel, margin(0, 0, 0, 8));
 
-        aiChatStatus = bodyText("●  En línea · AiTod4S3 listo");
-        aiChatStatus.setTextSize(12);
-        aiChatStatus.setTextColor(Color.rgb(99, 210, 173));
-        page.addView(aiChatStatus, margin(0, 0, 0, 8));
         LinearLayout composerRow = new LinearLayout(this);
-        composerRow.setGravity(Gravity.BOTTOM);
+        composerRow.setGravity(Gravity.CENTER_VERTICAL);
         composerRow.setOrientation(LinearLayout.HORIZONTAL);
         aiComposer = new EditText(this);
         aiComposer.setHint("Escribe tu pregunta…");
         aiComposer.setSingleLine(false);
-        aiComposer.setMinLines(2);
-        aiComposer.setMaxLines(4);
-        aiComposer.setGravity(Gravity.TOP | Gravity.START);
+        aiComposer.setMinLines(1);
+        aiComposer.setMaxLines(3);
+        aiComposer.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
         aiComposer.setInputType(android.text.InputType.TYPE_CLASS_TEXT
                 | android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE
                 | android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
@@ -2459,13 +2441,14 @@ public final class MainActivity extends Activity {
         aiComposer.setTextColor(primaryTextColor());
         aiComposer.setHintTextColor(secondaryTextColor());
         aiComposer.setTextSize(15);
-        aiComposer.setPadding(dp(13), dp(11), dp(13), dp(11));
-        aiComposer.setBackground(roundRect(raisedSurfaceColor(), 16, borderColor()));
-        composerRow.addView(aiComposer, new LinearLayout.LayoutParams(0, dp(58), 1f));
-        aiSendButton = primaryButton("Enviar  ↑");
-        aiSendButton.setTextSize(13);
-        LinearLayout.LayoutParams sendParams = new LinearLayout.LayoutParams(dp(92), dp(58));
-        sendParams.setMargins(dp(8), 0, 0, 0);
+        aiComposer.setPadding(dp(12), dp(7), dp(12), dp(7));
+        aiComposer.setBackground(roundRect(raisedSurfaceColor(), 24, borderColor()));
+        composerRow.addView(aiComposer, new LinearLayout.LayoutParams(0, dp(48), 1f));
+        aiSendButton = primaryButton("↑");
+        aiSendButton.setTextSize(20);
+        aiSendButton.setContentDescription("Enviar pregunta");
+        LinearLayout.LayoutParams sendParams = new LinearLayout.LayoutParams(dp(48), dp(48));
+        sendParams.setMargins(dp(7), 0, 0, 0);
         composerRow.addView(aiSendButton, sendParams);
         page.addView(composerRow, margin(0, 0, 0, 12));
 
@@ -2578,7 +2561,9 @@ public final class MainActivity extends Activity {
                 String raw = e.getMessage() == null ? "" : e.getMessage();
                 if (raw.contains("premium_required")) failure = "AiTod4S3 está disponible solo con Premium activo y verificado.";
                 else if (raw.contains("ai_not_configured")) failure = "El servicio AiTod4S3 todavía no está configurado en el servidor.";
-                else if (raw.contains("ai_credits_exhausted")) failure = "AiTod4S3 no está disponible por el momento. Inténtalo más tarde.";
+                else if (raw.contains("ai_credits_exhausted")) failure = "Se agotó el saldo de la clave de IA. Recárgalo en NoTrack → API Keys y vuelve a intentarlo.";
+                else if (raw.contains("ai_provider_daily_cap")) failure = "La clave llegó a su tope diario de gasto. Súbelo en NoTrack → API Keys o espera al reinicio UTC.";
+                else if (raw.contains("ai_payment_required")) failure = "La clave de IA requiere saldo o tiene un límite de gasto activo. Revísala en NoTrack → API Keys.";
                 else if (raw.contains("ai_daily_limit")) failure = "Alcanzaste el límite diario de consultas. Vuelve a intentarlo mañana.";
                 else if (raw.contains("ai_service_daily_limit")) failure = "AiTod4S3 alcanzó su límite diario. Inténtalo más tarde.";
                 else if (raw.contains("ai_rate_limited") || raw.contains("ai_busy")) failure = "Hay muchas consultas en este momento. Espera un poco y vuelve a intentarlo.";
@@ -2587,7 +2572,7 @@ public final class MainActivity extends Activity {
                 else if (raw.contains("ai_provider_request")) failure = "El proveedor rechazó la solicitud. Revisa que el servidor tenga la clave IASINCENSURA completa y actualizada.";
                 else if (raw.contains("ai_provider_access")) failure = "La clave de IA no tiene acceso al servicio. El administrador debe revisar o renovar la clave.";
                 else if (raw.contains("ai_provider_error") || raw.contains("ai_invalid_response")) failure = "El proveedor de IA devolvió una respuesta inesperada. Inténtalo de nuevo más tarde.";
-                else if (raw.contains("ai_unavailable") || raw.contains("HTTP 502")) failure = "La IA no respondió a tiempo. Vuelve a intentarlo.";
+                else if (raw.contains("ai_unavailable") || raw.contains("HTTP 502")) failure = "El servicio de IA no responde ahora. Espera un momento y vuelve a intentarlo.";
                 else failure = "No se pudo conectar con AiTod4S3. Revisa la conexión e inténtalo otra vez.";
             }
             final String finalReply = reply;
