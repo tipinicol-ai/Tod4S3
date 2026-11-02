@@ -402,10 +402,8 @@ public final class MainActivity extends Activity {
             continuePremium.setOnClickListener(v -> continueWithActivePlan());
             active.addView(continuePremium, margin(0, 13, 0, 0));
             page.addView(active, margin(0, 8, 0, 8));
-            showPage(page, animated);
-            if (token != null && !token.isEmpty()) refreshAccountProfile();
-            return;
         }
+        if (!verifiedPremium) {
         LinearLayout free = card();
         TextView freeTag = text("RECOMENDADO PARA EMPEZAR", 11, true);
         freeTag.setTextColor(Color.rgb(99, 230, 216));
@@ -424,6 +422,7 @@ public final class MainActivity extends Activity {
         chooseFree.setOnClickListener(v -> chooseFreePlan());
         free.addView(chooseFree);
         page.addView(free, margin(0, 20, 0, 18));
+        }
 
         page.addView(text("Planes Premium", 20, true), margin(0, 4, 0, 4));
         page.addView(bodyText("Descargas sin límite y acceso a AiTod4S3, el chat de IA de texto, mientras el plan esté activo y verificado."), margin(0, 0, 0, 10));
@@ -861,8 +860,11 @@ public final class MainActivity extends Activity {
         status.setTextSize(12);
         dashboardStatusText = status;
         page.addView(status, margin(2, 12, 2, 0));
-        dashboardPlanStatusText = bodyText(accountPlanStatusText());
+        dashboardPlanStatusText = bodyText(accountPlanStatusText() + "  ·  Toca para ver planes");
         dashboardPlanStatusText.setTextSize(11);
+        dashboardPlanStatusText.setTextColor(accentColor());
+        dashboardPlanStatusText.setContentDescription("Ver planes y ofertas");
+        dashboardPlanStatusText.setOnClickListener(v -> showPlansStep(true));
         page.addView(dashboardPlanStatusText, margin(2, 5, 2, 0));
         quotaUsageBox = new LinearLayout(this);
         quotaUsageBox.setOrientation(LinearLayout.VERTICAL);
@@ -926,6 +928,7 @@ public final class MainActivity extends Activity {
         LinearLayout tabs = new LinearLayout(this);
         tabs.setOrientation(LinearLayout.HORIZONTAL);
         String[][] options = {{"all", "# ToDus"}, {"active", "↓ Activas"}, {"completed", "✓ Completadas"}};
+        float itemWeight = 1f;
         for (String[] option : options) {
             LinearLayout item = new LinearLayout(this);
             item.setOrientation(LinearLayout.VERTICAL);
@@ -939,9 +942,26 @@ public final class MainActivity extends Activity {
             label.setTextColor(selected ? onAccentColor() : secondaryTextColor());
             item.addView(label, new LinearLayout.LayoutParams(-1, dp(44)));
             item.setOnClickListener(v -> showDashboard(option[0], true));
-            LinearLayout.LayoutParams itemLayout = new LinearLayout.LayoutParams(0, dp(50), 1f);
+            LinearLayout.LayoutParams itemLayout = new LinearLayout.LayoutParams(0, dp(50), itemWeight);
             itemLayout.setMargins(dp(4), 0, dp(4), 0);
             tabs.addView(item, itemLayout);
+        }
+        if (hasAiPremiumAccess()) {
+            LinearLayout aiItem = new LinearLayout(this);
+            aiItem.setOrientation(LinearLayout.VERTICAL);
+            aiItem.setGravity(Gravity.CENTER);
+            aiItem.setPadding(dp(2), dp(2), dp(2), dp(2));
+            aiItem.setBackground(roundRect(raisedSurfaceColor(), 24, borderColor()));
+            TextView label = text("✦ AiTod4S3", 10, true);
+            label.setGravity(Gravity.CENTER);
+            label.setSingleLine(true);
+            label.setTextColor(Color.rgb(255, 221, 141));
+            aiItem.addView(label, new LinearLayout.LayoutParams(-1, dp(44)));
+            aiItem.setContentDescription("Abrir AiTod4S3, disponible con Premium");
+            aiItem.setOnClickListener(v -> showAiChat(true));
+            LinearLayout.LayoutParams aiLayout = new LinearLayout.LayoutParams(0, dp(50), 1f);
+            aiLayout.setMargins(dp(4), 0, dp(4), 0);
+            tabs.addView(aiItem, aiLayout);
         }
         return tabs;
     }
@@ -2307,7 +2327,7 @@ public final class MainActivity extends Activity {
     }
 
     private boolean hasAiPremiumAccess() {
-        return premiumVerified && (premiumActive || "owner".equals(activePlan));
+        return premiumVerified && (premiumActive || "premium".equals(activePlan) || "owner".equals(activePlan));
     }
 
     private void addHomeTabs(LinearLayout page, boolean downloadsTab, boolean aiTabSelected) {
@@ -2361,6 +2381,9 @@ public final class MainActivity extends Activity {
         showingAiChat = true;
         LinearLayout page = createStepPage(0, "AiTod4S3", "Tu asistente de inteligencia artificial, solo por texto.");
         addHomeTabs(page, false, true);
+        Button viewPlans = secondaryButton("★ Ver planes y ofertas");
+        viewPlans.setOnClickListener(v -> showPlansStep(true));
+        page.addView(viewPlans, margin(0, 9, 0, 0));
         page.addView(infoCard("Chat de texto", "Las preguntas se envían al servicio de IA iasincensura.ai / NoTrack para generar la respuesta. No escribas contraseñas, PIN, tokens ni otros datos privados."), margin(0, 14, 0, 10));
 
         aiConversationScroll = new ScrollView(this);
@@ -3722,7 +3745,9 @@ public final class MainActivity extends Activity {
                             .putString(PREF_ACTIVE_PLAN, activePlan)
                             .putString("active_plan_expires_v1", premiumExpiresAt).apply();
                     if (planStatus != null) planStatus.setText(accountPlanStatusText());
-                    if (dashboardPlanStatusText != null) dashboardPlanStatusText.setText(accountPlanStatusText());
+                    if (dashboardPlanStatusText != null) {
+                        dashboardPlanStatusText.setText(accountPlanStatusText() + "  ·  Toca para ver planes");
+                    }
                     updateQuotaUsageCard();
                     updateFreeQuotaPanel();
                     if (accessRestored) {
