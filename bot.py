@@ -2932,7 +2932,7 @@ def admin_panel_text() -> str:
         "Revisa primero el comprobante",
         "enviado por el usuario y luego",
         "asigna el plan desde estos botones.",
-        "Premium = descargas sin límite.",
+        "Premium = descargas sin límite y acceso a AiTod4S3 (chat de texto en la APK).",
         "",
         "Datos y saldo virtual:",
         "",
@@ -5275,6 +5275,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     "Después selecciona la oferta",
                     "y escribe el ID del usuario.",
                     "Todas incluyen descargas sin límite.",
+                    "También AiTod4S3 de texto en la APK.",
                 ]),
                 reply_markup=admin_premium_keyboard(),
             )
@@ -5692,6 +5693,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             lines = [
                 "Plan: 👑 Premium",
                 "Descargas: Sin límite",
+                "AiTod4S3: chat de texto en la APK",
                 f"Duración: {days} días",
                 f"Precio: {prices[days]}",
                 "",

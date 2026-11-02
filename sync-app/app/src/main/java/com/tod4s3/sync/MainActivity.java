@@ -34,6 +34,7 @@ import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
 import android.text.SpannableString;
 import android.text.Spanned;
+import android.text.InputFilter;
 import android.text.style.ForegroundColorSpan;
 import android.text.style.RelativeSizeSpan;
 import android.text.style.StyleSpan;
@@ -170,6 +171,15 @@ public final class MainActivity extends Activity {
     private boolean bannedScreenVisible;
     private volatile boolean unbannedScreenVisible;
     private volatile int appAccessGeneration;
+    private boolean showingAiChat;
+    private boolean homeTabPageVisible;
+    private boolean aiChatRequestInFlight;
+    private ScrollView aiConversationScroll;
+    private LinearLayout aiConversationBox;
+    private EditText aiComposer;
+    private Button aiSendButton;
+    private TextView aiChatStatus;
+    private final ArrayList<AiChatMessage> aiChatMessages = new ArrayList<>();
     private TextView appLogOutput;
     private volatile int appLogGeneration;
     private boolean premiumActive;
@@ -391,10 +401,10 @@ public final class MainActivity extends Activity {
         page.addView(free, margin(0, 20, 0, 18));
 
         page.addView(text("Planes Premium", 20, true), margin(0, 4, 0, 4));
-        page.addView(bodyText("Descargas sin límite mientras el plan esté activo."), margin(0, 0, 0, 10));
-        page.addView(planOffer("Premium 15 días", "250 CUP", "Descargas sin límite y entrega directa por ToDus.", "Premium 15 días · 250 CUP"), margin(0, 0, 0, 10));
-        page.addView(planOffer("Premium 20 días", "300 CUP", "Descargas sin límite durante 20 días.", "Premium 20 días · 300 CUP"), margin(0, 0, 0, 10));
-        page.addView(planOffer("Premium 30 días", "500 CUP", "Un mes completo de descargas sin límite.", "Premium 30 días · 500 CUP"), margin(0, 0, 0, 10));
+        page.addView(bodyText("Descargas sin límite y acceso a AiTod4S3, el chat de IA de texto, mientras el plan esté activo y verificado."), margin(0, 0, 0, 10));
+        page.addView(planOffer("Premium 15 días", "250 CUP", "Descargas sin límite, entrega directa por ToDus y AiTod4S3.", "Premium 15 días · 250 CUP"), margin(0, 0, 0, 10));
+        page.addView(planOffer("Premium 20 días", "300 CUP", "Descargas sin límite y chat de IA AiTod4S3 durante 20 días.", "Premium 20 días · 300 CUP"), margin(0, 0, 0, 10));
+        page.addView(planOffer("Premium 30 días", "500 CUP", "Un mes de descargas sin límite y acceso al chat AiTod4S3.", "Premium 30 días · 500 CUP"), margin(0, 0, 0, 10));
         LinearLayout paymentMethods = new LinearLayout(this);
         paymentMethods.setOrientation(LinearLayout.HORIZONTAL);
         paymentMethods.addView(paymentMethodChip(R.drawable.transfermovil_payment, "Transfermóvil"), new LinearLayout.LayoutParams(0, -2, 1f));
@@ -402,7 +412,7 @@ public final class MainActivity extends Activity {
         balanceChipLayout.setMargins(dp(8), 0, 0, 0);
         paymentMethods.addView(paymentMethodChip(R.drawable.saldo_movil_payment, "Saldo móvil"), balanceChipLayout);
         page.addView(paymentMethods, margin(0, 5, 0, 10));
-        page.addView(bodyText("Los pagos se coordinan por Transfermóvil o saldo móvil. La activación de Premium es manual."), margin(0, 6, 0, 0));
+        page.addView(bodyText("Los pagos se coordinan por Transfermóvil o saldo móvil. La activación de Premium es manual. AiTod4S3 responde por texto mediante un servicio externo; su disponibilidad depende del saldo y los límites de la cuenta API."), margin(0, 6, 0, 0));
         showPage(page, animated);
         if (token != null && !token.isEmpty()) refreshAccountProfile();
     }
@@ -2152,13 +2162,14 @@ public final class MainActivity extends Activity {
 
     private void showHomeSection(boolean downloadsTab, boolean animated) {
         viewingDashboard = false;
+        showingAiChat = false;
         viewingDownloadsTab = downloadsTab;
         String title = downloadsTab ? "Descargas" : "Tus entregas";
         String subtitle = downloadsTab
                 ? "Archivos guardados en la carpeta Descargas del teléfono."
                 : "Las entregas del bot aparecen aquí. Descárgalas para guardarlas en Descargas.";
         LinearLayout page = createStepPage(0, title, subtitle);
-        addHomeTabs(page, downloadsTab);
+        addHomeTabs(page, downloadsTab, false);
 
         if (downloadsTab) {
             LinearLayout historyHeading = new LinearLayout(this);
@@ -2200,29 +2211,264 @@ public final class MainActivity extends Activity {
         }
 
         showPage(page, animated);
+        homeTabPageVisible = true;
         if (!downloadsTab && token != null && !token.isEmpty()) {
             handler.postDelayed(this::refreshDeliveries, animated ? 300L : 0L);
         }
+        if (token != null && !token.isEmpty()) refreshAccountProfile();
     }
 
-    private void addHomeTabs(LinearLayout page, boolean downloadsTab) {
+    private boolean hasAiPremiumAccess() {
+        return premiumVerified && (premiumActive || "owner".equals(activePlan));
+    }
+
+    private void addHomeTabs(LinearLayout page, boolean downloadsTab, boolean aiTabSelected) {
         LinearLayout tabs = new LinearLayout(this);
         tabs.setOrientation(LinearLayout.HORIZONTAL);
-        Button deliveries = downloadsTab ? secondaryButton("Entregas") : primaryButton("Entregas");
+        boolean showAi = hasAiPremiumAccess();
+        Button deliveries = !downloadsTab && !aiTabSelected ? primaryButton("ToDus") : secondaryButton("ToDus");
         Button downloads = downloadsTab ? primaryButton("Descargas") : secondaryButton("Descargas");
         setButtonIcon(deliveries, R.drawable.ic_inbox_delivery,
-                downloadsTab ? Color.rgb(172, 224, 226) : Color.rgb(5, 26, 35));
+                !downloadsTab && !aiTabSelected ? Color.rgb(5, 26, 35) : Color.rgb(172, 224, 226));
         setButtonIcon(downloads, R.drawable.ic_download_arrow,
                 downloadsTab ? Color.rgb(5, 26, 35) : Color.rgb(172, 224, 226));
         deliveries.setOnClickListener(v -> showHomeStep(true));
         downloads.setOnClickListener(v -> showDownloadsStep(true));
-        LinearLayout.LayoutParams first = new LinearLayout.LayoutParams(0, dp(54), 1f);
-        first.setMargins(0, 0, dp(7), 0);
-        LinearLayout.LayoutParams second = new LinearLayout.LayoutParams(0, dp(54), 1f);
-        second.setMargins(dp(7), 0, 0, 0);
-        tabs.addView(deliveries, first);
-        tabs.addView(downloads, second);
+        if (!showAi) {
+            LinearLayout.LayoutParams first = new LinearLayout.LayoutParams(0, dp(54), 1f);
+            first.setMargins(0, 0, dp(7), 0);
+            LinearLayout.LayoutParams second = new LinearLayout.LayoutParams(0, dp(54), 1f);
+            second.setMargins(dp(7), 0, 0, 0);
+            tabs.addView(deliveries, first);
+            tabs.addView(downloads, second);
+        } else {
+            Button ai = aiTabSelected ? primaryButton("✦ AiTod4S3") : secondaryButton("✦ AiTod4S3");
+            ai.setTextSize(12);
+            ai.setMinWidth(0);
+            ai.setPadding(dp(3), dp(7), dp(3), dp(7));
+            deliveries.setTextSize(12);
+            deliveries.setMinWidth(0);
+            deliveries.setPadding(dp(3), dp(7), dp(3), dp(7));
+            downloads.setTextSize(12);
+            downloads.setMinWidth(0);
+            downloads.setPadding(dp(3), dp(7), dp(3), dp(7));
+            ai.setOnClickListener(v -> showAiChat(true));
+            Button[] buttons = {deliveries, downloads, ai};
+            for (int i = 0; i < buttons.length; i++) {
+                LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, dp(52), 1f);
+                params.setMargins(i == 0 ? 0 : dp(3), 0, i == buttons.length - 1 ? 0 : dp(3), 0);
+                tabs.addView(buttons[i], params);
+            }
+        }
         page.addView(tabs, margin(0, 16, 0, 0));
+    }
+
+    private void showAiChat(boolean animated) {
+        if (!hasAiPremiumAccess()) {
+            Toast.makeText(this, "AiTod4S3 está disponible solo con Premium activo y verificado.", Toast.LENGTH_LONG).show();
+            showPlansStep(true);
+            return;
+        }
+        viewingDashboard = false;
+        showingAiChat = true;
+        LinearLayout page = createStepPage(0, "AiTod4S3", "Tu asistente de inteligencia artificial, solo por texto.");
+        addHomeTabs(page, false, true);
+        page.addView(infoCard("Chat de texto", "Las preguntas se envían al servicio de IA iasincensura.ai / NoTrack para generar la respuesta. No escribas contraseñas, PIN, tokens ni otros datos privados."), margin(0, 14, 0, 10));
+
+        aiConversationScroll = new ScrollView(this);
+        aiConversationScroll.setFillViewport(true);
+        aiConversationScroll.setVerticalScrollBarEnabled(true);
+        aiConversationScroll.setBackground(roundRect(isDarkTheme() ? Color.rgb(8, 12, 22) : Color.rgb(247, 248, 251), 18, borderColor()));
+        aiConversationBox = new LinearLayout(this);
+        aiConversationBox.setOrientation(LinearLayout.VERTICAL);
+        aiConversationBox.setPadding(dp(11), dp(12), dp(11), dp(12));
+        aiConversationScroll.addView(aiConversationBox, new ScrollView.LayoutParams(-1, -2));
+        LinearLayout chatPanel = card();
+        chatPanel.addView(aiConversationScroll, new LinearLayout.LayoutParams(-1, dp(350)));
+        page.addView(chatPanel, margin(0, 0, 0, 10));
+
+        aiChatStatus = bodyText("AiTod4S3 listo.");
+        page.addView(aiChatStatus, margin(0, 0, 0, 8));
+        LinearLayout composerRow = new LinearLayout(this);
+        composerRow.setGravity(Gravity.BOTTOM);
+        composerRow.setOrientation(LinearLayout.HORIZONTAL);
+        aiComposer = new EditText(this);
+        aiComposer.setHint("Escribe tu pregunta…");
+        aiComposer.setSingleLine(false);
+        aiComposer.setMinLines(2);
+        aiComposer.setMaxLines(4);
+        aiComposer.setGravity(Gravity.TOP | Gravity.START);
+        aiComposer.setInputType(android.text.InputType.TYPE_CLASS_TEXT
+                | android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE
+                | android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
+        aiComposer.setImeOptions(EditorInfo.IME_ACTION_SEND);
+        aiComposer.setFilters(new InputFilter[]{new InputFilter.LengthFilter(2500)});
+        aiComposer.setTextColor(primaryTextColor());
+        aiComposer.setHintTextColor(secondaryTextColor());
+        aiComposer.setTextSize(15);
+        aiComposer.setPadding(dp(13), dp(11), dp(13), dp(11));
+        aiComposer.setBackground(roundRect(raisedSurfaceColor(), 16, borderColor()));
+        composerRow.addView(aiComposer, new LinearLayout.LayoutParams(0, dp(58), 1f));
+        aiSendButton = primaryButton("Enviar");
+        aiSendButton.setTextSize(13);
+        LinearLayout.LayoutParams sendParams = new LinearLayout.LayoutParams(dp(86), dp(58));
+        sendParams.setMargins(dp(8), 0, 0, 0);
+        composerRow.addView(aiSendButton, sendParams);
+        page.addView(composerRow, margin(0, 0, 0, 12));
+
+        Button newChat = secondaryButton("Borrar conversación");
+        newChat.setOnClickListener(v -> {
+            if (aiChatRequestInFlight) return;
+            aiChatMessages.clear();
+            aiChatStatus.setText("Conversación borrada de esta sesión.");
+            renderAiConversation();
+        });
+        page.addView(newChat, margin(0, 0, 0, 4));
+        aiSendButton.setOnClickListener(v -> sendAiMessage());
+        aiComposer.setOnEditorActionListener((view, actionId, event) -> {
+            if (actionId == EditorInfo.IME_ACTION_SEND) {
+                sendAiMessage();
+                return true;
+            }
+            return false;
+        });
+        renderAiConversation();
+        showPage(page, animated);
+        showingAiChat = true;
+        homeTabPageVisible = true;
+    }
+
+    private void renderAiConversation() {
+        if (aiConversationBox == null || aiConversationScroll == null) return;
+        aiConversationBox.removeAllViews();
+        if (aiChatMessages.isEmpty()) {
+            TextView welcome = bodyText("Hola, soy AiTod4S3. Escribe una pregunta para comenzar.");
+            welcome.setGravity(Gravity.CENTER);
+            welcome.setPadding(dp(18), dp(50), dp(18), dp(50));
+            aiConversationBox.addView(welcome, new LinearLayout.LayoutParams(-1, -2));
+        }
+        for (AiChatMessage message : aiChatMessages) {
+            boolean userMessage = "user".equals(message.role);
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(userMessage ? Gravity.END : Gravity.START);
+            LinearLayout bubble = new LinearLayout(this);
+            bubble.setOrientation(LinearLayout.VERTICAL);
+            bubble.setPadding(dp(12), dp(9), dp(12), dp(10));
+            bubble.setBackground(roundRect(userMessage ? Color.rgb(28, 86, 104) : raisedSurfaceColor(),
+                    16, userMessage ? accentColor() : borderColor()));
+            TextView author = text(userMessage ? "Tú" : "AiTod4S3", 11, true);
+            author.setTextColor(userMessage ? Color.rgb(126, 236, 226) : accentColor());
+            bubble.addView(author, margin(0, 0, 0, 4));
+            TextView body = text(message.content, 14, false);
+            body.setTextColor(primaryTextColor());
+            body.setLineSpacing(dp(2), 1f);
+            bubble.addView(body);
+            LinearLayout.LayoutParams bubbleParams = new LinearLayout.LayoutParams(-2, -2);
+            bubbleParams.width = Math.min(dp(310), getResources().getDisplayMetrics().widthPixels - dp(96));
+            bubbleParams.setMargins(dp(2), 0, dp(2), dp(8));
+            row.addView(bubble, bubbleParams);
+            aiConversationBox.addView(row, new LinearLayout.LayoutParams(-1, -2));
+        }
+        aiConversationScroll.post(() -> aiConversationScroll.fullScroll(View.FOCUS_DOWN));
+    }
+
+    private void sendAiMessage() {
+        if (aiChatRequestInFlight || aiComposer == null || aiSendButton == null) return;
+        if (!hasAiPremiumAccess()) {
+            Toast.makeText(this, "AiTod4S3 requiere Premium activo y verificado.", Toast.LENGTH_LONG).show();
+            showPlansStep(true);
+            return;
+        }
+        final String userText = aiComposer.getText().toString().trim();
+        if (userText.isEmpty()) {
+            aiComposer.setError("Escribe una pregunta");
+            return;
+        }
+        final String currentToken = token == null ? "" : token;
+        if (currentToken.isEmpty()) {
+            aiChatStatus.setText("Vincula tu cuenta de Telegram para usar AiTod4S3.");
+            return;
+        }
+        aiChatMessages.add(new AiChatMessage("user", userText));
+        aiComposer.setText("");
+        renderAiConversation();
+        aiChatRequestInFlight = true;
+        aiSendButton.setEnabled(false);
+        aiSendButton.setText("…");
+        aiChatStatus.setText("AiTod4S3 está preparando una respuesta…");
+        final int requestGeneration = appAccessGeneration;
+        JSONArray messages = new JSONArray();
+        int from = Math.max(0, aiChatMessages.size() - 12);
+        int totalChars = 0;
+        int safeFrom = aiChatMessages.size();
+        for (int i = aiChatMessages.size() - 1; i >= from; i--) {
+            int size = aiChatMessages.get(i).content.length();
+            if (totalChars + size > 7800) break;
+            totalChars += size;
+            safeFrom = i;
+        }
+        for (int i = safeFrom; i < aiChatMessages.size(); i++) {
+            AiChatMessage item = aiChatMessages.get(i);
+            try {
+                JSONObject row = new JSONObject();
+                row.put("role", item.role);
+                row.put("content", item.content);
+                messages.put(row);
+            } catch (org.json.JSONException ignored) {
+                // Los dos campos son strings, por lo que normalmente no pueden fallar.
+            }
+        }
+        new Thread(() -> {
+            String reply = null;
+            String failure = null;
+            try {
+                JSONObject response = request("POST", "/api/app/ai/chat",
+                        new JSONObject().put("messages", messages).toString(), currentToken);
+                reply = response.optString("reply", "").trim();
+                if (reply.isEmpty()) failure = "La IA no devolvió texto. Inténtalo de nuevo.";
+            } catch (Exception e) {
+                String raw = e.getMessage() == null ? "" : e.getMessage();
+                if (raw.contains("premium_required")) failure = "AiTod4S3 está disponible solo con Premium activo y verificado.";
+                else if (raw.contains("ai_not_configured")) failure = "El servicio AiTod4S3 todavía no está configurado en el servidor.";
+                else if (raw.contains("ai_credits_exhausted")) failure = "AiTod4S3 no está disponible por el momento. Inténtalo más tarde.";
+                else if (raw.contains("ai_daily_limit")) failure = "Alcanzaste el límite diario de consultas. Vuelve a intentarlo mañana.";
+                else if (raw.contains("ai_service_daily_limit")) failure = "AiTod4S3 alcanzó su límite diario. Inténtalo más tarde.";
+                else if (raw.contains("ai_rate_limited") || raw.contains("ai_busy")) failure = "Hay muchas consultas en este momento. Espera un poco y vuelve a intentarlo.";
+                else if (raw.contains("ai_provider_auth")) failure = "El servicio de IA requiere renovar su configuración. Contacta al administrador.";
+                else if (raw.contains("ai_unavailable") || raw.contains("HTTP 502")) failure = "La IA no respondió a tiempo. Vuelve a intentarlo.";
+                else failure = "No se pudo conectar con AiTod4S3. Revisa la conexión e inténtalo otra vez.";
+            }
+            final String finalReply = reply;
+            final String finalFailure = failure;
+            runOnUiThread(() -> {
+                aiChatRequestInFlight = false;
+                if (currentToken.equals(token) && requestGeneration == appAccessGeneration && !appBanned
+                        && aiConversationBox != null) {
+                    if (finalReply != null) {
+                        aiChatMessages.add(new AiChatMessage("assistant", finalReply));
+                        if (aiChatMessages.size() > 24) aiChatMessages.subList(0, aiChatMessages.size() - 24).clear();
+                        aiChatStatus.setText("Respuesta recibida.");
+                    } else {
+                        aiChatStatus.setText(finalFailure == null ? "No se pudo obtener una respuesta." : finalFailure);
+                    }
+                    renderAiConversation();
+                }
+                if (aiSendButton != null) {
+                    aiSendButton.setEnabled(true);
+                    aiSendButton.setText("Enviar");
+                }
+            });
+        }, "aitod4s3-chat").start();
+    }
+
+    private static final class AiChatMessage {
+        final String role;
+        final String content;
+        AiChatMessage(String role, String content) {
+            this.role = role;
+            this.content = content;
+        }
     }
 
     private void setButtonIcon(Button button, int iconResource, int tint) {
@@ -2903,6 +3149,8 @@ public final class MainActivity extends Activity {
     }
 
     private void showPage(LinearLayout page, boolean animated) {
+        homeTabPageVisible = false;
+        showingAiChat = false;
         if (dashboardFab != null && appRoot != null) {
             appRoot.removeView(dashboardFab);
             dashboardFab = null;
@@ -3336,6 +3584,8 @@ public final class MainActivity extends Activity {
         if (current == null || current.isEmpty() || profileRefreshInFlight) return;
         profileRefreshInFlight = true;
         final int profileAccessGeneration = appAccessGeneration;
+        final boolean previousPremium = premiumActive;
+        final boolean previousVerified = premiumVerified;
         new Thread(() -> {
             try {
                 JSONObject profile = request("GET", "/api/app/profile", "", current);
@@ -3360,6 +3610,7 @@ public final class MainActivity extends Activity {
                         return;
                     }
                     boolean accessRestored = profileAccess == 1;
+                    boolean entitlementChanged = previousPremium != newPremium || previousVerified != newPremiumVerified;
                     premiumActive = newPremium;
                     premiumVerified = newPremiumVerified;
                     activePlan = newPlan;
@@ -3380,6 +3631,15 @@ public final class MainActivity extends Activity {
                     updateFreeQuotaPanel();
                     if (accessRestored) {
                         showUnbannedScreen();
+                    } else if (entitlementChanged && homeTabPageVisible) {
+                        if (showingAiChat && !hasAiPremiumAccess()) {
+                            showHomeSection(false, false);
+                            Toast.makeText(this, "El acceso Premium a AiTod4S3 ya no está activo.", Toast.LENGTH_LONG).show();
+                        } else if (showingAiChat) {
+                            showAiChat(false);
+                        } else {
+                            showHomeSection(viewingDownloadsTab, false);
+                        }
                     }
                 });
             } catch (Exception ignored) {
@@ -4401,7 +4661,7 @@ public final class MainActivity extends Activity {
         HttpURLConnection c = (HttpURLConnection) new URL(API_BASE + path).openConnection();
         c.setRequestMethod(method);
         c.setConnectTimeout(15_000);
-        c.setReadTimeout(30_000);
+        c.setReadTimeout("/api/app/ai/chat".equals(path) ? 90_000 : 30_000);
         c.setRequestProperty("Accept", "application/json");
         if (!bearer.isEmpty()) c.setRequestProperty("Authorization", "Bearer " + bearer);
         if (!body.isEmpty()) {

@@ -6,10 +6,12 @@ import json
 import os
 import re
 import time
+import urllib.error
+import urllib.request
 from html import escape
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from threading import Lock, Thread
+from threading import BoundedSemaphore, Lock, Thread
 from typing import Callable
 from urllib.parse import parse_qs, unquote, urlsplit
 import sync_api
@@ -30,6 +32,146 @@ _PROFILE_PHOTO_CHECKER: Callable[[int], bytes | None] | None = None
 _APP_TASK_BRIDGE: Callable[[str, int, dict], tuple[dict, int]] | None = None
 _APP_BACKUP_NOTIFIER: Callable[[str], None] | None = None
 _APP_TASK_BRIDGE_LOCK = Lock()
+_AI_RATE_LOCK = Lock()
+_AI_REQUESTS_BY_USER: dict[int, list[float]] = {}
+_AI_DAILY_REQUESTS_BY_USER: dict[int, list[float]] = {}
+_AI_DAILY_GLOBAL_REQUESTS: list[float] = []
+_AI_GATEWAY_SEMAPHORE = BoundedSemaphore(2)
+
+
+def _dispatch_ai_chat(token: str, body: dict) -> tuple[dict, int]:
+    """Proxy text-only AI chat for currently verified app Premium users."""
+    identity, error, status = _authorize_app_token(token)
+    if error:
+        return error, status
+    user_id = int(identity["user_id"])
+    checker = _PROFILE_CHECKER
+    if checker is None:
+        return {"ok": False, "error": "profile_unavailable"}, 503
+    try:
+        profile = checker(user_id)
+        if not isinstance(profile, dict):
+            raise ValueError("invalid_profile")
+        plan = str(profile.get("plan", ""))
+        premium = profile.get("premium") is True
+        verified = plan == "owner" or (
+            premium and sync_api.premium_activation_status(
+                user_id, str(identity.get("device_id", "")), profile.get("expires_at", ""),
+            ) == "verified"
+        )
+    except Exception:
+        return {"ok": False, "error": "profile_unavailable"}, 503
+    if not verified or (plan != "owner" and (not premium or plan != "premium")):
+        return {"ok": False, "error": "premium_required"}, 403
+
+    api_key = os.getenv("IASINCENSURA_API_KEY", "").strip()
+    if not api_key:
+        return {"ok": False, "error": "ai_not_configured"}, 503
+    if len(api_key) < 24 or any(char.isspace() for char in api_key):
+        return {"ok": False, "error": "ai_not_configured"}, 503
+
+    messages = body.get("messages")
+    if not isinstance(messages, list) or not 1 <= len(messages) <= 12:
+        return {"ok": False, "error": "invalid_messages"}, 400
+    clean_messages: list[dict[str, str]] = []
+    total_chars = 0
+    for item in messages:
+        if not isinstance(item, dict) or item.get("role") not in {"user", "assistant"}:
+            return {"ok": False, "error": "invalid_messages"}, 400
+        content = item.get("content")
+        if not isinstance(content, str):
+            return {"ok": False, "error": "invalid_messages"}, 400
+        content = content.strip()
+        if not content or len(content) > 4000:
+            return {"ok": False, "error": "invalid_messages"}, 400
+        total_chars += len(content)
+        if total_chars > 16000:
+            return {"ok": False, "error": "conversation_too_long"}, 413
+        clean_messages.append({"role": item["role"], "content": content})
+    if clean_messages[-1]["role"] != "user":
+        return {"ok": False, "error": "invalid_messages"}, 400
+
+    now = time.monotonic()
+    with _AI_RATE_LOCK:
+        recent = [seen for seen in _AI_REQUESTS_BY_USER.get(user_id, []) if now - seen < 60]
+        if len(recent) >= 8:
+            return {"ok": False, "error": "ai_rate_limited"}, 429
+        try:
+            daily_limit = max(1, min(100_000, int(os.getenv("IASINCENSURA_USER_DAILY_LIMIT", "80"))))
+        except ValueError:
+            daily_limit = 80
+        daily_user = [seen for seen in _AI_DAILY_REQUESTS_BY_USER.get(user_id, []) if now - seen < 86_400]
+        if len(daily_user) >= daily_limit:
+            return {"ok": False, "error": "ai_daily_limit"}, 429
+        try:
+            global_limit = max(1, min(100_000, int(os.getenv("IASINCENSURA_DAILY_REQUEST_LIMIT", "1000"))))
+        except ValueError:
+            global_limit = 1000
+        daily_global = [seen for seen in _AI_DAILY_GLOBAL_REQUESTS if now - seen < 86_400]
+        if len(daily_global) >= global_limit:
+            return {"ok": False, "error": "ai_service_daily_limit"}, 429
+        recent.append(now)
+        daily_user.append(now)
+        daily_global.append(now)
+        _AI_REQUESTS_BY_USER[user_id] = recent
+        _AI_DAILY_REQUESTS_BY_USER[user_id] = daily_user
+        _AI_DAILY_GLOBAL_REQUESTS[:] = daily_global
+        if len(_AI_REQUESTS_BY_USER) > 5000:
+            oldest_user = min(
+                (key for key in _AI_DAILY_REQUESTS_BY_USER if key != user_id),
+                key=lambda key: max(_AI_DAILY_REQUESTS_BY_USER[key], default=now),
+                default=None,
+            )
+            if oldest_user is not None:
+                _AI_DAILY_REQUESTS_BY_USER.pop(oldest_user, None)
+                _AI_REQUESTS_BY_USER.pop(oldest_user, None)
+            _AI_DAILY_REQUESTS_BY_USER[user_id] = daily_user
+
+    request_messages = [{
+        "role": "system",
+        "content": "Eres AiTod4S3, un asistente de texto útil y claro. Responde en el idioma del usuario. No afirmes que puedes ver su cuenta, archivos ni datos de Tod4S3 a menos que el usuario los describa.",
+    }, *clean_messages]
+    request_body = json.dumps({
+        "model": "notrack-uncensored",
+        "messages": request_messages,
+        "max_tokens": 512,
+        "temperature": 0.7,
+        "stream": False,
+    }, separators=(",", ":")).encode("utf-8")
+    outgoing = urllib.request.Request(
+        "https://api.iasincensura.ai/v1/chat/completions",
+        data=request_body,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+        method="POST",
+    )
+    if not _AI_GATEWAY_SEMAPHORE.acquire(blocking=False):
+        return {"ok": False, "error": "ai_busy"}, 429
+    try:
+        with urllib.request.urlopen(outgoing, timeout=60) as response:
+            provider_data = json.loads(response.read(1_000_000).decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        provider_error = {
+            401: "ai_provider_auth", 402: "ai_credits_exhausted",
+            429: "ai_busy", 503: "ai_unavailable",
+        }.get(exc.code, "ai_provider_error" if exc.code < 500 else "ai_unavailable")
+        return {"ok": False, "error": provider_error}, (429 if exc.code == 429 else 503)
+    except (TimeoutError, urllib.error.URLError, OSError, ValueError, json.JSONDecodeError):
+        return {"ok": False, "error": "ai_unavailable"}, 502
+    finally:
+        _AI_GATEWAY_SEMAPHORE.release()
+
+    try:
+        answer = provider_data["choices"][0]["message"]["content"]
+        if not isinstance(answer, str) or not answer.strip():
+            raise ValueError("empty_answer")
+    except (KeyError, IndexError, TypeError, ValueError):
+        return {"ok": False, "error": "ai_invalid_response"}, 502
+    # Do not persist or log prompts, replies, provider response bodies, or the API key.
+    return {"ok": True, "reply": answer.strip()}, 200
 
 
 def configure_app_task_bridge(bridge: Callable[[str, int, dict], tuple[dict, int]] | None) -> None:
@@ -368,13 +510,14 @@ class StoreHandler(SimpleHTTPRequestHandler):
         if parsed.path not in {
             "/api/app/pair", "/api/app/revoke", "/api/app/deliveries/delete",
             "/api/app/download", "/api/app/tasks/cancel", "/api/app/cloud/clear",
-            "/api/app/premium/claim", "/api/app/support",
+            "/api/app/premium/claim", "/api/app/support", "/api/app/ai/chat",
         }:
             self._json_response({"ok": False, "error": "not_found"}, 404)
             return
         try:
             length = int(self.headers.get("Content-Length", "0"))
-            if length < 0 or length > 8192:
+            max_body_length = 65_536 if parsed.path == "/api/app/ai/chat" else 8192
+            if length < 0 or length > max_body_length:
                 raise ValueError("body_too_large")
             body = json.loads(self.rfile.read(length) or b"{}")
             if not isinstance(body, dict):
@@ -399,6 +542,10 @@ class StoreHandler(SimpleHTTPRequestHandler):
             return
         token = self.headers.get("Authorization", "")
         token = token[7:].strip() if token.lower().startswith("bearer ") else ""
+        if parsed.path == "/api/app/ai/chat":
+            payload, status = _dispatch_ai_chat(token, body)
+            self._json_response(payload, status)
+            return
         if parsed.path == "/api/app/support":
             identity = sync_api.app_identity_for_token(token)
             if identity is None:
