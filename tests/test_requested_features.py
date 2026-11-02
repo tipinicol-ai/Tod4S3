@@ -204,6 +204,10 @@ class RequestedFeatureTests(unittest.TestCase):
         self.assertIn("await message.reply_photo(photo=photo, caption=caption, reply_markup=reply_markup)", editor)
         self.assertIn("await message.delete()", editor)
 
+    def test_docker_image_contains_configured_welcome_photo(self):
+        dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text()
+        self.assertIn("IMG_20261102_161854_801.jpg", dockerfile)
+
     def test_referral_adds_five_to_inviter_only_once(self):
         import bot
         with tempfile.TemporaryDirectory() as directory:
