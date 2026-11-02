@@ -197,6 +197,13 @@ class RequestedFeatureTests(unittest.TestCase):
         self.assertIn("reply_photo(photo=photo, caption=caption, reply_markup=reply_markup)", sender)
         self.assertIn("await send_welcome_message(", start)
 
+    def test_welcome_transition_replaces_text_message_with_photo(self):
+        source = (Path(__file__).resolve().parents[1] / "bot.py").read_text()
+        editor = source.split("async def edit_welcome_message", 1)[1].split("async def send_service_info_message", 1)[0]
+        self.assertIn('getattr(message, "photo", None)', editor)
+        self.assertIn("await message.reply_photo(photo=photo, caption=caption, reply_markup=reply_markup)", editor)
+        self.assertIn("await message.delete()", editor)
+
     def test_referral_adds_five_to_inviter_only_once(self):
         import bot
         with tempfile.TemporaryDirectory() as directory:

@@ -4452,17 +4452,24 @@ async def send_welcome_message(message, user_id: int, user_name: str, username: 
 async def edit_welcome_message(message, user_id: int, user_name: str, username: str | None,
                                reply_markup: InlineKeyboardMarkup, extra_text: str = "") -> None:
     """Cambia la pantalla de verificación por la imagen de marca."""
-    if WELCOME_IMAGE_PATH.is_file() and hasattr(message, "edit_media"):
+    caption = welcome_text(user_id, user_name, username) + extra_text
+    if WELCOME_IMAGE_PATH.is_file() and getattr(message, "photo", None) and hasattr(message, "edit_media"):
         with WELCOME_IMAGE_PATH.open("rb") as photo:
             await message.edit_media(
-                media=InputMediaPhoto(media=photo, caption=welcome_text(user_id, user_name, username) + extra_text),
+                media=InputMediaPhoto(media=photo, caption=caption),
                 reply_markup=reply_markup,
             )
         return
-    await message.edit_text(
-        welcome_text(user_id, user_name, username) + extra_text,
-        reply_markup=reply_markup,
-    )
+    if WELCOME_IMAGE_PATH.is_file() and hasattr(message, "reply_photo"):
+        with WELCOME_IMAGE_PATH.open("rb") as photo:
+            await message.reply_photo(photo=photo, caption=caption, reply_markup=reply_markup)
+        if hasattr(message, "delete"):
+            try:
+                await message.delete()
+            except Exception:
+                pass
+        return
+    await message.edit_text(caption, reply_markup=reply_markup)
 
 
 async def send_service_info_message(message, user_id: int, user_name: str,
