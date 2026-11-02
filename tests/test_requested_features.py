@@ -213,6 +213,13 @@ class RequestedFeatureTests(unittest.TestCase):
         self.assertIn("await message.delete()", editor)
         self.assertNotIn("edit_caption(caption=text", editor)
 
+    def test_service_button_opens_service_info(self):
+        source = (Path(__file__).resolve().parents[1] / "bot.py").read_text()
+        callback = source.split('if query.data == "service_info":', 1)[1].split('if query.data in {"balance", "plans", "referral:show"}', 1)[0]
+        self.assertIn("service_info_text()", callback)
+        self.assertIn("service_info_keyboard()", callback)
+        self.assertNotIn("send_service_info_message(", callback)
+
     def test_docker_image_contains_configured_welcome_photo(self):
         dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text()
         self.assertIn("IMG_20261102_161854_801.jpg", dockerfile)

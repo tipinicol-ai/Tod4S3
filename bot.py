@@ -4537,6 +4537,23 @@ def membership_prompt_text(
     ])
 
 
+def service_info_text() -> str:
+    return card("☁️ ꜱᴇʀᴠɪᴄɪᴏ ᴛᴏᴅᴜꜱ ꜱ3", [
+        "Tod4S3 guarda tus archivos",
+        "en la nube y te entrega",
+        "un enlace para descargarlos.",
+        "",
+        "Puedes enviar archivos o",
+        "enlaces públicos desde este",
+        "chat y consultar tus entregas",
+        "en el historial.",
+    ])
+
+
+def service_info_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[btn("⬅️ ᴠᴏʟᴠᴇʀ ᴀʟ ɪɴɪᴄɪᴏ", callback_data="home")]])
+
+
 async def required_chat_labels(bot_obj) -> tuple[str, str, str]:
     """Obtiene títulos reales de los chats obligatorios, con nombres legibles de respaldo."""
     defaults = ["Canal oficial", "Grupo soporte", "Canal ToDusS3"]
@@ -5150,11 +5167,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     if query.data == "service_info":
-        await send_service_info_message(
+        await edit_query_message_text(
             query.message,
-            user.id,
-            getattr(user, "full_name", "") or getattr(user, "first_name", ""),
-            getattr(user, "username", None),
+            service_info_text(),
+            reply_markup=service_info_keyboard(),
         )
         return
 
