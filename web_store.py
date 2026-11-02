@@ -67,7 +67,8 @@ def _dispatch_ai_chat(token: str, body: dict) -> tuple[dict, int]:
     api_key = os.getenv("IASINCENSURA", "").strip()
     if not api_key:
         return {"ok": False, "error": "ai_not_configured"}, 503
-    if len(api_key) < 24 or any(char.isspace() for char in api_key):
+    if (not api_key.startswith("sk-notrack-") or len(api_key) < 24
+            or any(char.isspace() for char in api_key)):
         return {"ok": False, "error": "ai_not_configured"}, 503
 
     messages = body.get("messages")
@@ -139,7 +140,7 @@ def _dispatch_ai_chat(token: str, body: dict) -> tuple[dict, int]:
         "stream": False,
     }, separators=(",", ":")).encode("utf-8")
     outgoing = urllib.request.Request(
-        "https://api.iasincensura.ai/v1/chat/completions",
+        "https://api.notrack.ai/v1/chat/completions",
         data=request_body,
         headers={
             "Authorization": f"Bearer {api_key}",
@@ -156,9 +157,12 @@ def _dispatch_ai_chat(token: str, body: dict) -> tuple[dict, int]:
     except urllib.error.HTTPError as exc:
         provider_error = {
             401: "ai_provider_auth", 402: "ai_credits_exhausted",
-            429: "ai_busy", 503: "ai_unavailable",
+            429: "ai_busy", 404: "ai_provider_endpoint",
+            400: "ai_provider_request", 403: "ai_provider_access",
+            503: "ai_unavailable",
         }.get(exc.code, "ai_provider_error" if exc.code < 500 else "ai_unavailable")
-        return {"ok": False, "error": provider_error}, (429 if exc.code == 429 else 503)
+        status = 429 if exc.code == 429 else 502 if exc.code < 500 else 503
+        return {"ok": False, "error": provider_error}, status
     except (TimeoutError, urllib.error.URLError, OSError, ValueError, json.JSONDecodeError):
         return {"ok": False, "error": "ai_unavailable"}, 502
     finally:

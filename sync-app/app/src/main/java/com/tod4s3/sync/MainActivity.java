@@ -2379,12 +2379,51 @@ public final class MainActivity extends Activity {
         }
         viewingDashboard = false;
         showingAiChat = true;
-        LinearLayout page = createStepPage(0, "AiTod4S3", "Tu asistente de inteligencia artificial, solo por texto.");
-        addHomeTabs(page, false, true);
-        Button viewPlans = secondaryButton("★ Ver planes y ofertas");
-        viewPlans.setOnClickListener(v -> showPlansStep(true));
-        page.addView(viewPlans, margin(0, 9, 0, 0));
-        page.addView(infoCard("Chat de texto", "Las preguntas se envían al servicio de IA iasincensura.ai / NoTrack para generar la respuesta. No escribas contraseñas, PIN, tokens ni otros datos privados."), margin(0, 14, 0, 10));
+        LinearLayout page = new LinearLayout(this);
+        page.setOrientation(LinearLayout.VERTICAL);
+        page.setPadding(dp(16), dp(16), dp(16), dp(24));
+        page.setBackgroundColor(backgroundColor());
+
+        LinearLayout header = new LinearLayout(this);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        Button back = secondaryButton("← Volver");
+        back.setTextSize(13);
+        back.setOnClickListener(v -> {
+            showingAiChat = false;
+            homeTabPageVisible = false;
+            showDashboard(dashboardFilter, true);
+        });
+        header.addView(back, new LinearLayout.LayoutParams(dp(92), dp(44)));
+        TextView title = text("AiTod4S3", 23, true);
+        title.setGravity(Gravity.CENTER);
+        title.setTextColor(primaryTextColor());
+        header.addView(title, new LinearLayout.LayoutParams(0, -2, 1f));
+        TextView premiumBadge = text("PREMIUM", 10, true);
+        premiumBadge.setGravity(Gravity.CENTER);
+        premiumBadge.setTextColor(Color.rgb(255, 221, 141));
+        premiumBadge.setPadding(dp(9), dp(7), dp(9), dp(7));
+        premiumBadge.setBackground(roundRect(Color.rgb(60, 48, 28), 18, Color.rgb(143, 111, 48)));
+        header.addView(premiumBadge, new LinearLayout.LayoutParams(-2, dp(34)));
+        page.addView(header);
+
+        LinearLayout assistantCard = card();
+        assistantCard.setBackground(roundRect(raisedSurfaceColor(), 22, borderColor()));
+        assistantCard.setGravity(Gravity.CENTER_VERTICAL);
+        TextView sparkle = text("✦", 25, true);
+        sparkle.setGravity(Gravity.CENTER);
+        sparkle.setTextColor(Color.rgb(255, 221, 141));
+        sparkle.setBackground(roundRect(Color.rgb(54, 45, 30), 18, Color.rgb(143, 111, 48)));
+        assistantCard.addView(sparkle, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        LinearLayout assistantText = new LinearLayout(this);
+        assistantText.setOrientation(LinearLayout.VERTICAL);
+        assistantText.addView(text("Tu asistente inteligente", 16, true));
+        TextView assistantState = bodyText("Listo para ayudarte · conversación privada");
+        assistantState.setTextSize(12);
+        assistantText.addView(assistantState, margin(0, 3, 0, 0));
+        LinearLayout.LayoutParams assistantTextParams = new LinearLayout.LayoutParams(0, -2, 1f);
+        assistantTextParams.setMargins(dp(12), 0, 0, 0);
+        assistantCard.addView(assistantText, assistantTextParams);
+        page.addView(assistantCard, margin(0, 15, 0, 12));
 
         aiConversationScroll = new ScrollView(this);
         aiConversationScroll.setFillViewport(true);
@@ -2395,10 +2434,13 @@ public final class MainActivity extends Activity {
         aiConversationBox.setPadding(dp(11), dp(12), dp(11), dp(12));
         aiConversationScroll.addView(aiConversationBox, new ScrollView.LayoutParams(-1, -2));
         LinearLayout chatPanel = card();
+        chatPanel.setPadding(dp(8), dp(8), dp(8), dp(8));
         chatPanel.addView(aiConversationScroll, new LinearLayout.LayoutParams(-1, dp(350)));
         page.addView(chatPanel, margin(0, 0, 0, 10));
 
-        aiChatStatus = bodyText("AiTod4S3 listo.");
+        aiChatStatus = bodyText("●  En línea · AiTod4S3 listo");
+        aiChatStatus.setTextSize(12);
+        aiChatStatus.setTextColor(Color.rgb(99, 210, 173));
         page.addView(aiChatStatus, margin(0, 0, 0, 8));
         LinearLayout composerRow = new LinearLayout(this);
         composerRow.setGravity(Gravity.BOTTOM);
@@ -2420,21 +2462,13 @@ public final class MainActivity extends Activity {
         aiComposer.setPadding(dp(13), dp(11), dp(13), dp(11));
         aiComposer.setBackground(roundRect(raisedSurfaceColor(), 16, borderColor()));
         composerRow.addView(aiComposer, new LinearLayout.LayoutParams(0, dp(58), 1f));
-        aiSendButton = primaryButton("Enviar");
+        aiSendButton = primaryButton("Enviar  ↑");
         aiSendButton.setTextSize(13);
-        LinearLayout.LayoutParams sendParams = new LinearLayout.LayoutParams(dp(86), dp(58));
+        LinearLayout.LayoutParams sendParams = new LinearLayout.LayoutParams(dp(92), dp(58));
         sendParams.setMargins(dp(8), 0, 0, 0);
         composerRow.addView(aiSendButton, sendParams);
         page.addView(composerRow, margin(0, 0, 0, 12));
 
-        Button newChat = secondaryButton("Borrar conversación");
-        newChat.setOnClickListener(v -> {
-            if (aiChatRequestInFlight) return;
-            aiChatMessages.clear();
-            aiChatStatus.setText("Conversación borrada de esta sesión.");
-            renderAiConversation();
-        });
-        page.addView(newChat, margin(0, 0, 0, 4));
         aiSendButton.setOnClickListener(v -> sendAiMessage());
         aiComposer.setOnEditorActionListener((view, actionId, event) -> {
             if (actionId == EditorInfo.IME_ACTION_SEND) {
@@ -2453,8 +2487,10 @@ public final class MainActivity extends Activity {
         if (aiConversationBox == null || aiConversationScroll == null) return;
         aiConversationBox.removeAllViews();
         if (aiChatMessages.isEmpty()) {
-            TextView welcome = bodyText("Hola, soy AiTod4S3. Escribe una pregunta para comenzar.");
+            TextView welcome = bodyText("Hola, soy AiTod4S3.\n\n¿Qué te gustaría saber hoy? Escribe abajo y comenzamos.");
             welcome.setGravity(Gravity.CENTER);
+            welcome.setTextSize(15);
+            welcome.setLineSpacing(dp(3), 1f);
             welcome.setPadding(dp(18), dp(50), dp(18), dp(50));
             aiConversationBox.addView(welcome, new LinearLayout.LayoutParams(-1, -2));
         }
@@ -2547,6 +2583,10 @@ public final class MainActivity extends Activity {
                 else if (raw.contains("ai_service_daily_limit")) failure = "AiTod4S3 alcanzó su límite diario. Inténtalo más tarde.";
                 else if (raw.contains("ai_rate_limited") || raw.contains("ai_busy")) failure = "Hay muchas consultas en este momento. Espera un poco y vuelve a intentarlo.";
                 else if (raw.contains("ai_provider_auth")) failure = "El servicio de IA requiere renovar su configuración. Contacta al administrador.";
+                else if (raw.contains("ai_provider_endpoint")) failure = "El servidor no encontró la dirección de la IA. Se corrigió la ruta del servicio; vuelve a probar cuando termine el despliegue.";
+                else if (raw.contains("ai_provider_request")) failure = "El proveedor rechazó la solicitud. Revisa que el servidor tenga la clave IASINCENSURA completa y actualizada.";
+                else if (raw.contains("ai_provider_access")) failure = "La clave de IA no tiene acceso al servicio. El administrador debe revisar o renovar la clave.";
+                else if (raw.contains("ai_provider_error") || raw.contains("ai_invalid_response")) failure = "El proveedor de IA devolvió una respuesta inesperada. Inténtalo de nuevo más tarde.";
                 else if (raw.contains("ai_unavailable") || raw.contains("HTTP 502")) failure = "La IA no respondió a tiempo. Vuelve a intentarlo.";
                 else failure = "No se pudo conectar con AiTod4S3. Revisa la conexión e inténtalo otra vez.";
             }
@@ -2561,7 +2601,9 @@ public final class MainActivity extends Activity {
                         if (aiChatMessages.size() > 24) aiChatMessages.subList(0, aiChatMessages.size() - 24).clear();
                         aiChatStatus.setText("Respuesta recibida.");
                     } else {
-                        aiChatStatus.setText(finalFailure == null ? "No se pudo obtener una respuesta." : finalFailure);
+                        String visibleFailure = finalFailure == null ? "No se pudo obtener una respuesta." : finalFailure;
+                        aiChatStatus.setText("No se pudo responder.");
+                        aiChatMessages.add(new AiChatMessage("assistant", visibleFailure));
                     }
                     renderAiConversation();
                 }

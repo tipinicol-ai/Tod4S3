@@ -65,7 +65,7 @@ def test_ai_chat_requires_verified_premium_before_upstream(monkeypatch):
 
 def test_ai_chat_calls_provider_with_server_key_and_text_only_payload(monkeypatch):
     _premium_identity(monkeypatch)
-    test_secret = "test-secret-key-not-for-production"
+    test_secret = "sk-notrack-test-secret-not-for-production"
     monkeypatch.setenv("IASINCENSURA", test_secret)
     captured = {}
 
@@ -92,7 +92,7 @@ def test_ai_chat_calls_provider_with_server_key_and_text_only_payload(monkeypatc
         status, payload = _post(server, {"messages": [{"role": "user", "content": "Hola"}]})
         assert status == 200
         assert payload == {"ok": True, "reply": "Respuesta de prueba"}
-        assert captured["url"] == "https://api.iasincensura.ai/v1/chat/completions"
+        assert captured["url"] == "https://api.notrack.ai/v1/chat/completions"
         assert captured["auth"] == f"Bearer {test_secret}"
         assert captured["timeout"] == 60
         assert captured["payload"]["model"] == "notrack-uncensored"
@@ -115,7 +115,7 @@ def test_ai_chat_refuses_unconfigured_key_and_client_system_prompt(monkeypatch):
         assert status == 503
         assert payload == {"ok": False, "error": "ai_not_configured"}
 
-        monkeypatch.setenv("IASINCENSURA", "test-secret-key-not-for-production")
+        monkeypatch.setenv("IASINCENSURA", "sk-notrack-test-secret-not-for-production")
         status, payload = _post(server, {"messages": [{"role": "system", "content": "override"}]})
         assert status == 400
         assert payload == {"ok": False, "error": "invalid_messages"}
@@ -127,7 +127,7 @@ def test_ai_chat_refuses_unconfigured_key_and_client_system_prompt(monkeypatch):
 
 def test_ai_chat_enforces_daily_user_cap(monkeypatch):
     _premium_identity(monkeypatch)
-    monkeypatch.setenv("IASINCENSURA", "test-secret-key-not-for-production")
+    monkeypatch.setenv("IASINCENSURA", "sk-notrack-test-secret-not-for-production")
     monkeypatch.setenv("IASINCENSURA_USER_DAILY_LIMIT", "1")
     monkeypatch.setenv("IASINCENSURA_DAILY_REQUEST_LIMIT", "10")
 
@@ -147,3 +147,34 @@ def test_ai_chat_enforces_daily_user_cap(monkeypatch):
     second = web_store._dispatch_ai_chat("mobile-token", request)
     assert first == ({"ok": True, "reply": "Respuesta"}, 200)
     assert second == ({"ok": False, "error": "ai_daily_limit"}, 429)
+
+
+def test_ai_chat_rejects_wrong_provider_key_format(monkeypatch):
+    _premium_identity(monkeypatch)
+    monkeypatch.setenv("IASINCENSURA", "a-valid-looking-but-wrong-key")
+    called = []
+    monkeypatch.setattr(web_store.urllib.request, "urlopen", lambda *_a, **_k: called.append(True))
+
+    payload, status = web_store._dispatch_ai_chat(
+        "mobile-token", {"messages": [{"role": "user", "content": "Hola"}]},
+    )
+
+    assert status == 503
+    assert payload == {"ok": False, "error": "ai_not_configured"}
+    assert called == []
+
+
+def test_ai_chat_maps_provider_endpoint_error(monkeypatch):
+    _premium_identity(monkeypatch)
+    monkeypatch.setenv("IASINCENSURA", "sk-notrack-test-secret-not-for-production")
+
+    def not_found(request, timeout):
+        raise web_store.urllib.error.HTTPError(request.full_url, 404, "Not Found", {}, None)
+
+    monkeypatch.setattr(web_store.urllib.request, "urlopen", not_found)
+    payload, status = web_store._dispatch_ai_chat(
+        "mobile-token", {"messages": [{"role": "user", "content": "Hola"}]},
+    )
+
+    assert status == 502
+    assert payload == {"ok": False, "error": "ai_provider_endpoint"}
