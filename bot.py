@@ -4487,13 +4487,17 @@ async def send_service_info_message(message, user_id: int, user_name: str,
 
 
 async def edit_query_message_text(message, text: str, **kwargs):
-    """Edita caption si el menú actual es una foto; texto en cualquier otro caso."""
+    """Actualiza un menú y reemplaza una foto por texto cuando hace falta."""
     if getattr(message, "photo", None) and hasattr(message, "edit_caption"):
-        # Telegram no acepta disable_web_page_preview en editMessageCaption.
-        # Se usa en varias pantallas de texto, pero debe quitarse al editar
-        # la bienvenida que está publicada como foto.
-        kwargs.pop("disable_web_page_preview", None)
-        return await message.edit_caption(caption=text, **kwargs)
+        # Los menús pueden superar el límite de caption de Telegram. Publicar
+        # el texto como mensaje nuevo evita ese límite y conserva la botonera.
+        reply = await message.reply_text(text, **kwargs)
+        if hasattr(message, "delete"):
+            try:
+                await message.delete()
+            except Exception:
+                pass
+        return reply
     return await message.edit_text(text, **kwargs)
 
 

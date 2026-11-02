@@ -206,6 +206,13 @@ class RequestedFeatureTests(unittest.TestCase):
         self.assertNotIn("caption=", editor)
         self.assertIn("await message.delete()", editor)
 
+    def test_text_menus_replace_photo_instead_of_editing_caption(self):
+        source = (Path(__file__).resolve().parents[1] / "bot.py").read_text()
+        editor = source.split("async def edit_query_message_text", 1)[1].split("def membership_keyboard", 1)[0]
+        self.assertIn("reply = await message.reply_text(text, **kwargs)", editor)
+        self.assertIn("await message.delete()", editor)
+        self.assertNotIn("edit_caption(caption=text", editor)
+
     def test_docker_image_contains_configured_welcome_photo(self):
         dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text()
         self.assertIn("IMG_20261102_161854_801.jpg", dockerfile)
