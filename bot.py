@@ -6679,7 +6679,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 lines.append("📅 Duración: permanente")
             if rem_days is not None:
                 lines.append(f"⏳ Restan: {rem_days} días")
-            if plan_key == "premium":
+            if plan_key in {"premium", "owner"}:
                 activation_status = sync_api.premium_activation_status(target_id, expires_at=expiry)
                 status_label = {
                     "verified": "Verificado en un móvil vinculado",
@@ -6689,7 +6689,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 }.get(activation_status, "Estado del token no disponible")
                 lines.append(f"📱 Código APK: {status_label}")
             markup_rows = []
-            if plan_key == "premium":
+            if plan_key in {"premium", "owner"}:
                 markup_rows.append([btn("🔐 ʀᴇᴇᴍɪᴛɪʀ ᴄóᴅɪɢᴏ", callback_data=f"admin:premium_reissue:{target_id}")])
             markup_rows.append([btn("⬅️ ᴘᴀɴᴇʟ ᴀᴅᴍɪɴ", callback_data="admin:back")])
             await message.reply_text(
