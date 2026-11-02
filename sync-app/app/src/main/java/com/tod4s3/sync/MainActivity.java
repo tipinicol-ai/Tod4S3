@@ -103,6 +103,7 @@ public final class MainActivity extends Activity {
     private static final String PREF_UI_ACCENT = "ui_accent_v1";
     private static final String PREF_DOWNLOAD_CONCURRENCY = "download_concurrency_v1";
     private static final String PREF_DOWNLOAD_FOLDER = "download_folder_uri_v1";
+    private static final String PREF_AI_CHAT_HISTORY = "ai_chat_history_v1";
     private static final int REQUEST_WRITE_STORAGE = 702;
     private static final int REQUEST_PAYMENT_RECEIPT = 703;
     private static final int REQUEST_DOWNLOAD_FOLDER = 705;
@@ -182,6 +183,7 @@ public final class MainActivity extends Activity {
     private Button aiSendButton;
     private TextView aiChatStatus;
     private boolean aiKeyboardWasVisible;
+    private boolean aiChatHistoryLoaded;
     private final ArrayList<AiChatMessage> aiChatMessages = new ArrayList<>();
     private TextView appLogOutput;
     private volatile int appLogGeneration;
@@ -2454,6 +2456,22 @@ public final class MainActivity extends Activity {
         premiumBadge.setPadding(dp(7), dp(4), dp(7), dp(4));
         premiumBadge.setBackground(roundRect(Color.rgb(60, 48, 28), 18, Color.rgb(143, 111, 48)));
         header.addView(premiumBadge, new LinearLayout.LayoutParams(-2, dp(26)));
+        Button chatOptions = secondaryButton("⋮");
+        chatOptions.setTextSize(18);
+        chatOptions.setPadding(0, 0, 0, 0);
+        chatOptions.setContentDescription("Opciones del chat");
+        LinearLayout.LayoutParams optionsParams = new LinearLayout.LayoutParams(dp(34), dp(34));
+        optionsParams.setMargins(dp(5), 0, 0, 0);
+        header.addView(chatOptions, optionsParams);
+        chatOptions.setOnClickListener(v -> new AlertDialog.Builder(this)
+                .setTitle("Opciones del chat")
+                .setItems(new String[]{"Limpiar conversación"}, (dialog, which) -> {
+                    if (aiChatRequestInFlight) {
+                        Toast.makeText(this, "Espera a que termine la respuesta antes de limpiar.", Toast.LENGTH_SHORT).show();
+                    } else {
+                        confirmClearAiChat();
+                    }
+                }).show());
         page.addView(header);
 
         aiChatStatus = bodyText("●  Listo para responder");
@@ -2513,6 +2531,7 @@ public final class MainActivity extends Activity {
             }
             return false;
         });
+        loadAiChatHistory();
         renderAiConversation();
         showPage(page, animated);
         showingAiChat = true;
@@ -2549,6 +2568,19 @@ public final class MainActivity extends Activity {
             body.setTextColor(primaryTextColor());
             body.setLineSpacing(dp(3), 1.02f);
             bubble.addView(body);
+            if (!userMessage) {
+                TextView copy = text("⧉  Copiar", 11, true);
+                copy.setTextColor(accentColor());
+                copy.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+                copy.setPadding(0, dp(7), 0, 0);
+                copy.setContentDescription("Copiar respuesta de AiTod4S3");
+                copy.setOnClickListener(v -> copyAiMessage(message.content));
+                copy.setOnLongClickListener(v -> {
+                    copyAiMessage(message.content);
+                    return true;
+                });
+                bubble.addView(copy, new LinearLayout.LayoutParams(-1, dp(26)));
+            }
             LinearLayout.LayoutParams bubbleParams = new LinearLayout.LayoutParams(-2, -2);
             bubbleParams.width = Math.min(dp(310), getResources().getDisplayMetrics().widthPixels - dp(96));
             bubbleParams.setMargins(dp(2), 0, dp(2), dp(8));
@@ -2556,6 +2588,71 @@ public final class MainActivity extends Activity {
             aiConversationBox.addView(row, new LinearLayout.LayoutParams(-1, -2));
         }
         aiConversationScroll.post(() -> aiConversationScroll.fullScroll(View.FOCUS_DOWN));
+    }
+
+    private void copyAiMessage(String content) {
+        if (content == null || content.isEmpty()) return;
+        android.content.ClipboardManager clipboard =
+                (android.content.ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+        if (clipboard == null) {
+            Toast.makeText(this, "No se pudo copiar el mensaje.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        clipboard.setPrimaryClip(ClipData.newPlainText("AiTod4S3", content));
+        Toast.makeText(this, "Respuesta copiada.", Toast.LENGTH_SHORT).show();
+    }
+
+    private void loadAiChatHistory() {
+        if (aiChatHistoryLoaded || prefs == null) return;
+        aiChatHistoryLoaded = true;
+        String saved = prefs.getString(PREF_AI_CHAT_HISTORY, "[]");
+        try {
+            JSONArray rows = new JSONArray(saved);
+            int start = Math.max(0, rows.length() - 24);
+            for (int i = start; i < rows.length(); i++) {
+                JSONObject row = rows.optJSONObject(i);
+                if (row == null) continue;
+                String role = row.optString("role", "");
+                String content = row.optString("content", "");
+                if (("user".equals(role) || "assistant".equals(role)) && !content.isEmpty()) {
+                    aiChatMessages.add(new AiChatMessage(role, content));
+                }
+            }
+        } catch (org.json.JSONException ignored) {
+            prefs.edit().remove(PREF_AI_CHAT_HISTORY).apply();
+        }
+    }
+
+    private void persistAiChatHistory() {
+        if (prefs == null) return;
+        JSONArray rows = new JSONArray();
+        int start = Math.max(0, aiChatMessages.size() - 24);
+        for (int i = start; i < aiChatMessages.size(); i++) {
+            AiChatMessage message = aiChatMessages.get(i);
+            JSONObject row = new JSONObject();
+            try {
+                row.put("role", message.role);
+                row.put("content", message.content);
+                rows.put(row);
+            } catch (org.json.JSONException ignored) {
+                // El historial restante se conserva si un mensaje individual no pudiera serializarse.
+            }
+        }
+        prefs.edit().putString(PREF_AI_CHAT_HISTORY, rows.toString()).apply();
+    }
+
+    private void confirmClearAiChat() {
+        new AlertDialog.Builder(this)
+                .setTitle("Limpiar conversación")
+                .setMessage("Se borrará el historial de AiTod4S3 guardado en este teléfono.")
+                .setNegativeButton("Cancelar", null)
+                .setPositiveButton("Limpiar", (dialog, which) -> {
+                    aiChatMessages.clear();
+                    persistAiChatHistory();
+                    renderAiConversation();
+                    if (aiChatStatus != null) aiChatStatus.setText("●  Conversación limpia");
+                })
+                .show();
     }
 
     private void sendAiMessage() {
@@ -2581,6 +2678,8 @@ public final class MainActivity extends Activity {
             return;
         }
         aiChatMessages.add(new AiChatMessage("user", userText));
+        if (aiChatMessages.size() > 24) aiChatMessages.subList(0, aiChatMessages.size() - 24).clear();
+        persistAiChatHistory();
         aiComposer.setText("");
         renderAiConversation();
         aiChatRequestInFlight = true;
@@ -2653,13 +2752,14 @@ public final class MainActivity extends Activity {
                         && aiConversationBox != null) {
                     if (finalReply != null) {
                         aiChatMessages.add(new AiChatMessage("assistant", finalReply));
-                        if (aiChatMessages.size() > 24) aiChatMessages.subList(0, aiChatMessages.size() - 24).clear();
                         aiChatStatus.setText("Respuesta recibida.");
                     } else {
                         String visibleFailure = finalFailure == null ? "No se pudo obtener una respuesta." : finalFailure;
                         aiChatStatus.setText("No se pudo responder.");
                         aiChatMessages.add(new AiChatMessage("assistant", visibleFailure));
                     }
+                    if (aiChatMessages.size() > 24) aiChatMessages.subList(0, aiChatMessages.size() - 24).clear();
+                    persistAiChatHistory();
                     renderAiConversation();
                 }
                 if (aiSendButton != null) {

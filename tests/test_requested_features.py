@@ -94,6 +94,17 @@ class RequestedFeatureTests(unittest.TestCase):
         self.assertIn('aiSendButton.setText("➤")', source)
         self.assertNotIn('aiSendButton.setText("Enviar")', source)
 
+    def test_android_ai_chat_copies_responses_persists_and_clears_history(self):
+        source = (Path(__file__).resolve().parents[1]
+                 / "sync-app/app/src/main/java/com/tod4s3/sync/MainActivity.java").read_text()
+        self.assertIn('text("⧉  Copiar", 11, true)', source)
+        self.assertIn("copyAiMessage(message.content)", source)
+        self.assertIn('PREF_AI_CHAT_HISTORY = "ai_chat_history_v1"', source)
+        self.assertIn("loadAiChatHistory();", source)
+        self.assertIn("persistAiChatHistory();", source)
+        self.assertIn('"Limpiar conversación"', source)
+        self.assertIn("aiChatMessages.clear()", source)
+
     def test_android_drawer_can_relink_bot_without_resetting_todus(self):
         source = (Path(__file__).resolve().parents[1]
                  / "sync-app/app/src/main/java/com/tod4s3/sync/MainActivity.java").read_text()
