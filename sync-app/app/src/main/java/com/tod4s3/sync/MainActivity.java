@@ -2272,10 +2272,9 @@ public final class MainActivity extends Activity {
         addDrawerRow(content, popup, "↓", "Descargas", "Archivos guardados en el teléfono", () -> showDashboard("completed", true));
         addDrawerRow(content, popup, "▥", "Estadísticas", "Uso y actividad", () -> showStats(true));
         if (token != null && !token.isEmpty()) {
-            addDrawerRow(content, popup, "▤", "Registros de la App", "Consultar actividad y errores", () -> showAppLogs(true));
+        addDrawerRow(content, popup, "▤", "Registros de la App", "Consultar actividad y errores", () -> showAppLogs(true));
         }
         addDrawerRow(content, popup, "◉", "Grupo de Telegram", "Dark Zone", () -> openExternalUrl("https://t.me/Dark_Zone_666"));
-        addDrawerRow(content, popup, "◉", "Administrador de streams", "Escribir a @fefefelix", () -> openExternalUrl("https://t.me/fefefelix"));
         addDrawerRow(content, popup, "↗", "Enlace no disponible", "Reportar pedido caído", () -> shareReport("Pedido caído"));
         addDrawerRow(content, popup, "⚠", "Reportar un error", "Enviar detalles al soporte", () -> shareReport("Error de Tod4S3 Sync"));
         addDrawerRow(content, popup, "i", "Acerca de", "Versión y privacidad", () -> showAbout(true));
