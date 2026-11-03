@@ -126,6 +126,8 @@ class RequestedFeatureTests(unittest.TestCase):
         self.assertIn("GITHUB_REPOSITORY", workflow)
         self.assertIn("raw.githubusercontent.com", workflow)
         self.assertIn("ANDROID_UPDATE_MANIFEST_URL", workflow)
+        self.assertIn("android-actions/setup-android@v4", workflow)
+        self.assertIn("find . -maxdepth 1 -type f -name 'Tod4S3-Sync*.apk'", workflow)
         self.assertIn("Tod4S3-Sync-latest.apk", workflow)
 
     def test_android_balance_fab_opens_dialer_without_calling_automatically(self):
