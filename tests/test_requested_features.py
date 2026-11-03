@@ -84,13 +84,14 @@ class RequestedFeatureTests(unittest.TestCase):
         self.assertNotIn("addHomeTabs(page, false, true)", chat)
         self.assertNotIn("Ver planes y ofertas", chat)
 
-    def test_android_ai_keyboard_resizes_and_clears_scroll_after_ime_closes(self):
+    def test_android_ai_keyboard_resizes_and_preserves_scroll_after_ime_closes(self):
         root = Path(__file__).resolve().parents[1]
         source = (root / "sync-app/app/src/main/java/com/tod4s3/sync/MainActivity.java").read_text()
         manifest = (root / "sync-app/app/src/main/AndroidManifest.xml").read_text()
         self.assertIn('android:windowSoftInputMode="adjustResize|stateAlwaysHidden"', manifest)
         self.assertIn("if (aiKeyboardWasVisible && !keyboardVisible && showingAiChat)", source)
-        self.assertIn("appScroll.scrollTo(0, 0)", source)
+        self.assertIn("appScroll.requestLayout()", source)
+        self.assertNotIn("appScroll.scrollTo(0, 0)", source)
         self.assertIn('aiSendButton.setText("➤")', source)
         self.assertNotIn('aiSendButton.setText("Enviar")', source)
 
@@ -142,6 +143,9 @@ class RequestedFeatureTests(unittest.TestCase):
         self.assertIn('balance.setOnClickListener(v -> requestToDusBalance())', source)
         self.assertIn('sendUssdRequest(USSD_BALANCE_CODE', source)
         self.assertIn('onReceiveUssdResponse(', source)
+        self.assertNotIn('ussdProgressDialog', source)
+        self.assertNotIn('Consultando saldo', source)
+        self.assertNotIn('Consulta USSD enviada a ToDus.', source)
         self.assertIn('requestPermissions(new String[]{Manifest.permission.CALL_PHONE}, REQUEST_USSD_BALANCE_PERMISSION)', source)
         self.assertIn('Intent.ACTION_CALL, Uri.parse("tel:*222*328%23")', source)
         self.assertIn('android.permission.CALL_PHONE', manifest)
@@ -152,8 +156,10 @@ class RequestedFeatureTests(unittest.TestCase):
                   / "sync-app/app/src/main/java/com/tod4s3/sync/MainActivity.java").read_text()
         drawer = source.split("private void showNavigationDrawer", 1)[1].split("private void addDrawerRow", 1)[0]
         fabs = source.split("private void showDashboardFab", 1)[1].split("private void requestToDusBalance", 1)[0]
-        self.assertIn("drawerMaxHeight", drawer)
-        self.assertIn("new PopupWindow(drawerScroll, drawerWidth, -2, true)", drawer)
+        self.assertIn("int appWindowHeight = appRoot == null ? 0 : appRoot.getHeight()", drawer)
+        self.assertIn("drawerScroll.setFillViewport(true)", drawer)
+        self.assertIn("new PopupWindow(drawerScroll, drawerWidth, drawerHeight, true)", drawer)
+        self.assertIn("popup.showAtLocation(appRoot, Gravity.TOP | Gravity.START, dp(12), dp(8))", drawer)
         self.assertIn('addDrawerSectionHeader(content, "Planes y archivos")', drawer)
         self.assertIn('addDrawerSectionHeader(content, "Ayuda y soporte")', drawer)
         self.assertIn('label.setSingleLine(true)', source)
@@ -168,6 +174,20 @@ class RequestedFeatureTests(unittest.TestCase):
         self.assertIn("dp(98)", fabs)
         self.assertIn("roundRect(surfaceColor(), 18, borderColor())", source)
         self.assertIn("box.setElevation(dp(3))", source)
+
+    def test_android_ai_has_centered_help_orb_and_keeps_chat_scroll_position(self):
+        source = (Path(__file__).resolve().parents[1]
+                  / "sync-app/app/src/main/java/com/tod4s3/sync/MainActivity.java").read_text()
+        chat = source.split("private void showAiChat", 1)[1].split("private void renderAiConversation", 1)[0]
+        render = source.split("private void renderAiConversation", 1)[1].split("private void copyAiMessage", 1)[0]
+        self.assertIn('helpOrb.setContentDescription("Help Me: abrir consejos para usar AiTod4S3")', render)
+        self.assertIn('"HELP ME  ·  TOCA LA BURBUJA"', render)
+        self.assertIn("helpOrb.setElevation(dp(16))", render)
+        self.assertIn("Gravity.CENTER", chat)
+        self.assertIn("private void showAiHelp()", source)
+        self.assertIn("Math.max(0, aiConversationBox.getHeight() - aiConversationScroll.getHeight())", render)
+        self.assertNotIn("aiConversationScroll.fullScroll(View.FOCUS_DOWN)", source)
+        self.assertNotIn("appScroll.scrollTo(0, 0)", source)
 
     def test_android_visual_refresh_keeps_premium_controls_and_compacts_login_header(self):
         source = (Path(__file__).resolve().parents[1]

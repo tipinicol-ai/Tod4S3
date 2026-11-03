@@ -101,6 +101,9 @@ def test_ai_chat_calls_provider_with_server_key_and_text_only_payload(monkeypatc
         assert captured["payload"]["stream"] is False
         assert captured["payload"]["messages"][0]["role"] == "system"
         assert "asistente general" in captured["payload"]["messages"][0]["content"]
+        assert "conciso pero completo" in captured["payload"]["messages"][0]["content"]
+        assert "En cálculos, entrega el resultado y una fórmula breve" in captured["payload"]["messages"][0]["content"]
+        assert "no finjas omnisciencia" in captured["payload"]["messages"][0]["content"]
         assert "No contestes preguntas sobre el repositorio" in captured["payload"]["messages"][0]["content"]
         assert captured["payload"]["messages"][-1] == {"role": "user", "content": "Hola"}
     finally:
