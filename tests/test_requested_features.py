@@ -128,6 +128,8 @@ class RequestedFeatureTests(unittest.TestCase):
         self.assertIn("ANDROID_UPDATE_MANIFEST_URL", workflow)
         self.assertIn("android-actions/setup-android@v4", workflow)
         self.assertIn("find . -maxdepth 1 -type f -name 'Tod4S3-Sync*.apk'", workflow)
+        self.assertIn('[[ "$candidate" == "Tod4S3-Sync-latest.apk" ]] || versioned+=', workflow)
+        self.assertIn('if [[ "$selected" != "Tod4S3-Sync-latest.apk" ]]', workflow)
         self.assertIn("Tod4S3-Sync-latest.apk", workflow)
 
     def test_android_balance_fab_opens_dialer_without_calling_automatically(self):

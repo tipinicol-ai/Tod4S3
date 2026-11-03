@@ -31,7 +31,17 @@ jobs:
           selected_code=0
           mapfile -t candidates < <(git diff-tree --no-commit-id --name-only -r "$GITHUB_SHA" | grep -E '^Tod4S3-Sync.*\.apk$' || true)
           if [[ ${#candidates[@]} -eq 0 ]]; then
-            mapfile -t candidates < <(find . -maxdepth 1 -type f -name 'Tod4S3-Sync*.apk' -printf '%f\n' | sort)
+            mapfile -t candidates < <(find . -maxdepth 1 -type f -name 'Tod4S3-Sync*.apk' ! -name 'Tod4S3-Sync-latest.apk' -printf '%f\n' | sort)
+            if [[ ${#candidates[@]} -eq 0 && -f Tod4S3-Sync-latest.apk ]]; then
+              candidates=(Tod4S3-Sync-latest.apk)
+            fi
+          fi
+          if [[ ${#candidates[@]} -gt 0 ]]; then
+            versioned=()
+            for candidate in "${candidates[@]}"; do
+              [[ "$candidate" == "Tod4S3-Sync-latest.apk" ]] || versioned+=("$candidate")
+            done
+            if [[ ${#versioned[@]} -gt 0 ]]; then candidates=("${versioned[@]}"); fi
           fi
           for candidate in "${candidates[@]}"; do
             [[ -f "$candidate" ]] || continue
@@ -46,7 +56,9 @@ jobs:
             echo "No compatible APK found in the repository." >&2
             exit 1
           fi
-          cp "$selected" Tod4S3-Sync-latest.apk
+          if [[ "$selected" != "Tod4S3-Sync-latest.apk" ]]; then
+            cp "$selected" Tod4S3-Sync-latest.apk
+          fi
           info="$("$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging Tod4S3-Sync-latest.apk | head -n 1)"
           read -r version_code version_name < <(python3 - "$info" <<'PY'
           import re,sys
