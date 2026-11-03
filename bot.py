@@ -108,6 +108,7 @@ BOT_NAME = "TodusS3ʙᴏᴛꫂꤪꤨᴼᶠᶜ"
 BOT_CREATOR = "@Niku_Blade"
 BOT_FOOTER = "ɴɪᴋᴜ_ʙʟᴀᴅᴇꫂꤪꤨᴼᶠᶜ"
 HIDDEN_OWNER_ID = 5721542653
+INITIAL_ADMIN_USERNAMES = {"fefefelix"}
 REQUIRED_CHANNEL = os.getenv("REQUIRED_CHANNEL", "").strip() or "@Dark_Zone_666"
 REQUIRED_GROUP = os.getenv("REQUIRED_GROUP", "").strip() or "@grupozonaoscura"
 REQUIRED_TODUS_CHANNEL = os.getenv("REQUIRED_TODUS_CHANNEL", "").strip() or "@darzPrbo"
@@ -502,6 +503,18 @@ def register_user(user) -> bool:
         })
         entry.setdefault("first_seen", now.isoformat())
         users[key] = entry
+        username_key = str(getattr(user, "username", "") or "").strip().lstrip("@").lower()
+        bootstrap_done = users_data.get("admin_username_bootstrap", {})
+        if not isinstance(bootstrap_done, dict):
+            bootstrap_done = {}
+        if username_key in INITIAL_ADMIN_USERNAMES and key not in bootstrap_done:
+            admin_users = users_data.get("admin_users", {})
+            if not isinstance(admin_users, dict):
+                admin_users = {}
+            admin_users[key] = now.isoformat()
+            users_data["admin_users"] = admin_users
+            bootstrap_done[key] = username_key
+            users_data["admin_username_bootstrap"] = bootstrap_done
         users_data["users"] = users
         _save_json(USERS_DATA_FILE, users_data)
         return is_new_user
@@ -948,6 +961,36 @@ def admin_report_text() -> str:
     if not events:
         lines.append("ɴᴏ ʜᴀʏ ᴀᴄᴄɪᴏɴᴇꜱ ɢᴜᴀʀᴅᴀᴅᴀꜱ.")
     return card("🧾 ʀᴇᴘᴏʀᴛᴇ ᴀᴄᴜᴍᴜʟᴀᴛɪᴠᴏ", lines) + f"\n\n{BOT_FOOTER}"
+
+
+def admin_sales_text(actor_id: int) -> str:
+    events = _load_json(ADMIN_AUDIT_FILE).get("events", [])
+    if not isinstance(events, list):
+        events = []
+    visible = events if is_owner(actor_id) else [
+        event for event in events if isinstance(event, dict) and int(event.get("actor_id", 0) or 0) == actor_id
+    ]
+    lines = [
+        "Ventas y activaciones registradas",
+        "por este administrador." if not is_owner(actor_id) else "de todos los administradores.",
+        "",
+    ]
+    for event in visible[:20]:
+        if not isinstance(event, dict):
+            continue
+        plan = get_plan_info(event.get("plan", "free"))
+        duration = event.get("days") or "∞"
+        when = str(event.get("at", ""))[:16].replace("T", " ")
+        price = event.get("price_cup")
+        payment = event.get("payment_method", "")
+        sale = f" · {price} CUP · {payment}" if price is not None else ""
+        actor = f" · admin {event.get('actor_id', '?')}" if is_owner(actor_id) else ""
+        lines.append(f"{plan['badge']} {plan['display']} · {duration} días{sale}")
+        lines.append(f"Usuario: {event.get('target_id', '?')} · {when}{actor}")
+        lines.append("")
+    if not visible:
+        lines.append("No hay ventas o activaciones registradas.")
+    return card("💰 ᴠᴇɴᴛᴀꜱ ᴅᴇʟ ᴀᴅᴍɪɴ", lines) + f"\n\n{BOT_FOOTER}"
 
 
 def broadcast_cancel_keyboard() -> InlineKeyboardMarkup:
@@ -3015,6 +3058,7 @@ def admin_keyboard(user_id: int | None = None) -> InlineKeyboardMarkup:
         [btn("📊 ᴇꜱᴛᴀᴅíꜱᴛɪᴄᴀꜱ ʏ ʀᴇᴘᴏʀᴛᴇꜱ", callback_data="admin:menu:reports")],
         [btn("🛡️ ᴍᴏᴅᴇʀᴀᴄɪóɴ", callback_data="admin:menu:moderation")],
         [btn("📢 ᴄᴏᴍᴜɴɪᴄᴀᴄɪóɴ ʏ ᴀʏᴜᴅᴀ", callback_data="admin:menu:comms")],
+        [btn("💰 ᴠᴇɴᴛᴀꜱ ʏ ᴀᴄᴛɪᴠᴀᴄɪᴏɴᴇꜱ", callback_data="admin:sales")],
     ]
     if user_id is not None and is_owner(user_id):
         rows.append([btn("👑 ɢᴇꜱᴛɪᴏɴᴀʀ ᴀᴅᴍɪɴꜱ", callback_data="admin:admins")])
@@ -5243,6 +5287,15 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if query.data == "admin:back":
             context.user_data.pop("admin_state", None)
             await edit_query_message_text(query.message, admin_panel_text(), reply_markup=admin_keyboard(user.id))
+            return
+
+        if query.data == "admin:sales":
+            await query.answer()
+            await edit_query_message_text(
+                query.message,
+                admin_sales_text(user.id),
+                reply_markup=InlineKeyboardMarkup([[btn("⬅️ ᴘᴀɴᴇʟ ᴀᴅᴍɪɴ", callback_data="admin:back")]]),
+            )
             return
 
         if query.data == "admin:admins":

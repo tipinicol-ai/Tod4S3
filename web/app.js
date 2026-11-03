@@ -1,8 +1,10 @@
 const TELEGRAM_HANDLE = 'Niku_Blade';
+const SECONDARY_TELEGRAM_HANDLE = 'fefefelix';
 const modal = document.querySelector('#requestModal');
 const form = document.querySelector('#requestForm');
 const selectedPlan = document.querySelector('#selectedPlan');
 const closeButton = document.querySelector('.modal-close');
+const contactFelix = document.querySelector('#contactFelix');
 
 function visitorId() {
   try {
@@ -72,8 +74,12 @@ document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape') closeRequest();
 });
 
-form?.addEventListener('submit', (event) => {
-  event.preventDefault();
+function openTelegramForHandle(handle, message) {
+  window.open(`https://t.me/${handle}?text=${encodeURIComponent(message)}`, '_blank', 'noopener');
+  closeRequest();
+}
+
+function requestMessage() {
   const data = new FormData(form);
   const plan = String(data.get('plan') || 'plan solicitado').trim();
   const name = String(data.get('name') || '').trim();
@@ -81,9 +87,9 @@ form?.addEventListener('submit', (event) => {
   const payment = String(data.get('payment') || '').trim();
   if (!payment) {
     form.querySelector('select[name="payment"]')?.focus();
-    return;
+    return null;
   }
-  const message = [
+  return [
     'Hola, deseo solicitar este plan Premium:',
     '',
     'Plan: ' + plan,
@@ -93,8 +99,17 @@ form?.addEventListener('submit', (event) => {
     '',
     'Realizaré el pago por el método indicado y enviaré la captura del comprobante por este chat para revisión y activación manual.',
   ].join('\n');
-  window.open(`https://t.me/${TELEGRAM_HANDLE}?text=${encodeURIComponent(message)}`, '_blank', 'noopener');
-  closeRequest();
+}
+
+form?.addEventListener('submit', (event) => {
+  event.preventDefault();
+  const message = requestMessage();
+  if (message) openTelegramForHandle(TELEGRAM_HANDLE, message);
+});
+
+contactFelix?.addEventListener('click', () => {
+  const message = requestMessage();
+  if (message) openTelegramForHandle(SECONDARY_TELEGRAM_HANDLE, message);
 });
 
 const revealItems = document.querySelectorAll('.plan-card, .visual-card, .step, .limits-panel, .final-cta');
