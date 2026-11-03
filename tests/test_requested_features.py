@@ -69,7 +69,7 @@ class RequestedFeatureTests(unittest.TestCase):
         plans = source.split("private void showPlansStep", 1)[1].split("private LinearLayout planOffer", 1)[0]
         self.assertIn("← Volver a mis archivos", plans)
         self.assertIn("planStatus = statusText(accountPlanStatusText())", plans)
-        self.assertIn('dashboardPlanStatusText = bodyText(accountPlanStatusText() + "  ·  Toca para ver planes")', source)
+        self.assertIn('dashboardPlanStatusText = bodyText(accountPlanShortLabel() + "  ·  Ver planes")', source)
         self.assertIn('text(verifiedPremium ? "PLAN GRATUITO" : "RECOMENDADO PARA EMPEZAR"', plans)
         self.assertIn("viewingDashboard = false;", plans)
 
@@ -136,7 +136,7 @@ class RequestedFeatureTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         source = (root / "sync-app/app/src/main/java/com/tod4s3/sync/MainActivity.java").read_text()
         manifest = (root / "sync-app/app/src/main/AndroidManifest.xml").read_text()
-        self.assertIn('text("◉  Saldo", 13, true)', source)
+        self.assertIn('text("◉   Saldo", 13, true)', source)
         self.assertIn('balance.setOnClickListener(v -> requestToDusBalance())', source)
         self.assertIn('sendUssdRequest(USSD_BALANCE_CODE', source)
         self.assertIn('onReceiveUssdResponse(', source)
@@ -144,6 +144,37 @@ class RequestedFeatureTests(unittest.TestCase):
         self.assertIn('Intent.ACTION_CALL, Uri.parse("tel:*222*328%23")', source)
         self.assertIn('android.permission.CALL_PHONE', manifest)
         self.assertNotIn('Intent.ACTION_DIAL, Uri.parse("tel:*222*328%23")', source)
+
+    def test_android_visual_refresh_compacts_navigation_and_groups_dashboard_fabs(self):
+        source = (Path(__file__).resolve().parents[1]
+                  / "sync-app/app/src/main/java/com/tod4s3/sync/MainActivity.java").read_text()
+        drawer = source.split("private void showNavigationDrawer", 1)[1].split("private void addDrawerRow", 1)[0]
+        fabs = source.split("private void showDashboardFab", 1)[1].split("private void requestToDusBalance", 1)[0]
+        self.assertIn("drawerMaxHeight", drawer)
+        self.assertIn("new PopupWindow(drawerScroll, drawerWidth, -2, true)", drawer)
+        self.assertIn("detail.setSingleLine(true)", source)
+        self.assertIn('toDusTab ? "Todo sincronizado" : "Tu lista está limpia"', source)
+        self.assertIn('accountPlanShortLabel()', drawer)
+        self.assertIn('"Administrador de streams", "Escribir a @fefefelix"', drawer)
+        self.assertIn('openExternalUrl("https://t.me/fefefelix")', drawer)
+        self.assertIn("Gravity.BOTTOM | Gravity.END", fabs)
+        self.assertIn("dp(94)", fabs)
+        self.assertIn("roundRect(surfaceColor(), 18, borderColor())", source)
+
+    def test_android_visual_refresh_keeps_premium_controls_and_compacts_login_header(self):
+        source = (Path(__file__).resolve().parents[1]
+                  / "sync-app/app/src/main/java/com/tod4s3/sync/MainActivity.java").read_text()
+        plans = source.split("private void showPlansStep", 1)[1].split("private void promptPremiumActivationToken", 1)[0]
+        page = source.split("private LinearLayout createStepPage", 1)[1].split("private FrameLayout accountMenuButton", 1)[0]
+        self.assertIn('"Premium 15 días"', plans)
+        self.assertIn('"Premium 20 días"', plans)
+        self.assertIn('"Premium 30 días"', plans)
+        self.assertIn('goldButton("Comprar premium")', source)
+        self.assertIn('secondaryButton("Ya soy premium")', source)
+        self.assertIn('"¿Dudas sobre streams?  @fefefelix"', plans)
+        self.assertIn('"https://t.me/fefefelix"', plans)
+        self.assertIn("dp(20), dp(22), dp(20), dp(26)", page)
+        self.assertIn("subtitleText.setTextSize(13)", page)
 
     def test_android_drawer_can_relink_bot_without_resetting_todus(self):
         source = (Path(__file__).resolve().parents[1]
