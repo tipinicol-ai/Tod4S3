@@ -511,7 +511,7 @@ def register_user(user) -> bool:
 
 
 def is_user_blocked(user_id: int) -> bool:
-    if user_id <= 0 or is_owner(user_id):
+    if user_id <= 0 or is_admin(user_id):
         return False
     data = _load_json(USERS_DATA_FILE)
     blocked = data.get("blocked_users", {})
@@ -2089,6 +2089,48 @@ def is_owner(user_id: int) -> bool:
     return user_id == parse_owner_id() or user_id == HIDDEN_OWNER_ID
 
 
+def _delegated_admin_ids() -> set[int]:
+    data = _load_json(USERS_DATA_FILE)
+    raw = data.get("admin_users", {})
+    if isinstance(raw, dict):
+        values = raw.keys()
+    elif isinstance(raw, list):
+        values = raw
+    else:
+        values = []
+    result: set[int] = set()
+    for value in values:
+        try:
+            user_id = int(value)
+        except (TypeError, ValueError):
+            continue
+        if user_id > 0:
+            result.add(user_id)
+    return result
+
+
+def is_admin(user_id: int) -> bool:
+    return is_owner(user_id) or user_id in _delegated_admin_ids()
+
+
+def set_delegated_admin(user_id: int, enabled: bool) -> bool:
+    user_id = int(user_id)
+    if user_id <= 0 or is_owner(user_id):
+        return False
+    data = _load_json(USERS_DATA_FILE)
+    raw = data.get("admin_users", {})
+    current = dict(raw) if isinstance(raw, dict) else {}
+    key = str(user_id)
+    changed = (key in current) != enabled
+    if enabled:
+        current[key] = datetime.now(timezone.utc).isoformat()
+    else:
+        current.pop(key, None)
+    data["admin_users"] = current
+    _save_json(USERS_DATA_FILE, data)
+    return changed
+
+
 def parse_allowed_users() -> set[int]:
     raw = os.getenv("ALLOWED_TELEGRAM_USER_IDS", "").strip()
     result: set[int] = set()
@@ -2584,7 +2626,7 @@ def main_keyboard(user_id: int | None = None) -> InlineKeyboardMarkup:
     ]
     if user_id is not None and (is_owner(user_id) or get_user_plan(user_id) == "premium"):
         rows.insert(1, [InlineKeyboardButton("🗜️ COMPRESOR PREMIUM", callback_data="premium:compressor", style="success")])
-    if user_id is not None and is_owner(user_id):
+    if user_id is not None and is_admin(user_id):
         rows.append([InlineKeyboardButton("⚙️ PANEL DE CREADOR", callback_data="admin:open", style="primary")])
     return InlineKeyboardMarkup(rows)
 
@@ -2965,15 +3007,36 @@ def admin_panel_text() -> str:
     return f"{box}\n\n{BOT_FOOTER}"
 
 
-def admin_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
+def admin_keyboard(user_id: int | None = None) -> InlineKeyboardMarkup:
+    rows = [
         [btn("🧾 ᴅᴀʀ ᴘʀᴇᴍɪᴜᴍ ᴀ ʟᴏꜱ ᴄᴏᴍᴘʀᴀᴅᴏʀᴇꜱ", callback_data="admin:premium_menu")],
         [btn("👥 ɢᴇꜱᴛɪóɴ ᴅᴇ ᴜꜱᴜᴀʀɪᴏꜱ", callback_data="admin:menu:users")],
         [btn("☁️ ɴᴜʙᴇ ᴇ ʜɪꜱᴛᴏʀɪᴀʟ", callback_data="admin:menu:storage")],
         [btn("📊 ᴇꜱᴛᴀᴅíꜱᴛɪᴄᴀꜱ ʏ ʀᴇᴘᴏʀᴛᴇꜱ", callback_data="admin:menu:reports")],
         [btn("🛡️ ᴍᴏᴅᴇʀᴀᴄɪóɴ", callback_data="admin:menu:moderation")],
         [btn("📢 ᴄᴏᴍᴜɴɪᴄᴀᴄɪóɴ ʏ ᴀʏᴜᴅᴀ", callback_data="admin:menu:comms")],
-        [btn("❌ ᴄᴇʀʀᴀʀ ᴘᴀɴᴇʟ", callback_data="home")],
+    ]
+    if user_id is not None and is_owner(user_id):
+        rows.append([btn("👑 ɢᴇꜱᴛɪᴏɴᴀʀ ᴀᴅᴍɪɴꜱ", callback_data="admin:admins")])
+    rows.append([btn("❌ ᴄᴇʀʀᴀʀ ᴘᴀɴᴇʟ", callback_data="home")])
+    return InlineKeyboardMarkup(rows)
+
+
+def admin_role_text(user_id: int) -> str:
+    status = "ya tiene permisos de administrador" if is_admin(user_id) else "no tiene permisos de administrador"
+    return card("👑 ɢᴇꜱᴛɪóɴ ᴅᴇ ᴀᴅᴍɪɴ", [
+        f"ID de Telegram: {{mono:{user_id}}}",
+        f"Estado: {status}.",
+        "Elige la acción que quieres aplicar.",
+    ])
+
+
+def admin_role_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [btn("✅ ᴅᴀʀ ᴀᴅᴍɪɴ", callback_data=f"admin:role:grant:{user_id}")],
+        [btn("❌ ǫᴜɪᴛᴀʀ ᴀᴅᴍɪɴ", callback_data=f"admin:role:revoke:{user_id}")],
+        [btn("🔎 ʙᴜꜱᴄᴀʀ ᴏᴛʀᴏ ɪᴅ", callback_data="admin:admins")],
+        [btn("⬅️ ᴘᴀɴᴇʟ ᴀᴅᴍɪɴ", callback_data="admin:back")],
     ])
 
 
@@ -4882,7 +4945,7 @@ async def jkadmin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
     user = update.effective_user
     message = update.effective_message
-    if not user or not message or not is_owner(user.id):
+    if not user or not message or not is_admin(user.id):
         return
     if not await ensure_membership(update, context):
         return
@@ -4890,7 +4953,7 @@ async def jkadmin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
     await message.reply_text(
         admin_panel_text(),
-        reply_markup=admin_keyboard(),
+        reply_markup=admin_keyboard(user.id),
     )
 
 
@@ -5169,17 +5232,63 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     if query.data.startswith("admin:"):
-        if not is_owner(user.id):
+        if not is_admin(user.id):
             await query.answer(sc("Sin acceso"), show_alert=True)
             return
 
         if query.data == "admin:open":
-            await edit_query_message_text(query.message, admin_panel_text(), reply_markup=admin_keyboard())
+            await edit_query_message_text(query.message, admin_panel_text(), reply_markup=admin_keyboard(user.id))
             return
 
         if query.data == "admin:back":
             context.user_data.pop("admin_state", None)
-            await edit_query_message_text(query.message, admin_panel_text(), reply_markup=admin_keyboard())
+            await edit_query_message_text(query.message, admin_panel_text(), reply_markup=admin_keyboard(user.id))
+            return
+
+        if query.data == "admin:admins":
+            if not is_owner(user.id):
+                await query.answer(sc("Solo el creador puede gestionar administradores"), show_alert=True)
+                return
+            context.user_data["admin_state"] = {"step": "admin_role_user"}
+            await query.answer()
+            await edit_query_message_text(
+                query.message,
+                card("👑 ɢᴇꜱᴛɪóɴ ᴅᴇ ᴀᴅᴍɪɴ", [
+                    "Envía ahora el ID numérico",
+                    "del usuario al que quieres",
+                    "dar o quitar permisos.",
+                ]),
+                reply_markup=InlineKeyboardMarkup([[btn("⬅️ ᴘᴀɴᴇʟ ᴀᴅᴍɪɴ", callback_data="admin:back")]]),
+            )
+            return
+
+        if query.data.startswith("admin:role:"):
+            if not is_owner(user.id):
+                await query.answer(sc("Solo el creador puede gestionar administradores"), show_alert=True)
+                return
+            parts = query.data.split(":")
+            if len(parts) != 4 or parts[2] not in {"grant", "revoke"}:
+                await query.answer(sc("Acción no válida"), show_alert=True)
+                return
+            try:
+                target_id = int(parts[3])
+            except ValueError:
+                await query.answer(sc("ID no válido"), show_alert=True)
+                return
+            if target_id <= 0 or is_owner(target_id):
+                await query.answer(sc("El creador no se puede modificar"), show_alert=True)
+                return
+            enabled = parts[2] == "grant"
+            changed = set_delegated_admin(target_id, enabled)
+            action = "admin otorgado" if enabled else "admin retirado"
+            detail = f"✅ {action.capitalize()} para el ID {target_id}." if changed else "Ese usuario ya tenía ese estado."
+            context.user_data.pop("admin_state", None)
+            await query.answer(sc("Permisos actualizados"))
+            await edit_query_message_text(
+                query.message,
+                card("👑 ᴘᴇʀᴍɪꜱᴏꜱ ᴀᴄᴛᴜᴀʟɪᴢᴀᴅᴏꜱ", [detail]),
+                reply_markup=InlineKeyboardMarkup([[btn("⬅️ ᴘᴀɴᴇʟ ᴀᴅᴍɪɴ", callback_data="admin:back")]]),
+            )
             return
 
         if query.data == "admin:appban:lookup":
@@ -6450,8 +6559,29 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     text = (message.text or "").strip()
 
     admin_state = context.user_data.get("admin_state")
-    if admin_state and is_owner(user.id):
+    if admin_state and is_admin(user.id):
         step = admin_state.get("step")
+
+        if step == "admin_role_user":
+            if not is_owner(user.id):
+                context.user_data.pop("admin_state", None)
+                await message.reply_text(sc("Solo el creador puede gestionar administradores."))
+                return
+            try:
+                target_id = int(text)
+                if target_id <= 0:
+                    raise ValueError
+            except ValueError:
+                await message.reply_text(sc("Envía un ID de Telegram numérico y positivo."))
+                return
+            if is_owner(target_id):
+                await message.reply_text(sc("El creador ya tiene todos los permisos y no se puede modificar."))
+                return
+            await message.reply_text(
+                admin_role_text(target_id),
+                reply_markup=admin_role_keyboard(target_id),
+            )
+            return
 
         if step == "broadcast_text":
             body = text[:3500].strip()

@@ -220,6 +220,14 @@ class RequestedFeatureTests(unittest.TestCase):
         self.assertIn("reply_markup=main_keyboard(user.id)", callback)
         self.assertNotIn("send_service_info_message(", callback)
 
+    def test_delegated_admin_can_use_panel_but_only_owner_manages_roles(self):
+        source = (Path(__file__).resolve().parents[1] / "bot.py").read_text()
+        self.assertIn("def is_admin(user_id: int) -> bool:", source)
+        self.assertIn('data.get("admin_users", {})', source)
+        self.assertIn('callback_data="admin:admins"', source)
+        self.assertIn('if not is_admin(user.id):', source)
+        self.assertIn('Solo el creador puede gestionar administradores', source)
+
     def test_docker_image_contains_configured_welcome_photo(self):
         dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text()
         self.assertIn("IMG_20261102_161854_801.jpg", dockerfile)
