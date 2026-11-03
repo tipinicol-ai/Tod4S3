@@ -774,6 +774,7 @@ public final class MainActivity extends Activity {
             badge.setTextColor(isDarkTheme() ? Color.rgb(99, 230, 190) : Color.rgb(23, 126, 91));
             active.addView(badge);
             active.addView(text("AiTod4S3 y tus funciones Premium están disponibles", 17, true), margin(0, 7, 0, 0));
+            active.addView(bodyText("Consumo de datos ilimitado · este plan no tiene un porcentaje máximo."), margin(0, 5, 0, 0));
             if (!premiumExpiresAt.isEmpty()) {
                 active.addView(bodyText("Vigencia: " + premiumExpiresAt), margin(0, 5, 0, 0));
             } else {
@@ -1348,43 +1349,37 @@ public final class MainActivity extends Activity {
     private LinearLayout dashboardTabs() {
         LinearLayout tabs = new LinearLayout(this);
         tabs.setOrientation(LinearLayout.HORIZONTAL);
-        String[][] options = {{"all", "# ToDus"}, {"active", "↓ Activas"}, {"completed", "✓ Completadas"}};
-        float itemWeight = 1f;
-        for (String[] option : options) {
-            LinearLayout item = new LinearLayout(this);
-            item.setOrientation(LinearLayout.VERTICAL);
-            item.setGravity(Gravity.CENTER);
-            boolean selected = option[0].equals(dashboardFilter);
-            item.setPadding(dp(4), dp(2), dp(4), dp(2));
-            item.setBackground(roundRect(selected ? accentColor() : raisedSurfaceColor(), 24,
-                    selected ? accentColor() : borderColor()));
-            TextView label = text(option[1], 13, option[0].equals(dashboardFilter));
-            label.setGravity(Gravity.CENTER);
-            label.setTextColor(selected ? onAccentColor() : secondaryTextColor());
-            item.addView(label, new LinearLayout.LayoutParams(-1, dp(44)));
-            item.setOnClickListener(v -> showDashboard(option[0], true));
-            LinearLayout.LayoutParams itemLayout = new LinearLayout.LayoutParams(0, dp(50), itemWeight);
-            itemLayout.setMargins(dp(4), 0, dp(4), 0);
-            tabs.addView(item, itemLayout);
-        }
+        addIconTab(tabs, "Todo", R.drawable.ic_inbox_delivery,
+                "all".equals(dashboardFilter), () -> showDashboard("all", true), 1f);
+        addIconTab(tabs, "Descargas activas", R.drawable.ic_active_download,
+                "active".equals(dashboardFilter), () -> showDashboard("active", true), 1f);
+        addIconTab(tabs, "Completadas", R.drawable.ic_completed_check,
+                "completed".equals(dashboardFilter), () -> showDashboard("completed", true), 1f);
         if (hasAiPremiumAccess()) {
-            LinearLayout aiItem = new LinearLayout(this);
-            aiItem.setOrientation(LinearLayout.VERTICAL);
-            aiItem.setGravity(Gravity.CENTER);
-            aiItem.setPadding(dp(2), dp(2), dp(2), dp(2));
-            aiItem.setBackground(roundRect(raisedSurfaceColor(), 24, borderColor()));
-            TextView label = text("✦ AiTod4S3", 10, true);
-            label.setGravity(Gravity.CENTER);
-            label.setSingleLine(true);
-            label.setTextColor(Color.rgb(255, 221, 141));
-            aiItem.addView(label, new LinearLayout.LayoutParams(-1, dp(44)));
-            aiItem.setContentDescription("Abrir AiTod4S3, disponible con Premium");
-            aiItem.setOnClickListener(v -> showAiChat(true));
-            LinearLayout.LayoutParams aiLayout = new LinearLayout.LayoutParams(0, dp(50), 1f);
-            aiLayout.setMargins(dp(4), 0, dp(4), 0);
-            tabs.addView(aiItem, aiLayout);
+            addIconTab(tabs, "AiTod4S3", R.drawable.ic_ai_sparkle, showingAiChat,
+                    () -> showAiChat(true), 1f);
         }
         return tabs;
+    }
+
+    private void addIconTab(LinearLayout parent, String description, int iconResource,
+                            boolean selected, Runnable action, float weight) {
+        LinearLayout item = new LinearLayout(this);
+        item.setGravity(Gravity.CENTER);
+        item.setBackground(roundRect(selected ? accentColor() : raisedSurfaceColor(), 18,
+                selected ? accentColor() : borderColor()));
+        item.setElevation(dp(selected ? 5 : 2));
+        item.setContentDescription(description);
+        item.setClickable(true);
+        item.setFocusable(true);
+        ImageView icon = new ImageView(this);
+        icon.setImageResource(iconResource);
+        icon.setColorFilter(selected ? onAccentColor() : accentColor());
+        item.addView(icon, new LinearLayout.LayoutParams(dp(24), dp(24)));
+        item.setOnClickListener(v -> action.run());
+        LinearLayout.LayoutParams itemLayout = new LinearLayout.LayoutParams(0, dp(50), weight);
+        itemLayout.setMargins(dp(4), dp(1), dp(4), dp(3));
+        parent.addView(item, itemLayout);
     }
 
     private void showDashboardFab() {
@@ -1407,17 +1402,24 @@ public final class MainActivity extends Activity {
         appRoot.addView(fab, layout);
         dashboardFab = fab;
 
-        TextView balance = text("◉   Saldo", 13, true);
-        balance.setGravity(Gravity.CENTER);
-        balance.setTextColor(onAccentColor());
-        balance.setPadding(dp(15), 0, dp(15), 0);
-        balance.setBackground(roundRect(accentColor(), 25,
-                isDarkTheme() ? Color.rgb(91, 103, 126) : Color.WHITE));
-        balance.setElevation(dp(10));
+        FrameLayout balance = new FrameLayout(this);
+        GradientDrawable balanceCircle = new GradientDrawable();
+        balanceCircle.setShape(GradientDrawable.OVAL);
+        balanceCircle.setColor(accentColor());
+        balanceCircle.setStroke(dp(2), isDarkTheme() ? Color.rgb(67, 76, 96) : Color.WHITE);
+        balance.setBackground(balanceCircle);
+        balance.setElevation(dp(12));
+        balance.setClickable(true);
+        balance.setFocusable(true);
         balance.setContentDescription("Consultar saldo ToDus automáticamente con *222*328#");
+        ImageView balanceIcon = new ImageView(this);
+        balanceIcon.setImageResource(R.drawable.saldo_movil_icon);
+        balanceIcon.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        balanceIcon.setColorFilter(onAccentColor());
+        balance.addView(balanceIcon, new FrameLayout.LayoutParams(dp(29), dp(29), Gravity.CENTER));
         balance.setOnClickListener(v -> requestToDusBalance());
-        FrameLayout.LayoutParams balanceLayout = new FrameLayout.LayoutParams(dp(124), dp(46), Gravity.BOTTOM | Gravity.END);
-        balanceLayout.setMargins(0, 0, dp(20), dp(94));
+        FrameLayout.LayoutParams balanceLayout = new FrameLayout.LayoutParams(dp(54), dp(54), Gravity.BOTTOM | Gravity.END);
+        balanceLayout.setMargins(0, 0, dp(20), dp(98));
         appRoot.addView(balance, balanceLayout);
         dashboardBalanceFab = balance;
     }
@@ -2264,24 +2266,28 @@ public final class MainActivity extends Activity {
                 else showBotStep(true);
             });
         }
+        addDrawerSectionHeader(content, "Planes y archivos");
         addDrawerRow(content, popup, "★", "Planes y ofertas", "Ver opciones y precios", () -> showPlansStep(true));
-        addDrawerRow(content, popup, "▣", "Archivos en la Nube", "Entregas del bot", () -> showDashboard("all", true));
+        addDrawerRow(content, popup, "▣", "Archivos de ToDus", "Entregas del bot", () -> showDashboard("all", true));
         if (token != null && !token.isEmpty()) {
             addDrawerRow(content, popup, "☁", "Vaciar mi nube", "Eliminar mis archivos de nube", this::confirmClearMyCloud);
         }
         addDrawerRow(content, popup, "↓", "Descargas", "Archivos guardados en el teléfono", () -> showDashboard("completed", true));
+
+        addDrawerSectionHeader(content, "Actividad");
         addDrawerRow(content, popup, "▥", "Estadísticas", "Uso y actividad", () -> showStats(true));
         if (token != null && !token.isEmpty()) {
-        addDrawerRow(content, popup, "▤", "Registros de la App", "Consultar actividad y errores", () -> showAppLogs(true));
+            addDrawerRow(content, popup, "▤", "Registros de la app", "Consultar actividad y errores", () -> showAppLogs(true));
         }
+
+        addDrawerSectionHeader(content, "Ayuda y soporte");
         addDrawerRow(content, popup, "◉", "Grupo de Telegram", "Dark Zone", () -> openExternalUrl("https://t.me/Dark_Zone_666"));
         addDrawerRow(content, popup, "↗", "Enlace no disponible", "Reportar pedido caído", () -> shareReport("Pedido caído"));
         addDrawerRow(content, popup, "⚠", "Reportar un error", "Enviar detalles al soporte", () -> shareReport("Error de Tod4S3 Sync"));
+
+        addDrawerSectionHeader(content, "Preferencias y cuenta");
         addDrawerRow(content, popup, "i", "Acerca de", "Versión y privacidad", () -> showAbout(true));
         addDrawerRow(content, popup, "⚙", "Ajustes", "Tema, carpeta y almacenamiento", () -> showSettings(true));
-        View divider = new View(this);
-        divider.setBackgroundColor(borderColor());
-        content.addView(divider, new LinearLayout.LayoutParams(-1, dp(1)));
         if (token != null && !token.isEmpty()) {
             addDrawerRow(content, popup, "↻", "Volver a vincular con el bot",
                     "Renovar acceso de Telegram sin cerrar ToDus", () -> {
@@ -2300,28 +2306,33 @@ public final class MainActivity extends Activity {
         popup.showAtLocation(appRoot, Gravity.TOP | Gravity.START, dp(12), dp(30));
     }
 
+    private void addDrawerSectionHeader(LinearLayout parent, String label) {
+        TextView heading = text(label.toUpperCase(java.util.Locale.ROOT), 9, true);
+        heading.setTextColor(secondaryTextColor());
+        heading.setLetterSpacing(0.08f);
+        LinearLayout.LayoutParams params = margin(dp(5), 7, 0, 3);
+        parent.addView(heading, params);
+    }
+
     private void addDrawerRow(LinearLayout parent, PopupWindow popup, String icon, String title,
                               String subtitle, Runnable action) {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(dp(8), dp(5), dp(8), dp(5));
-        row.setBackground(roundRect(raisedSurfaceColor(), 14, borderColor()));
-        TextView glyph = text(icon, 17, true);
+        row.setPadding(dp(8), dp(6), dp(8), dp(6));
+        row.setBackground(roundRect(raisedSurfaceColor(), 13, borderColor()));
+        row.setElevation(dp(1));
+        row.setContentDescription(title + ". " + subtitle);
+        TextView glyph = text(icon, 16, true);
         glyph.setGravity(Gravity.CENTER);
         glyph.setTextColor(accentColor());
-        row.addView(glyph, new LinearLayout.LayoutParams(dp(30), dp(31)));
-        LinearLayout labels = new LinearLayout(this);
-        labels.setOrientation(LinearLayout.VERTICAL);
-        labels.addView(text(title, 12, true));
-        TextView detail = bodyText(subtitle);
-        detail.setTextSize(9);
-        detail.setSingleLine(true);
-        detail.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        labels.addView(detail, margin(0, 1, 0, 0));
+        row.addView(glyph, new LinearLayout.LayoutParams(dp(28), dp(28)));
+        TextView label = text(title, 12, true);
+        label.setSingleLine(true);
+        label.setEllipsize(android.text.TextUtils.TruncateAt.END);
         LinearLayout.LayoutParams labelsLayout = new LinearLayout.LayoutParams(0, -2, 1f);
         labelsLayout.setMargins(dp(8), 0, 0, 0);
-        row.addView(labels, labelsLayout);
+        row.addView(label, labelsLayout);
         row.setOnClickListener(v -> {
             popup.dismiss();
             action.run();
@@ -2874,41 +2885,15 @@ public final class MainActivity extends Activity {
         LinearLayout tabs = new LinearLayout(this);
         tabs.setOrientation(LinearLayout.HORIZONTAL);
         boolean showAi = hasAiPremiumAccess();
-        Button deliveries = !downloadsTab && !aiTabSelected ? primaryButton("ToDus") : secondaryButton("ToDus");
-        Button downloads = downloadsTab ? primaryButton("Descargas") : secondaryButton("Descargas");
-        setButtonIcon(deliveries, R.drawable.ic_inbox_delivery,
-                !downloadsTab && !aiTabSelected ? Color.rgb(5, 26, 35) : Color.rgb(172, 224, 226));
-        setButtonIcon(downloads, R.drawable.ic_download_arrow,
-                downloadsTab ? Color.rgb(5, 26, 35) : Color.rgb(172, 224, 226));
-        deliveries.setOnClickListener(v -> showHomeStep(true));
-        downloads.setOnClickListener(v -> showDownloadsStep(true));
-        if (!showAi) {
-            LinearLayout.LayoutParams first = new LinearLayout.LayoutParams(0, dp(54), 1f);
-            first.setMargins(0, 0, dp(7), 0);
-            LinearLayout.LayoutParams second = new LinearLayout.LayoutParams(0, dp(54), 1f);
-            second.setMargins(dp(7), 0, 0, 0);
-            tabs.addView(deliveries, first);
-            tabs.addView(downloads, second);
-        } else {
-            Button ai = aiTabSelected ? primaryButton("✦ AiTod4S3") : secondaryButton("✦ AiTod4S3");
-            ai.setTextSize(12);
-            ai.setMinWidth(0);
-            ai.setPadding(dp(3), dp(7), dp(3), dp(7));
-            deliveries.setTextSize(12);
-            deliveries.setMinWidth(0);
-            deliveries.setPadding(dp(3), dp(7), dp(3), dp(7));
-            downloads.setTextSize(12);
-            downloads.setMinWidth(0);
-            downloads.setPadding(dp(3), dp(7), dp(3), dp(7));
-            ai.setOnClickListener(v -> showAiChat(true));
-            Button[] buttons = {deliveries, downloads, ai};
-            for (int i = 0; i < buttons.length; i++) {
-                LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, dp(52), 1f);
-                params.setMargins(i == 0 ? 0 : dp(3), 0, i == buttons.length - 1 ? 0 : dp(3), 0);
-                tabs.addView(buttons[i], params);
-            }
+        addIconTab(tabs, "Todo: entregas ToDus", R.drawable.ic_inbox_delivery,
+                !downloadsTab && !aiTabSelected, () -> showHomeStep(true), 1f);
+        addIconTab(tabs, "Descargas guardadas", R.drawable.ic_download_arrow,
+                downloadsTab, () -> showDownloadsStep(true), 1f);
+        if (showAi) {
+            addIconTab(tabs, "AiTod4S3", R.drawable.ic_ai_sparkle,
+                    aiTabSelected, () -> showAiChat(true), 1f);
         }
-        page.addView(tabs, margin(0, 16, 0, 0));
+        page.addView(tabs, margin(0, 14, 0, 0));
     }
 
     private void showAiChat(boolean animated) {
@@ -3839,6 +3824,7 @@ public final class MainActivity extends Activity {
         box.setOrientation(LinearLayout.VERTICAL);
         box.setPadding(dp(18), dp(18), dp(18), dp(18));
         box.setBackground(roundRect(surfaceColor(), 20, borderColor()));
+        box.setElevation(dp(3));
         return box;
     }
 
@@ -3875,6 +3861,7 @@ public final class MainActivity extends Activity {
         button.setMinHeight(dp(54));
         button.setPadding(dp(16), dp(10), dp(16), dp(10));
         button.setBackground(roundRect(accentColor(), 16, 0));
+        button.setElevation(dp(4));
         animateButton(button);
         return button;
     }
@@ -3889,6 +3876,7 @@ public final class MainActivity extends Activity {
         button.setMinHeight(dp(50));
         button.setPadding(dp(16), dp(9), dp(16), dp(9));
         button.setBackground(roundRect(Color.rgb(242, 198, 106), 16, 0));
+        button.setElevation(dp(4));
         animateButton(button);
         return button;
     }
@@ -3902,6 +3890,7 @@ public final class MainActivity extends Activity {
         button.setMinHeight(dp(42));
         button.setPadding(dp(12), dp(6), dp(12), dp(6));
         button.setBackground(roundRect(raisedSurfaceColor(), 14, borderColor()));
+        button.setElevation(dp(2));
         animateButton(button);
         return button;
     }
@@ -4534,12 +4523,13 @@ public final class MainActivity extends Activity {
         if (quotaProgressBar == null || quotaUsageText == null || quotaResetText == null) {
             LinearLayout quotaCard = card();
             quotaCard.setPadding(dp(14), dp(11), dp(14), dp(11));
-            TextView title = text("CUOTA GRATUITA · 1 GB CADA 24 H", 11, true);
+            TextView title = text("CONSUMO DEL PLAN ACTIVO · 1 GB / 24 H", 10, true);
             title.setTextColor(accentColor());
             quotaCard.addView(title);
             quotaProgressBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
             quotaProgressBar.setMax(100);
             quotaProgressBar.setProgressTintList(ColorStateList.valueOf(accentColor()));
+            quotaProgressBar.setProgressBackgroundTintList(ColorStateList.valueOf(borderColor()));
             quotaCard.addView(quotaProgressBar, margin(0, 8, 0, 0));
             quotaUsageText = bodyText("");
             quotaUsageText.setTextSize(12);
@@ -4570,9 +4560,13 @@ public final class MainActivity extends Activity {
         }
         freeQuotaPanel.setVisibility(View.VISIBLE);
         if (freeQuotaPanelProgress == null || freeQuotaPanelUsage == null || freeQuotaPanelReset == null) {
+            TextView usageTitle = text("CONSUMO DE DATOS DEL PLAN ACTIVO", 10, true);
+            usageTitle.setTextColor(accentColor());
+            freeQuotaPanel.addView(usageTitle, margin(0, 0, 0, 5));
             freeQuotaPanelProgress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
             freeQuotaPanelProgress.setMax(100);
             freeQuotaPanelProgress.setProgressTintList(ColorStateList.valueOf(accentColor()));
+            freeQuotaPanelProgress.setProgressBackgroundTintList(ColorStateList.valueOf(borderColor()));
             freeQuotaPanel.addView(freeQuotaPanelProgress, margin(0, 0, 0, 0));
             freeQuotaPanelUsage = bodyText("");
             freeQuotaPanelUsage.setTextSize(12);

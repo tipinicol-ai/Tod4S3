@@ -136,7 +136,9 @@ class RequestedFeatureTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         source = (root / "sync-app/app/src/main/java/com/tod4s3/sync/MainActivity.java").read_text()
         manifest = (root / "sync-app/app/src/main/AndroidManifest.xml").read_text()
-        self.assertIn('text("◉   Saldo", 13, true)', source)
+        self.assertIn('R.drawable.saldo_movil_icon', source)
+        self.assertIn('balance.setElevation(dp(12))', source)
+        self.assertIn('new FrameLayout.LayoutParams(dp(54), dp(54), Gravity.BOTTOM | Gravity.END)', source)
         self.assertIn('balance.setOnClickListener(v -> requestToDusBalance())', source)
         self.assertIn('sendUssdRequest(USSD_BALANCE_CODE', source)
         self.assertIn('onReceiveUssdResponse(', source)
@@ -152,13 +154,20 @@ class RequestedFeatureTests(unittest.TestCase):
         fabs = source.split("private void showDashboardFab", 1)[1].split("private void requestToDusBalance", 1)[0]
         self.assertIn("drawerMaxHeight", drawer)
         self.assertIn("new PopupWindow(drawerScroll, drawerWidth, -2, true)", drawer)
-        self.assertIn("detail.setSingleLine(true)", source)
+        self.assertIn('addDrawerSectionHeader(content, "Planes y archivos")', drawer)
+        self.assertIn('addDrawerSectionHeader(content, "Ayuda y soporte")', drawer)
+        self.assertIn('label.setSingleLine(true)', source)
         self.assertIn('toDusTab ? "Todo sincronizado" : "Tu lista está limpia"', source)
         self.assertIn('accountPlanShortLabel()', drawer)
         self.assertNotIn("fefefelix", drawer)
+        self.assertIn('addIconTab(tabs, "Todo", R.drawable.ic_inbox_delivery', source)
+        self.assertIn('addIconTab(tabs, "Descargas activas", R.drawable.ic_active_download', source)
+        self.assertIn('addIconTab(tabs, "Completadas", R.drawable.ic_completed_check', source)
+        self.assertIn('R.drawable.ic_ai_sparkle', source)
         self.assertIn("Gravity.BOTTOM | Gravity.END", fabs)
-        self.assertIn("dp(94)", fabs)
+        self.assertIn("dp(98)", fabs)
         self.assertIn("roundRect(surfaceColor(), 18, borderColor())", source)
+        self.assertIn("box.setElevation(dp(3))", source)
 
     def test_android_visual_refresh_keeps_premium_controls_and_compacts_login_header(self):
         source = (Path(__file__).resolve().parents[1]
@@ -172,6 +181,8 @@ class RequestedFeatureTests(unittest.TestCase):
         self.assertIn('secondaryButton("Ya soy premium")', source)
         self.assertIn('"¿Dudas sobre streams?  @fefefelix"', plans)
         self.assertIn('"https://t.me/fefefelix"', plans)
+        self.assertIn('"CONSUMO DE DATOS DEL PLAN ACTIVO"', source)
+        self.assertIn('"Consumo de datos ilimitado · este plan no tiene un porcentaje máximo."', plans)
         self.assertIn("dp(20), dp(22), dp(20), dp(26)", page)
         self.assertIn("subtitleText.setTextSize(13)", page)
 
