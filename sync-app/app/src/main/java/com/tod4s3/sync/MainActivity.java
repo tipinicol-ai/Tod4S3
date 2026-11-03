@@ -85,6 +85,7 @@ import javax.crypto.spec.GCMParameterSpec;
 
 public final class MainActivity extends Activity {
     private static final String API_BASE = "https://tod4s3-production.up.railway.app";
+    private static final String UPDATE_MANIFEST_URL = "https://raw.githubusercontent.com/yunierki1234-coder/Tod4S3/main/web/android-update.json";
     private static final String LOG_TAG = "Tod4S3Sync";
     private static final String KEY_ALIAS = "tod4s3.sync.todus.credentials.v1";
     private static final String PREF_TODUS_PHONE = "todus_phone_enc";
@@ -101,13 +102,17 @@ public final class MainActivity extends Activity {
     private static final String PREF_HIDDEN_DELIVERIES = "hidden_delivery_ids_v1";
     private static final String PREF_UI_THEME = "ui_theme_v1";
     private static final String PREF_UI_ACCENT = "ui_accent_v1";
+    private static final String PREF_UPDATE_MANIFEST_URL = "android_update_manifest_url_v1";
     private static final String PREF_DOWNLOAD_CONCURRENCY = "download_concurrency_v1";
     private static final String PREF_DOWNLOAD_FOLDER = "download_folder_uri_v1";
     private static final String PREF_AI_CHAT_HISTORY = "ai_chat_history_v1";
+    private static final String PREF_LAST_UPDATE_CHECK = "last_android_update_check_v1";
+    private static final String PREF_PENDING_UPDATE_VERSION = "pending_android_update_version_v1";
     private static final int REQUEST_WRITE_STORAGE = 702;
     private static final int REQUEST_PAYMENT_RECEIPT = 703;
     private static final int REQUEST_DOWNLOAD_FOLDER = 705;
     private static final int REQUEST_NOTIFICATIONS = 706;
+    private static final int REQUEST_UPDATE_INSTALL_PERMISSION = 707;
     private static final String DOWNLOAD_NOTIFICATION_CHANNEL = "downloads_complete_v1";
 
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -149,6 +154,7 @@ public final class MainActivity extends Activity {
     private TextView quotaUsageText;
     private TextView quotaResetText;
     private View dashboardFab;
+    private View dashboardBalanceFab;
     private String token;
     private String pendingPairingCode = "";
     private String todusPhone = "";
@@ -183,6 +189,13 @@ public final class MainActivity extends Activity {
     private Button aiSendButton;
     private TextView aiChatStatus;
     private boolean aiKeyboardWasVisible;
+    private volatile boolean updateCheckInFlight;
+    private volatile boolean updateDownloadCancelled;
+    private volatile HttpURLConnection updateConnection;
+    private AlertDialog updateDownloadDialog;
+    private ProgressBar updateDownloadProgress;
+    private TextView updateDownloadProgressText;
+    private File downloadedUpdateFile;
     private boolean aiChatHistoryLoaded;
     private final ArrayList<AiChatMessage> aiChatMessages = new ArrayList<>();
     private TextView appLogOutput;
@@ -230,6 +243,7 @@ public final class MainActivity extends Activity {
         buildUi();
         ensureDownloadNotificationChannel();
         handler.postDelayed(this::requestNotificationPermissionIfNeeded, 1_200L);
+        handler.postDelayed(() -> checkForAppUpdate(false), 2_000L);
 
         if (!prefs.getString(PREF_SELECTED_PLAN, "").isEmpty()
                 && savedCredentialsCouldNotBeDecrypted && todusStatus != null) {
@@ -243,6 +257,15 @@ public final class MainActivity extends Activity {
 
     @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQUEST_UPDATE_INSTALL_PERMISSION) {
+            if (Build.VERSION.SDK_INT < 26 || getPackageManager().canRequestPackageInstalls()) {
+                installPendingUpdate();
+            } else {
+                Toast.makeText(this, "La actualización quedó descargada; habilita el permiso para instalarla.",
+                        Toast.LENGTH_LONG).show();
+            }
+            return;
+        }
         if (requestCode == REQUEST_DOWNLOAD_FOLDER) {
             if (resultCode != RESULT_OK || data == null || data.getData() == null) return;
             Uri tree = data.getData();
@@ -282,6 +305,324 @@ public final class MainActivity extends Activity {
     @Override protected void onResume() {
         super.onResume();
         if (prefs != null && token != null && !token.isEmpty()) refreshAccountProfile();
+        if (prefs != null) checkForAppUpdate(false);
+    }
+
+    private void checkForAppUpdate(boolean force) {
+        if (updateCheckInFlight || prefs == null || isFinishing()) return;
+        long now = System.currentTimeMillis();
+        if (!force && now - prefs.getLong(PREF_LAST_UPDATE_CHECK, 0L) < 6L * 60L * 60L * 1000L) return;
+        updateCheckInFlight = true;
+        prefs.edit().putLong(PREF_LAST_UPDATE_CHECK, now).apply();
+        new Thread(() -> {
+            HttpURLConnection connection = null;
+            try {
+                String manifestEntryUrl = prefs.getString(PREF_UPDATE_MANIFEST_URL, UPDATE_MANIFEST_URL);
+                if (!isAllowedUpdateUrl(manifestEntryUrl)) manifestEntryUrl = UPDATE_MANIFEST_URL;
+                connection = (HttpURLConnection) new URL(manifestEntryUrl).openConnection();
+                connection.setConnectTimeout(12_000);
+                connection.setReadTimeout(12_000);
+                connection.setRequestMethod("GET");
+                connection.setRequestProperty("Accept", "application/json");
+                if (connection.getResponseCode() != HttpURLConnection.HTTP_OK) return;
+                JSONObject manifest = new JSONObject(readUpdateManifest(connection.getInputStream()));
+                String redirectedManifest = manifest.optString("manifest_url", "").trim();
+                if (!redirectedManifest.isEmpty() && !redirectedManifest.equals(manifestEntryUrl)) {
+                    if (!isAllowedUpdateUrl(redirectedManifest)) return;
+                    prefs.edit().putString(PREF_UPDATE_MANIFEST_URL, redirectedManifest).apply();
+                    connection.disconnect();
+                    connection = (HttpURLConnection) new URL(redirectedManifest).openConnection();
+                    connection.setConnectTimeout(12_000);
+                    connection.setReadTimeout(12_000);
+                    connection.setRequestMethod("GET");
+                    connection.setRequestProperty("Accept", "application/json");
+                    if (connection.getResponseCode() != HttpURLConnection.HTTP_OK) return;
+                    manifest = new JSONObject(readUpdateManifest(connection.getInputStream()));
+                }
+                int versionCode = manifest.optInt("version_code", 0);
+                String versionName = manifest.optString("version_name", "");
+                String apkUrl = manifest.optString("apk_url", "");
+                String sha256 = manifest.optString("sha256", "").toLowerCase(java.util.Locale.ROOT);
+                if (versionCode <= currentVersionCode() || !versionName.matches("[0-9A-Za-z._+-]{1,32}")
+                        || !sha256.matches("[a-f0-9]{64}") || !isAllowedUpdateUrl(apkUrl)) return;
+                int availableVersion = versionCode;
+                handler.post(() -> beginAppUpdateDownload(availableVersion, versionName, apkUrl, sha256));
+            } catch (Exception e) {
+                android.util.Log.w(LOG_TAG, "No se pudo consultar actualización Android: " + e.getClass().getSimpleName());
+            } finally {
+                if (connection != null) connection.disconnect();
+                updateCheckInFlight = false;
+            }
+        }, "tod4s3-update-check").start();
+    }
+
+    private long currentVersionCode() {
+        try {
+            android.content.pm.PackageInfo info = getPackageManager().getPackageInfo(getPackageName(), 0);
+            return Build.VERSION.SDK_INT >= 28 ? info.getLongVersionCode() : info.versionCode;
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
+    private String readUpdateManifest(InputStream input) throws IOException {
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        byte[] chunk = new byte[4096];
+        int count;
+        while ((count = input.read(chunk)) != -1) {
+            if (buffer.size() + count > 64 * 1024) throw new IOException("update_manifest_too_large");
+            buffer.write(chunk, 0, count);
+        }
+        return new String(buffer.toByteArray(), StandardCharsets.UTF_8);
+    }
+
+    private boolean isAllowedUpdateUrl(String value) {
+        try {
+            URL url = new URL(value);
+            String host = url.getHost().toLowerCase(java.util.Locale.ROOT);
+            return "https".equalsIgnoreCase(url.getProtocol()) && url.getUserInfo() == null
+                    && (host.equals("raw.githubusercontent.com") || host.equals("github.com")
+                    || host.equals("release-assets.githubusercontent.com")
+                    || host.equals("objects.githubusercontent.com"));
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private void beginAppUpdateDownload(int versionCode, String versionName, String apkUrl, String expectedSha256) {
+        if (isFinishing() || versionCode <= currentVersionCode()) return;
+        File destination = new File(getFilesDir(), "Tod4S3-Sync-update.apk");
+        if (destination.isFile() && expectedSha256.equals(sha256File(destination)) && isCompatibleUpdateApk(destination)) {
+            savePendingUpdate(versionCode, expectedSha256);
+            installPendingUpdate();
+            return;
+        }
+        updateDownloadCancelled = false;
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(dp(20), dp(14), dp(20), dp(18));
+        TextView intro = bodyText("Descargando Tod4S3 Sync " + versionName + " de forma segura…");
+        content.addView(intro, margin(0, 0, 0, 12));
+        updateDownloadProgress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        updateDownloadProgress.setMax(100);
+        content.addView(updateDownloadProgress, new LinearLayout.LayoutParams(-1, dp(8)));
+        updateDownloadProgressText = bodyText("Preparando descarga · 0%");
+        updateDownloadProgressText.setGravity(Gravity.CENTER);
+        content.addView(updateDownloadProgressText, margin(0, 10, 0, 0));
+        updateDownloadDialog = new AlertDialog.Builder(this)
+                .setTitle("Nueva actualización " + versionName)
+                .setView(content)
+                .setNegativeButton("Cancelar", (dialog, which) -> {
+                    updateDownloadCancelled = true;
+                    HttpURLConnection active = updateConnection;
+                    if (active != null) active.disconnect();
+                })
+                .setCancelable(false)
+                .create();
+        updateDownloadDialog.show();
+        new Thread(() -> downloadAppUpdate(versionCode, versionName, apkUrl, expectedSha256, destination),
+                "tod4s3-update-download").start();
+    }
+
+    private void downloadAppUpdate(int versionCode, String versionName, String apkUrl,
+                                   String expectedSha256, File destination) {
+        File temporary = new File(destination.getParentFile(), destination.getName() + ".part");
+        HttpURLConnection connection = null;
+        boolean cancelled = false;
+        try {
+            connection = (HttpURLConnection) new URL(apkUrl).openConnection();
+            updateConnection = connection;
+            connection.setConnectTimeout(20_000);
+            connection.setReadTimeout(30_000);
+            connection.setInstanceFollowRedirects(true);
+            int responseCode = connection.getResponseCode();
+            if (responseCode != HttpURLConnection.HTTP_OK || !isAllowedUpdateUrl(connection.getURL().toString())) {
+                throw new IOException("update_download_http");
+            }
+            long totalBytes = connection.getContentLength();
+            if (totalBytes > 100L * 1024L * 1024L) throw new IOException("update_too_large");
+            long downloaded = 0L;
+            byte[] chunk = new byte[32 * 1024];
+            try (InputStream input = connection.getInputStream();
+                 FileOutputStream output = new FileOutputStream(temporary)) {
+                int count;
+                while ((count = input.read(chunk)) != -1) {
+                    if (updateDownloadCancelled) {
+                        cancelled = true;
+                        break;
+                    }
+                    downloaded += count;
+                    if (downloaded > 100L * 1024L * 1024L) throw new IOException("update_too_large");
+                    output.write(chunk, 0, count);
+                    if (totalBytes > 0) {
+                        int percent = (int) Math.min(100L, downloaded * 100L / totalBytes);
+                        long current = downloaded;
+                        handler.post(() -> updateDownloadProgress(versionName, percent, current, totalBytes));
+                    } else {
+                        long current = downloaded;
+                        handler.post(() -> updateDownloadProgress(versionName, -1, current, -1));
+                    }
+                }
+                output.flush();
+                output.getFD().sync();
+            }
+            if (cancelled) {
+                temporary.delete();
+                return;
+            }
+            if (!expectedSha256.equals(sha256File(temporary))) throw new IOException("update_hash_mismatch");
+            if (!isCompatibleUpdateApk(temporary)) throw new IOException("update_signature_mismatch");
+            if (destination.exists() && !destination.delete()) throw new IOException("update_cache_error");
+            if (!temporary.renameTo(destination)) throw new IOException("update_cache_error");
+            savePendingUpdate(versionCode, expectedSha256);
+            handler.post(() -> {
+                dismissUpdateDownloadDialog();
+                downloadedUpdateFile = destination;
+                installPendingUpdate();
+            });
+        } catch (Exception e) {
+            temporary.delete();
+            android.util.Log.w(LOG_TAG, "No se pudo preparar actualización: " + e.getClass().getSimpleName());
+            handler.post(() -> {
+                dismissUpdateDownloadDialog();
+                if (!updateDownloadCancelled && !isFinishing()) {
+                    Toast.makeText(this, "No se pudo verificar la actualización. Se conservó la versión instalada.",
+                            Toast.LENGTH_LONG).show();
+                }
+            });
+        } finally {
+            if (connection != null) connection.disconnect();
+            updateConnection = null;
+        }
+    }
+
+    private void updateDownloadProgress(String versionName, int percent, long downloaded, long total) {
+        if (updateDownloadProgress == null || updateDownloadProgressText == null) return;
+        if (percent >= 0) {
+            updateDownloadProgress.setIndeterminate(false);
+            updateDownloadProgress.setProgress(percent);
+            updateDownloadProgressText.setText("Actualizando " + versionName + " · " + percent + "%");
+        } else {
+            updateDownloadProgress.setIndeterminate(true);
+            updateDownloadProgressText.setText("Descargados " + String.format(java.util.Locale.US, "%.1f", downloaded / 1048576.0)
+                    + " MB · verificando paquete");
+        }
+    }
+
+    private void dismissUpdateDownloadDialog() {
+        if (updateDownloadDialog != null && updateDownloadDialog.isShowing()) updateDownloadDialog.dismiss();
+        updateDownloadDialog = null;
+        updateDownloadProgress = null;
+        updateDownloadProgressText = null;
+    }
+
+    private String sha256File(File file) {
+        try (InputStream input = new FileInputStream(file)) {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] chunk = new byte[32 * 1024];
+            int count;
+            while ((count = input.read(chunk)) != -1) digest.update(chunk, 0, count);
+            StringBuilder value = new StringBuilder(64);
+            for (byte item : digest.digest()) value.append(String.format(java.util.Locale.ROOT, "%02x", item & 0xff));
+            return value.toString();
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    private boolean isCompatibleUpdateApk(File file) {
+        try {
+            int flags = Build.VERSION.SDK_INT >= 28
+                    ? PackageManager.GET_SIGNING_CERTIFICATES : PackageManager.GET_SIGNATURES;
+            android.content.pm.PackageInfo installed = getPackageManager().getPackageInfo(getPackageName(), flags);
+            android.content.pm.PackageInfo candidate = getPackageManager().getPackageArchiveInfo(file.getAbsolutePath(), flags);
+            if (candidate == null || !getPackageName().equals(candidate.packageName)) return false;
+            String[] installedSigners = packageSignerDigests(installed);
+            String[] candidateSigners = packageSignerDigests(candidate);
+            return installedSigners.length > 0 && java.util.Arrays.equals(installedSigners, candidateSigners);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private String[] packageSignerDigests(android.content.pm.PackageInfo packageInfo) throws Exception {
+        android.content.pm.Signature[] signatures;
+        if (Build.VERSION.SDK_INT >= 28 && packageInfo.signingInfo != null) {
+            signatures = packageInfo.signingInfo.getApkContentsSigners();
+        } else {
+            signatures = packageInfo.signatures;
+        }
+        if (signatures == null) return new String[0];
+        String[] fingerprints = new String[signatures.length];
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        for (int i = 0; i < signatures.length; i++) {
+            byte[] hash = digest.digest(signatures[i].toByteArray());
+            StringBuilder text = new StringBuilder(hash.length * 2);
+            for (byte item : hash) text.append(String.format(java.util.Locale.ROOT, "%02x", item & 0xff));
+            fingerprints[i] = text.toString();
+        }
+        java.util.Arrays.sort(fingerprints);
+        return fingerprints;
+    }
+
+    private void savePendingUpdate(int versionCode, String sha256) {
+        prefs.edit().putInt(PREF_PENDING_UPDATE_VERSION, versionCode)
+                .putString("pending_android_update_sha256_v1", sha256).apply();
+    }
+
+    private void installPendingUpdate() {
+        File file = new File(getFilesDir(), "Tod4S3-Sync-update.apk");
+        int versionCode = prefs.getInt(PREF_PENDING_UPDATE_VERSION, 0);
+        String expectedSha256 = prefs.getString("pending_android_update_sha256_v1", "");
+        if (!file.isFile() || versionCode <= currentVersionCode() || !expectedSha256.matches("[a-f0-9]{64}")
+                || !expectedSha256.equals(sha256File(file)) || !isCompatibleUpdateApk(file)) {
+            file.delete();
+            prefs.edit().remove(PREF_PENDING_UPDATE_VERSION).remove("pending_android_update_sha256_v1").apply();
+            return;
+        }
+        if (Build.VERSION.SDK_INT >= 26 && !getPackageManager().canRequestPackageInstalls()) {
+            new AlertDialog.Builder(this)
+                    .setTitle("Permitir actualizar Tod4S3 Sync")
+                    .setMessage("Android necesita que autorices a esta aplicación a iniciar la instalación. Después podrás confirmar la actualización en el instalador del sistema.")
+                    .setNegativeButton("Más tarde", null)
+                    .setPositiveButton("Abrir ajustes", (dialog, which) -> {
+                        try {
+                            Intent settings = new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                                    Uri.parse("package:" + getPackageName()));
+                            startActivityForResult(settings, REQUEST_UPDATE_INSTALL_PERMISSION);
+                        } catch (Exception e) {
+                            Toast.makeText(this, "No se pudieron abrir los ajustes de instalación.", Toast.LENGTH_LONG).show();
+                        }
+                    }).show();
+            return;
+        }
+        try {
+            android.content.pm.PackageInstaller installer = getPackageManager().getPackageInstaller();
+            android.content.pm.PackageInstaller.SessionParams params = new android.content.pm.PackageInstaller.SessionParams(
+                    android.content.pm.PackageInstaller.SessionParams.MODE_FULL_INSTALL);
+            params.setAppPackageName(getPackageName());
+            int sessionId = installer.createSession(params);
+            android.content.pm.PackageInstaller.Session session = installer.openSession(sessionId);
+            try (InputStream input = new FileInputStream(file);
+                 OutputStream output = session.openWrite("base.apk", 0, file.length())) {
+                byte[] chunk = new byte[32 * 1024];
+                int count;
+                while ((count = input.read(chunk)) != -1) output.write(chunk, 0, count);
+                session.fsync(output);
+            }
+            Intent callback = new Intent(this, UpdateInstallReceiver.class)
+                    .setAction(UpdateInstallReceiver.ACTION_UPDATE_INSTALL_STATUS);
+            int pendingFlags = PendingIntent.FLAG_UPDATE_CURRENT;
+            if (Build.VERSION.SDK_INT >= 31) pendingFlags |= PendingIntent.FLAG_MUTABLE;
+            PendingIntent statusIntent = PendingIntent.getBroadcast(this, sessionId, callback, pendingFlags);
+            session.commit(statusIntent.getIntentSender());
+            session.close();
+            downloadedUpdateFile = file;
+        } catch (Exception e) {
+            android.util.Log.e(LOG_TAG, "No se pudo abrir el instalador Android: " + e.getClass().getSimpleName());
+            Toast.makeText(this, "Android no pudo iniciar el instalador. La descarga verificada se conservó.",
+                    Toast.LENGTH_LONG).show();
+        }
     }
 
     private void chooseReceiptAndShare(String message) {
@@ -1013,6 +1354,7 @@ public final class MainActivity extends Activity {
     private void showDashboardFab() {
         if (appRoot == null) return;
         if (dashboardFab != null) appRoot.removeView(dashboardFab);
+        if (dashboardBalanceFab != null) appRoot.removeView(dashboardBalanceFab);
         TextView fab = text("+", 32, false);
         fab.setGravity(Gravity.CENTER);
         fab.setTextColor(onAccentColor());
@@ -1027,6 +1369,29 @@ public final class MainActivity extends Activity {
         layout.setMargins(0, 0, dp(20), dp(28));
         appRoot.addView(fab, layout);
         dashboardFab = fab;
+
+        TextView balance = text("◉  Saldo", 13, true);
+        balance.setGravity(Gravity.CENTER);
+        balance.setTextColor(primaryTextColor());
+        balance.setPadding(dp(15), 0, dp(15), 0);
+        balance.setBackground(roundRect(raisedSurfaceColor(), 28, accentColor()));
+        balance.setElevation(dp(8));
+        balance.setContentDescription("Consultar saldo ToDus marcando *222*328#");
+        balance.setOnClickListener(v -> openToDusBalanceDialer());
+        FrameLayout.LayoutParams balanceLayout = new FrameLayout.LayoutParams(-2, dp(52), Gravity.BOTTOM | Gravity.START);
+        balanceLayout.setMargins(dp(20), 0, 0, dp(31));
+        appRoot.addView(balance, balanceLayout);
+        dashboardBalanceFab = balance;
+    }
+
+    private void openToDusBalanceDialer() {
+        try {
+            Intent dial = new Intent(Intent.ACTION_DIAL, Uri.parse("tel:*222*328%23"));
+            startActivity(dial);
+            Toast.makeText(this, "Revisa el código y pulsa llamar para consultar tu saldo ToDus.", Toast.LENGTH_LONG).show();
+        } catch (Exception e) {
+            Toast.makeText(this, "No se pudo abrir el marcador del teléfono.", Toast.LENGTH_LONG).show();
+        }
     }
 
     private void showDashboardSearch() {
@@ -3462,6 +3827,10 @@ public final class MainActivity extends Activity {
         if (dashboardFab != null && appRoot != null) {
             appRoot.removeView(dashboardFab);
             dashboardFab = null;
+        }
+        if (dashboardBalanceFab != null && appRoot != null) {
+            appRoot.removeView(dashboardBalanceFab);
+            dashboardBalanceFab = null;
         }
         if (currentPage != null) currentPage.animate().cancel();
         page.animate().cancel();

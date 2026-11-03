@@ -4558,6 +4558,7 @@ async def send_welcome_message(message, user_id: int, user_name: str, username: 
 async def edit_welcome_message(message, user_id: int, user_name: str, username: str | None,
                                reply_markup: InlineKeyboardMarkup, extra_text: str = "") -> None:
     """Cambia la pantalla de verificación por la imagen de marca sin texto."""
+    caption = welcome_text(user_id, user_name, username) + extra_text
     if WELCOME_IMAGE_PATH.is_file() and getattr(message, "photo", None) and hasattr(message, "edit_media"):
         with WELCOME_IMAGE_PATH.open("rb") as photo:
             await message.edit_media(

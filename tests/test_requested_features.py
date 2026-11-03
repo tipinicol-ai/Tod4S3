@@ -105,6 +105,37 @@ class RequestedFeatureTests(unittest.TestCase):
         self.assertIn('"Limpiar conversación"', source)
         self.assertIn("aiChatMessages.clear()", source)
 
+    def test_android_update_checks_github_manifest_and_verifies_download_before_install(self):
+        root = Path(__file__).resolve().parents[1]
+        source = (root / "sync-app/app/src/main/java/com/tod4s3/sync/MainActivity.java").read_text()
+        manifest = (root / "sync-app/app/src/main/AndroidManifest.xml").read_text()
+        installer = (root / "sync-app/app/src/main/java/com/tod4s3/sync/UpdateInstallReceiver.java").read_text()
+        workflow = (root / ".github/workflows/android-update-manifest.yml").read_text()
+        self.assertIn('new URL(manifestEntryUrl)', source)
+        self.assertIn('raw.githubusercontent.com/yunierki1234-coder/Tod4S3', source)
+        self.assertIn('manifest.optString("manifest_url", "")', source)
+        self.assertIn('PREF_UPDATE_MANIFEST_URL', source)
+        self.assertIn('putString(PREF_UPDATE_MANIFEST_URL, redirectedManifest)', source)
+        self.assertNotIn('API_BASE + "/api/app/update"', source)
+        self.assertIn("updateDownloadProgress.setProgress(percent)", source)
+        self.assertIn('MessageDigest.getInstance("SHA-256")', source)
+        self.assertIn("isCompatibleUpdateApk(temporary)", source)
+        self.assertIn("PackageInstaller.SessionParams.MODE_FULL_INSTALL", source)
+        self.assertIn("REQUEST_INSTALL_PACKAGES", manifest)
+        self.assertIn("STATUS_PENDING_USER_ACTION", installer)
+        self.assertIn("GITHUB_REPOSITORY", workflow)
+        self.assertIn("raw.githubusercontent.com", workflow)
+        self.assertIn("ANDROID_UPDATE_MANIFEST_URL", workflow)
+        self.assertIn("Tod4S3-Sync-latest.apk", workflow)
+
+    def test_android_balance_fab_opens_dialer_without_calling_automatically(self):
+        root = Path(__file__).resolve().parents[1]
+        source = (root / "sync-app/app/src/main/java/com/tod4s3/sync/MainActivity.java").read_text()
+        manifest = (root / "sync-app/app/src/main/AndroidManifest.xml").read_text()
+        self.assertIn('text("◉  Saldo", 13, true)', source)
+        self.assertIn('Intent.ACTION_DIAL, Uri.parse("tel:*222*328%23")', source)
+        self.assertNotIn("android.permission.CALL_PHONE", manifest)
+
     def test_android_drawer_can_relink_bot_without_resetting_todus(self):
         source = (Path(__file__).resolve().parents[1]
                  / "sync-app/app/src/main/java/com/tod4s3/sync/MainActivity.java").read_text()

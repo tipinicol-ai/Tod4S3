@@ -14,7 +14,7 @@ android {
         applicationId = "com.tod4s3.sync"
         minSdk = 23
         targetSdk = 35
-        versionCode = 51
-        versionName = "1.5.6"
+        versionCode = 52
+        versionName = "1.5.7"
     }
 }

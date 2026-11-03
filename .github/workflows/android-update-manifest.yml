@@ -1,0 +1,79 @@
+name: Publish Android update manifest
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Tod4S3-Sync*.apk'
+
+permissions:
+  contents: write
+
+jobs:
+  manifest:
+    runs-on: ubuntu-latest
+    env:
+      # Set this Actions variable before moving the app to a different repository.
+      ANDROID_UPDATE_MANIFEST_URL: ${{ vars.ANDROID_UPDATE_MANIFEST_URL }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: android-actions/setup-android@v3
+      - name: Install Android build tools
+        run: sdkmanager "build-tools;35.0.0"
+      - name: Select newest changed APK and write update metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          selected=""
+          selected_code=0
+          while IFS= read -r candidate; do
+            [[ -f "$candidate" ]] || continue
+            info="$("$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$candidate" | head -n 1)"
+            code="$(python3 -c 'import re,sys; m=re.search(r"versionCode=\x27(\d+)\x27",sys.argv[1]); print(m.group(1) if m else "0")' "$info")"
+            if (( code > selected_code )); then
+              selected="$candidate"
+              selected_code="$code"
+            fi
+          done < <(git diff-tree --no-commit-id --name-only -r "$GITHUB_SHA" | grep -E '^Tod4S3-Sync.*\.apk$' || true)
+          if [[ -z "$selected" ]]; then
+            echo "No changed APK found in this commit."
+            exit 0
+          fi
+          cp "$selected" Tod4S3-Sync-latest.apk
+          info="$("$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging Tod4S3-Sync-latest.apk | head -n 1)"
+          read -r version_code version_name < <(python3 - "$info" <<'PY'
+          import re,sys
+          line=sys.argv[1]
+          code=re.search(r"versionCode='(\d+)'", line)
+          name=re.search(r"versionName='([^']+)'", line)
+          if not code or not name:
+              raise SystemExit("Could not read APK version metadata")
+          print(code.group(1), name.group(1))
+          PY
+          )
+          digest="$(sha256sum Tod4S3-Sync-latest.apk | awk '{print $1}')"
+          python3 - "$GITHUB_REPOSITORY" "$version_code" "$version_name" "$digest" "${ANDROID_UPDATE_MANIFEST_URL:-}" <<'PY'
+          import json,sys
+          repository,code,name,digest,manifest_url=sys.argv[1:]
+          manifest={
+              "version_code":int(code),
+              "version_name":name,
+              "manifest_url":manifest_url or f"https://raw.githubusercontent.com/{repository}/main/web/android-update.json",
+              "apk_url":f"https://raw.githubusercontent.com/{repository}/main/Tod4S3-Sync-latest.apk",
+              "sha256":digest,
+          }
+          with open("web/android-update.json","w",encoding="utf-8") as f:
+              json.dump(manifest,f,ensure_ascii=False,indent=2)
+              f.write("\n")
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Tod4S3-Sync-latest.apk web/android-update.json
+          if git diff --cached --quiet; then
+            echo "APK alias and manifest are already current."
+          else
+            git commit -m "Update Android APK manifest to v${version_name}"
+            git push
+          fi
