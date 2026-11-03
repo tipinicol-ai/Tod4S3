@@ -22,6 +22,7 @@ import android.os.Looper;
 import android.provider.Settings;
 import android.provider.MediaStore;
 import android.provider.DocumentsContract;
+import android.telephony.TelephonyManager;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
 import android.util.Base64;
@@ -113,6 +114,8 @@ public final class MainActivity extends Activity {
     private static final int REQUEST_DOWNLOAD_FOLDER = 705;
     private static final int REQUEST_NOTIFICATIONS = 706;
     private static final int REQUEST_UPDATE_INSTALL_PERMISSION = 707;
+    private static final int REQUEST_USSD_BALANCE_PERMISSION = 708;
+    private static final String USSD_BALANCE_CODE = "*222*328#";
     private static final String DOWNLOAD_NOTIFICATION_CHANNEL = "downloads_complete_v1";
 
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -155,6 +158,8 @@ public final class MainActivity extends Activity {
     private TextView quotaResetText;
     private View dashboardFab;
     private View dashboardBalanceFab;
+    private boolean ussdBalanceRequestInFlight;
+    private AlertDialog ussdProgressDialog;
     private String token;
     private String pendingPairingCode = "";
     private String todusPhone = "";
@@ -1376,22 +1381,90 @@ public final class MainActivity extends Activity {
         balance.setPadding(dp(15), 0, dp(15), 0);
         balance.setBackground(roundRect(raisedSurfaceColor(), 28, accentColor()));
         balance.setElevation(dp(8));
-        balance.setContentDescription("Consultar saldo ToDus marcando *222*328#");
-        balance.setOnClickListener(v -> openToDusBalanceDialer());
+        balance.setContentDescription("Consultar saldo ToDus automáticamente");
+        balance.setOnClickListener(v -> requestToDusBalance());
         FrameLayout.LayoutParams balanceLayout = new FrameLayout.LayoutParams(-2, dp(52), Gravity.BOTTOM | Gravity.START);
         balanceLayout.setMargins(dp(20), 0, 0, dp(31));
         appRoot.addView(balance, balanceLayout);
         dashboardBalanceFab = balance;
     }
 
-    private void openToDusBalanceDialer() {
-        try {
-            Intent dial = new Intent(Intent.ACTION_DIAL, Uri.parse("tel:*222*328%23"));
-            startActivity(dial);
-            Toast.makeText(this, "Revisa el código y pulsa llamar para consultar tu saldo ToDus.", Toast.LENGTH_LONG).show();
-        } catch (Exception e) {
-            Toast.makeText(this, "No se pudo abrir el marcador del teléfono.", Toast.LENGTH_LONG).show();
+    private void requestToDusBalance() {
+        if (ussdBalanceRequestInFlight) return;
+        if (checkSelfPermission(Manifest.permission.CALL_PHONE) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.CALL_PHONE}, REQUEST_USSD_BALANCE_PERMISSION);
+            return;
         }
+        runToDusBalanceUssd();
+    }
+
+    private void runToDusBalanceUssd() {
+        if (!getPackageManager().hasSystemFeature(PackageManager.FEATURE_TELEPHONY)) {
+            finishToDusBalanceRequest("Este dispositivo no tiene servicio de telefonía móvil.", true);
+            return;
+        }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            try {
+                Intent call = new Intent(Intent.ACTION_CALL, Uri.parse("tel:*222*328%23"));
+                if (call.resolveActivity(getPackageManager()) == null) {
+                    throw new IllegalStateException("No hay servicio de llamadas disponible.");
+                }
+                startActivity(call);
+                Toast.makeText(this, "Consulta USSD enviada a ToDus.", Toast.LENGTH_LONG).show();
+            } catch (Exception e) {
+                finishToDusBalanceRequest("No se pudo enviar la consulta USSD. Comprueba la SIM y los permisos.", true);
+            }
+            return;
+        }
+
+        ussdBalanceRequestInFlight = true;
+        ussdProgressDialog = new AlertDialog.Builder(this)
+                .setTitle("Consultando saldo")
+                .setMessage("Enviando " + USSD_BALANCE_CODE + " a la red móvil…")
+                .setCancelable(false)
+                .create();
+        ussdProgressDialog.show();
+        try {
+            TelephonyManager telephonyManager = (TelephonyManager) getSystemService(TELEPHONY_SERVICE);
+            if (telephonyManager == null) throw new IllegalStateException("No hay servicio de telefonía disponible.");
+            telephonyManager.sendUssdRequest(USSD_BALANCE_CODE, new TelephonyManager.UssdResponseCallback() {
+                @Override public void onReceiveUssdResponse(TelephonyManager manager, String request, CharSequence response) {
+                    String result = response == null || response.toString().trim().isEmpty()
+                            ? "ToDus respondió sin texto de saldo." : response.toString();
+                    finishToDusBalanceRequest(result, false);
+                }
+
+                @Override public void onReceiveUssdResponseFailed(TelephonyManager manager, String request, int failureCode) {
+                    finishToDusBalanceRequest("La red no pudo completar la consulta (código " + failureCode
+                            + "). Comprueba la SIM o inténtalo de nuevo.", true);
+                }
+            }, handler);
+            handler.postDelayed(() -> {
+                if (ussdBalanceRequestInFlight) {
+                    finishToDusBalanceRequest("La red móvil tardó demasiado en responder. Inténtalo de nuevo.", true);
+                }
+            }, 45_000L);
+        } catch (Exception e) {
+            finishToDusBalanceRequest("No se pudo enviar la consulta USSD. Comprueba la SIM y los permisos.", true);
+        }
+    }
+
+    private void finishToDusBalanceRequest(String message, boolean failed) {
+        ussdBalanceRequestInFlight = false;
+        if (ussdProgressDialog != null) {
+            if (ussdProgressDialog.isShowing()) ussdProgressDialog.dismiss();
+            ussdProgressDialog = null;
+        }
+        if (isFinishing()) return;
+        new AlertDialog.Builder(this)
+                .setTitle(failed ? "No se pudo consultar el saldo" : "Saldo ToDus")
+                .setMessage(message)
+                .setPositiveButton("Cerrar", null)
+                .show();
+    }
+
+    private void showBalancePermissionDenied() {
+        Toast.makeText(this, "Hace falta permitir llamadas para enviar la consulta USSD de ToDus.", Toast.LENGTH_LONG).show();
     }
 
     private void showDashboardSearch() {
@@ -5180,6 +5253,12 @@ public final class MainActivity extends Activity {
 
     @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == REQUEST_USSD_BALANCE_PERMISSION) {
+            boolean granted = grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED;
+            if (granted) runToDusBalanceUssd();
+            else showBalancePermissionDenied();
+            return;
+        }
         if (requestCode == REQUEST_WRITE_STORAGE && syncStatus != null) {
             boolean granted = grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED;
             syncStatus.setText(granted

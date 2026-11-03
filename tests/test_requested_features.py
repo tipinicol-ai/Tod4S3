@@ -132,13 +132,18 @@ class RequestedFeatureTests(unittest.TestCase):
         self.assertIn('if [[ "$selected" != "Tod4S3-Sync-latest.apk" ]]', workflow)
         self.assertIn("Tod4S3-Sync-latest.apk", workflow)
 
-    def test_android_balance_fab_opens_dialer_without_calling_automatically(self):
+    def test_android_balance_fab_sends_ussd_automatically_after_permission(self):
         root = Path(__file__).resolve().parents[1]
         source = (root / "sync-app/app/src/main/java/com/tod4s3/sync/MainActivity.java").read_text()
         manifest = (root / "sync-app/app/src/main/AndroidManifest.xml").read_text()
         self.assertIn('text("◉  Saldo", 13, true)', source)
-        self.assertIn('Intent.ACTION_DIAL, Uri.parse("tel:*222*328%23")', source)
-        self.assertNotIn("android.permission.CALL_PHONE", manifest)
+        self.assertIn('balance.setOnClickListener(v -> requestToDusBalance())', source)
+        self.assertIn('sendUssdRequest(USSD_BALANCE_CODE', source)
+        self.assertIn('onReceiveUssdResponse(', source)
+        self.assertIn('requestPermissions(new String[]{Manifest.permission.CALL_PHONE}, REQUEST_USSD_BALANCE_PERMISSION)', source)
+        self.assertIn('Intent.ACTION_CALL, Uri.parse("tel:*222*328%23")', source)
+        self.assertIn('android.permission.CALL_PHONE', manifest)
+        self.assertNotIn('Intent.ACTION_DIAL, Uri.parse("tel:*222*328%23")', source)
 
     def test_android_drawer_can_relink_bot_without_resetting_todus(self):
         source = (Path(__file__).resolve().parents[1]
