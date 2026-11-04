@@ -4,6 +4,7 @@ import android.Manifest;
 import android.animation.ObjectAnimator;
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.Dialog;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -29,6 +30,8 @@ import android.util.Base64;
 import android.view.View;
 import android.view.Gravity;
 import android.view.MotionEvent;
+import android.view.Window;
+import android.view.WindowManager;
 import android.view.animation.DecelerateInterpolator;
 import android.view.inputmethod.EditorInfo;
 import android.graphics.drawable.ColorDrawable;
@@ -215,9 +218,14 @@ public final class MainActivity extends Activity {
     private volatile boolean updateCheckInFlight;
     private volatile boolean updateDownloadCancelled;
     private volatile HttpURLConnection updateConnection;
-    private AlertDialog updateDownloadDialog;
+    private Dialog updateDownloadDialog;
     private ProgressBar updateDownloadProgress;
     private TextView updateDownloadProgressText;
+    private TextView updateDownloadPercentText;
+    private TextView updateDownloadIcon;
+    private ObjectAnimator updateDownloadIconAnimator;
+    private ObjectAnimator updateDownloadProgressAnimator;
+    private long lastUpdateProgressAnimationAt;
     private File downloadedUpdateFile;
     private boolean aiChatHistoryLoaded;
     private final ArrayList<AiChatMessage> aiChatMessages = new ArrayList<>();
@@ -508,28 +516,98 @@ public final class MainActivity extends Activity {
             return;
         }
         updateDownloadCancelled = false;
+        lastUpdateProgressAnimationAt = 0L;
         LinearLayout content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
-        content.setPadding(dp(20), dp(14), dp(20), dp(18));
-        TextView intro = bodyText("Descargando Tod4S3 Sync " + versionName + " de forma segura…");
-        content.addView(intro, margin(0, 0, 0, 12));
+        content.setPadding(dp(22), dp(20), dp(22), dp(18));
+        content.setBackground(roundRect(surfaceColor(), 22, borderColor()));
+        content.setElevation(dp(18));
+
+        LinearLayout heading = new LinearLayout(this);
+        heading.setGravity(Gravity.CENTER_VERTICAL);
+        FrameLayout updateIconFrame = new FrameLayout(this);
+        updateIconFrame.setBackground(roundRect(accentColor(), 16, 0));
+        updateDownloadIcon = text("↻", 27, true);
+        updateDownloadIcon.setTextColor(Color.WHITE);
+        updateDownloadIcon.setGravity(Gravity.CENTER);
+        updateIconFrame.addView(updateDownloadIcon, new FrameLayout.LayoutParams(-1, -1));
+        heading.addView(updateIconFrame, new LinearLayout.LayoutParams(dp(50), dp(50)));
+
+        LinearLayout headingText = new LinearLayout(this);
+        headingText.setOrientation(LinearLayout.VERTICAL);
+        headingText.setPadding(dp(13), 0, 0, 0);
+        TextView eyebrow = text("ACTUALIZACIÓN DISPONIBLE", 11, true);
+        eyebrow.setTextColor(accentColor());
+        headingText.addView(eyebrow);
+        TextView versionLabel = text("Tod4S3 Sync · v" + versionName, 16, true);
+        headingText.addView(versionLabel, margin(0, 3, 0, 0));
+        heading.addView(headingText, new LinearLayout.LayoutParams(0, -2, 1f));
+        content.addView(heading);
+
+        TextView intro = bodyText("Descargando la actualización directamente desde GitHub.");
+        content.addView(intro, margin(0, 15, 0, 15));
+
+        LinearLayout progressHeader = new LinearLayout(this);
+        progressHeader.setGravity(Gravity.CENTER_VERTICAL);
+        TextView progressLabel = text("PROGRESO", 11, true);
+        progressLabel.setTextColor(secondaryTextColor());
+        progressHeader.addView(progressLabel, new LinearLayout.LayoutParams(0, -2, 1f));
+        updateDownloadPercentText = text("…", 14, true);
+        updateDownloadPercentText.setTextColor(accentColor());
+        progressHeader.addView(updateDownloadPercentText);
+        content.addView(progressHeader, margin(0, 0, 0, 7));
+
         updateDownloadProgress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
         updateDownloadProgress.setMax(100);
-        content.addView(updateDownloadProgress, new LinearLayout.LayoutParams(-1, dp(8)));
-        updateDownloadProgressText = bodyText("Preparando descarga · 0%");
-        updateDownloadProgressText.setGravity(Gravity.CENTER);
-        content.addView(updateDownloadProgressText, margin(0, 10, 0, 0));
-        updateDownloadDialog = new AlertDialog.Builder(this)
-                .setTitle("Nueva actualización " + versionName)
-                .setView(content)
-                .setNegativeButton("Cancelar", (dialog, which) -> {
-                    updateDownloadCancelled = true;
-                    HttpURLConnection active = updateConnection;
-                    if (active != null) active.disconnect();
-                })
-                .setCancelable(false)
-                .create();
+        updateDownloadProgress.setIndeterminate(true);
+        updateDownloadProgress.setProgressTintList(ColorStateList.valueOf(accentColor()));
+        updateDownloadProgress.setIndeterminateTintList(ColorStateList.valueOf(accentColor()));
+        updateDownloadProgress.setProgressBackgroundTintList(ColorStateList.valueOf(borderColor()));
+        content.addView(updateDownloadProgress, new LinearLayout.LayoutParams(-1, dp(7)));
+        updateDownloadProgressText = bodyText("Conectando al canal seguro…");
+        content.addView(updateDownloadProgressText, margin(0, 9, 0, 0));
+
+        View divider = new View(this);
+        divider.setBackgroundColor(borderColor());
+        LinearLayout.LayoutParams dividerLayout = new LinearLayout.LayoutParams(-1, dp(1));
+        dividerLayout.setMargins(0, dp(16), 0, dp(12));
+        content.addView(divider, dividerLayout);
+        TextView integrityNote = bodyText("Antes de instalar, se verifican la firma y la integridad del archivo.");
+        content.addView(integrityNote, margin(0, 0, 0, 14));
+        Button cancelUpdate = secondaryButton("Cancelar descarga");
+        cancelUpdate.setOnClickListener(v -> {
+            updateDownloadCancelled = true;
+            HttpURLConnection active = updateConnection;
+            if (active != null) active.disconnect();
+            dismissUpdateDownloadDialog();
+        });
+        content.addView(cancelUpdate, new LinearLayout.LayoutParams(-1, dp(44)));
+
+        content.setAlpha(0f);
+        content.setScaleX(0.95f);
+        content.setScaleY(0.95f);
+        updateDownloadDialog = new Dialog(this);
+        updateDownloadDialog.setContentView(content);
+        updateDownloadDialog.setCancelable(false);
+        updateDownloadDialog.setCanceledOnTouchOutside(false);
         updateDownloadDialog.show();
+        Window dialogWindow = updateDownloadDialog.getWindow();
+        if (dialogWindow != null) {
+            dialogWindow.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            dialogWindow.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+            WindowManager.LayoutParams windowParams = dialogWindow.getAttributes();
+            windowParams.width = Math.min(getResources().getDisplayMetrics().widthPixels - dp(40), dp(380));
+            windowParams.height = WindowManager.LayoutParams.WRAP_CONTENT;
+            windowParams.dimAmount = 0.72f;
+            dialogWindow.setAttributes(windowParams);
+        }
+        content.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(240)
+                .setInterpolator(new DecelerateInterpolator()).start();
+        updateDownloadIconAnimator = ObjectAnimator.ofFloat(updateDownloadIcon, View.ROTATION, 0f, 360f);
+        updateDownloadIconAnimator.setDuration(1_400L);
+        updateDownloadIconAnimator.setInterpolator(new android.view.animation.LinearInterpolator());
+        updateDownloadIconAnimator.setRepeatCount(ObjectAnimator.INFINITE);
+        updateDownloadIconAnimator.start();
         new Thread(() -> downloadAppUpdate(versionCode, versionName, apkUrl, expectedSha256, destination),
                 "tod4s3-update-download").start();
     }
@@ -607,23 +685,49 @@ public final class MainActivity extends Activity {
     }
 
     private void updateDownloadProgress(String versionName, int percent, long downloaded, long total) {
-        if (updateDownloadProgress == null || updateDownloadProgressText == null) return;
+        if (updateDownloadProgress == null || updateDownloadProgressText == null
+                || updateDownloadPercentText == null) return;
         if (percent >= 0) {
-            updateDownloadProgress.setIndeterminate(false);
-            updateDownloadProgress.setProgress(percent);
-            updateDownloadProgressText.setText("Actualizando " + versionName + " · " + percent + "%");
+            if (updateDownloadProgress.isIndeterminate()) {
+                updateDownloadProgress.setIndeterminate(false);
+                updateDownloadProgress.setProgress(0);
+                lastUpdateProgressAnimationAt = 0L;
+            }
+            long now = android.os.SystemClock.uptimeMillis();
+            if (lastUpdateProgressAnimationAt == 0L || now - lastUpdateProgressAnimationAt >= 160L || percent >= 100) {
+                if (updateDownloadProgressAnimator != null) updateDownloadProgressAnimator.cancel();
+                updateDownloadProgressAnimator = ObjectAnimator.ofInt(updateDownloadProgress, "progress",
+                        updateDownloadProgress.getProgress(), percent);
+                updateDownloadProgressAnimator.setDuration(220L);
+                updateDownloadProgressAnimator.setInterpolator(new DecelerateInterpolator());
+                updateDownloadProgressAnimator.start();
+                lastUpdateProgressAnimationAt = now;
+            }
+            updateDownloadPercentText.setText(percent + "%");
+            updateDownloadProgressText.setText("Descargado "
+                    + String.format(java.util.Locale.US, "%.1f", downloaded / 1048576.0)
+                    + " MB de " + String.format(java.util.Locale.US, "%.1f", total / 1048576.0) + " MB");
         } else {
             updateDownloadProgress.setIndeterminate(true);
-            updateDownloadProgressText.setText("Descargados " + String.format(java.util.Locale.US, "%.1f", downloaded / 1048576.0)
-                    + " MB · verificando paquete");
+            updateDownloadPercentText.setText("…");
+            updateDownloadProgressText.setText("Descargados "
+                    + String.format(java.util.Locale.US, "%.1f", downloaded / 1048576.0)
+                    + " MB · tamaño total desconocido");
         }
     }
 
     private void dismissUpdateDownloadDialog() {
         if (updateDownloadDialog != null && updateDownloadDialog.isShowing()) updateDownloadDialog.dismiss();
+        if (updateDownloadIconAnimator != null) updateDownloadIconAnimator.cancel();
+        if (updateDownloadProgressAnimator != null) updateDownloadProgressAnimator.cancel();
         updateDownloadDialog = null;
         updateDownloadProgress = null;
         updateDownloadProgressText = null;
+        updateDownloadPercentText = null;
+        updateDownloadIcon = null;
+        updateDownloadIconAnimator = null;
+        updateDownloadProgressAnimator = null;
+        lastUpdateProgressAnimationAt = 0L;
     }
 
     private String sha256File(File file) {
