@@ -200,6 +200,10 @@ class RequestedFeatureTests(unittest.TestCase):
         self.assertIn('Intent.ACTION_OPEN_DOCUMENT', source)
         self.assertIn('takePersistableUriPermission(wallpaper', source)
         self.assertIn('applyWallpaperBackground()', source)
+        self.assertIn('secondaryButton("Restablecer fondo predeterminado")', source)
+        reset_wallpaper = source.split('private void resetWallpaperToDefault()', 1)[1].split('private Bitmap decodeWallpaper', 1)[0]
+        self.assertIn('remove(PREF_WALLPAPER_URI).remove(PREF_WALLPAPER_DIM)', reset_wallpaper)
+        self.assertIn('applyWallpaperBackground()', reset_wallpaper)
         self.assertIn('wallpaperScrim.setBackgroundColor', source)
         self.assertIn('isDarkTheme() ? Color.BLACK : Color.WHITE', source)
         self.assertIn('Color.rgb(21, 23, 35)', source)
@@ -261,6 +265,30 @@ class RequestedFeatureTests(unittest.TestCase):
         self.assertIn("Math.max(0, aiConversationBox.getHeight() - aiConversationScroll.getHeight())", render)
         self.assertNotIn("aiConversationScroll.fullScroll(View.FOCUS_DOWN)", source)
         self.assertNotIn("appScroll.scrollTo(0, 0)", source)
+
+    def test_android_ai_voice_mode_reads_new_replies_and_can_be_turned_off(self):
+        root = Path(__file__).resolve().parents[1]
+        source = (root / "sync-app/app/src/main/java/com/tod4s3/sync/MainActivity.java").read_text()
+        manifest = (root / "sync-app/app/src/main/AndroidManifest.xml").read_text()
+        chat = source.split("private void showAiChat", 1)[1].split("private void renderAiConversation", 1)[0]
+        self.assertIn('PREF_AI_VOICE_MODE = "ai_voice_mode_v1"', source)
+        self.assertIn('aiVoiceToggle.setText("La IA responde hablando")', chat)
+        self.assertIn('aiVoiceToggle.setOnCheckedChangeListener((button, enabled) -> setAiVoiceMode(enabled))', chat)
+        self.assertIn('prefs.getBoolean(PREF_AI_VOICE_MODE, false)', chat)
+        self.assertIn('speakAiReply(finalReply)', source)
+        self.assertIn('new java.util.Locale("es", "CU")', source)
+        self.assertIn('TextToSpeech.QUEUE_FLUSH', source)
+        self.assertIn('aiTextToSpeech.stop()', source)
+        self.assertIn('aiTextToSpeech.shutdown()', source)
+        self.assertIn('android.intent.action.TTS_SERVICE', manifest)
+
+    def test_android_delete_delivery_does_not_route_to_clear_entire_cloud(self):
+        source = (Path(__file__).resolve().parents[1]
+                  / "sync-app/app/src/main/java/com/tod4s3/sync/MainActivity.java").read_text()
+        delete = source.split("private void deleteCloudDelivery", 1)[1].split("private void postToDusDownloadRefresh", 1)[0]
+        self.assertIn('request("POST", "/api/app/deliveries/delete"', delete)
+        self.assertNotIn("/api/app/cloud/clear", delete)
+        self.assertIn("confirmDeleteCloudDelivery(taskId, copyName, todusDeletable)", source)
 
     def test_android_visual_refresh_keeps_premium_controls_and_compacts_login_header(self):
         source = (Path(__file__).resolve().parents[1]

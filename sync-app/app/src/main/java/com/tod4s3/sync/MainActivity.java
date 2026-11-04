@@ -24,6 +24,7 @@ import android.provider.Settings;
 import android.provider.MediaStore;
 import android.provider.DocumentsContract;
 import android.telephony.TelephonyManager;
+import android.speech.tts.TextToSpeech;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
 import android.util.Base64;
@@ -116,6 +117,7 @@ public final class MainActivity extends Activity {
     private static final String PREF_DOWNLOAD_CONCURRENCY = "download_concurrency_v1";
     private static final String PREF_DOWNLOAD_FOLDER = "download_folder_uri_v1";
     private static final String PREF_AI_CHAT_HISTORY = "ai_chat_history_v1";
+    private static final String PREF_AI_VOICE_MODE = "ai_voice_mode_v1";
     private static final String PREF_LAST_UPDATE_CHECK = "last_android_update_check_v1";
     private static final String PREF_LAST_UPDATE_ATTEMPT = "last_android_update_attempt_v1";
     private static final String PREF_LAST_UPDATE_CHECK_VERSION = "last_android_update_check_version_v1";
@@ -213,7 +215,12 @@ public final class MainActivity extends Activity {
     private LinearLayout aiConversationBox;
     private EditText aiComposer;
     private Button aiSendButton;
+    private Switch aiVoiceToggle;
     private TextView aiChatStatus;
+    private TextToSpeech aiTextToSpeech;
+    private boolean aiTtsReady;
+    private String pendingAiSpeech = "";
+    private int aiSpeechGeneration;
     private boolean aiKeyboardWasVisible;
     private volatile boolean updateCheckInFlight;
     private volatile boolean updateDownloadCancelled;
@@ -950,6 +957,21 @@ public final class MainActivity extends Activity {
         }
         appScroll.setBackgroundColor(wallpaperImageView != null ? Color.TRANSPARENT : backgroundColor());
         appRoot.addView(appScroll, new FrameLayout.LayoutParams(-1, -1));
+    }
+
+    private void resetWallpaperToDefault() {
+        String currentWallpaper = prefs == null ? "" : prefs.getString(PREF_WALLPAPER_URI, "");
+        if (currentWallpaper != null && !currentWallpaper.isEmpty()) {
+            try {
+                getContentResolver().releasePersistableUriPermission(Uri.parse(currentWallpaper),
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            } catch (Exception ignored) { }
+        }
+        if (prefs != null) {
+            prefs.edit().remove(PREF_WALLPAPER_URI).remove(PREF_WALLPAPER_DIM).apply();
+        }
+        applyWallpaperBackground();
+        Toast.makeText(this, "Fondo predeterminado de Tod4S3 Sync restaurado.", Toast.LENGTH_SHORT).show();
     }
 
     private Bitmap decodeWallpaper(Uri uri) throws IOException {
@@ -2843,15 +2865,10 @@ public final class MainActivity extends Activity {
             catch (Exception e) { Toast.makeText(this, "No se pudo abrir el selector de imágenes.", Toast.LENGTH_LONG).show(); }
         });
         appearance.addView(chooseWallpaper, margin(0, 6, 0, 0));
-        Button clearWallpaper = secondaryButton("Quitar fondo personalizado");
+        Button clearWallpaper = secondaryButton("Restablecer fondo predeterminado");
+        clearWallpaper.setContentDescription("Quitar la imagen elegida y volver al fondo original de Tod4S3 Sync");
         clearWallpaper.setOnClickListener(v -> {
-            String currentWallpaper = prefs.getString(PREF_WALLPAPER_URI, "");
-            if (!currentWallpaper.isEmpty()) {
-                try { getContentResolver().releasePersistableUriPermission(Uri.parse(currentWallpaper),
-                        Intent.FLAG_GRANT_READ_URI_PERMISSION); } catch (Exception ignored) { }
-            }
-            prefs.edit().remove(PREF_WALLPAPER_URI).remove(PREF_WALLPAPER_DIM).apply();
-            applyWallpaperBackground();
+            resetWallpaperToDefault();
             showSettings(false);
         });
         appearance.addView(clearWallpaper, margin(0, 7, 0, 0));
@@ -3427,6 +3444,17 @@ public final class MainActivity extends Activity {
         chatPanelParams.setMargins(0, 0, 0, dp(8));
         page.addView(chatPanel, chatPanelParams);
 
+        aiVoiceToggle = new Switch(this);
+        aiVoiceToggle.setText("La IA responde hablando");
+        aiVoiceToggle.setTextSize(12);
+        aiVoiceToggle.setTextColor(secondaryTextColor());
+        aiVoiceToggle.setPadding(dp(6), 0, dp(6), 0);
+        aiVoiceToggle.setContentDescription("Activar o desactivar respuestas habladas de AiTod4S3");
+        aiVoiceToggle.setChecked(prefs.getBoolean(PREF_AI_VOICE_MODE, false));
+        aiVoiceToggle.setOnCheckedChangeListener((button, enabled) -> setAiVoiceMode(enabled));
+        page.addView(aiVoiceToggle, margin(2, 0, 2, 5));
+        if (aiVoiceToggle.isChecked()) ensureAiTextToSpeech();
+
         LinearLayout composerRow = new LinearLayout(this);
         composerRow.setGravity(Gravity.CENTER_VERTICAL);
         composerRow.setOrientation(LinearLayout.HORIZONTAL);
@@ -3759,6 +3787,9 @@ public final class MainActivity extends Activity {
                     if (finalReply != null) {
                         aiChatMessages.add(new AiChatMessage("assistant", finalReply));
                         aiChatStatus.setText("Respuesta recibida.");
+                        if (prefs != null && prefs.getBoolean(PREF_AI_VOICE_MODE, false)) {
+                            speakAiReply(finalReply);
+                        }
                     } else {
                         String visibleFailure = finalFailure == null ? "No se pudo obtener una respuesta." : finalFailure;
                         aiChatStatus.setText("No se pudo responder.");
@@ -3774,6 +3805,108 @@ public final class MainActivity extends Activity {
                 }
             });
         }, "aitod4s3-chat").start();
+    }
+
+    private void setAiVoiceMode(boolean enabled) {
+        if (prefs != null) prefs.edit().putBoolean(PREF_AI_VOICE_MODE, enabled).apply();
+        if (enabled) {
+            if (aiChatStatus != null) aiChatStatus.setText("Preparando la voz en español…");
+            ensureAiTextToSpeech();
+        } else {
+            pendingAiSpeech = "";
+            aiSpeechGeneration++;
+            if (aiTextToSpeech != null) aiTextToSpeech.stop();
+            if (aiChatStatus != null) aiChatStatus.setText("Modo solo texto activado.");
+        }
+    }
+
+    private void ensureAiTextToSpeech() {
+        if (aiTextToSpeech != null || isFinishing()) return;
+        try {
+            aiTextToSpeech = new TextToSpeech(this, status -> {
+                if (aiTextToSpeech == null || isFinishing()) return;
+                if (status != TextToSpeech.SUCCESS) {
+                    handleAiVoiceUnavailable();
+                    return;
+                }
+                int languageStatus = aiTextToSpeech.setLanguage(new java.util.Locale("es", "CU"));
+                if (languageStatus < TextToSpeech.LANG_AVAILABLE) {
+                    languageStatus = aiTextToSpeech.setLanguage(new java.util.Locale("es", "ES"));
+                }
+                if (languageStatus < TextToSpeech.LANG_AVAILABLE) {
+                    languageStatus = aiTextToSpeech.setLanguage(new java.util.Locale("es"));
+                }
+                if (languageStatus < TextToSpeech.LANG_AVAILABLE) {
+                    handleAiVoiceUnavailable();
+                    return;
+                }
+                aiTtsReady = true;
+                if (prefs != null && prefs.getBoolean(PREF_AI_VOICE_MODE, false)
+                        && !pendingAiSpeech.isEmpty()) {
+                    String textToSpeak = pendingAiSpeech;
+                    pendingAiSpeech = "";
+                    speakAiText(textToSpeak);
+                } else if (aiChatStatus != null && prefs != null
+                        && prefs.getBoolean(PREF_AI_VOICE_MODE, false)) {
+                    aiChatStatus.setText("Modo hablado activado · voz en español lista.");
+                }
+            });
+        } catch (RuntimeException e) {
+            android.util.Log.w(LOG_TAG, "No se pudo inicializar la voz de AiTod4S3", e);
+            handleAiVoiceUnavailable();
+        }
+    }
+
+    private void handleAiVoiceUnavailable() {
+        aiTtsReady = false;
+        pendingAiSpeech = "";
+        if (prefs != null) prefs.edit().putBoolean(PREF_AI_VOICE_MODE, false).apply();
+        if (aiVoiceToggle != null) aiVoiceToggle.setChecked(false);
+        if (aiChatStatus != null) aiChatStatus.setText("Voz en español no disponible; se responderá por texto.");
+        if (!isFinishing()) {
+            Toast.makeText(this, "No hay una voz española disponible en este teléfono. Instala una voz en Ajustes.",
+                    Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void speakAiReply(String reply) {
+        String speakable = reply == null ? "" : reply;
+        speakable = speakable.replaceAll("(?s)```.*?```", " bloque de código omitido ");
+        speakable = speakable.replaceAll("\\[([^\\]]+)]\\(https?://[^)]+\\)", "$1");
+        speakable = speakable.replaceAll("https?://\\S+", " enlace ");
+        speakable = speakable.replaceAll("(?m)^\\s*[-*•]\\s*", "");
+        speakable = speakable.replaceAll("[*_`#>~]", "").replaceAll("\\s+", " ").trim();
+        if (speakable.isEmpty()) return;
+        if (aiTextToSpeech == null || !aiTtsReady) {
+            pendingAiSpeech = speakable;
+            ensureAiTextToSpeech();
+            return;
+        }
+        speakAiText(speakable);
+    }
+
+    private void speakAiText(String textToSpeak) {
+        if (aiTextToSpeech == null || !aiTtsReady || textToSpeak == null || textToSpeak.isEmpty()) return;
+        int generation = ++aiSpeechGeneration;
+        int maxChunk = Math.max(500, TextToSpeech.getMaxSpeechInputLength() - 100);
+        int offset = 0;
+        int part = 0;
+        while (offset < textToSpeak.length()) {
+            int end = Math.min(textToSpeak.length(), offset + maxChunk);
+            if (end < textToSpeak.length()) {
+                int boundary = textToSpeak.lastIndexOf(' ', end);
+                if (boundary > offset) end = boundary;
+            }
+            String chunk = textToSpeak.substring(offset, end).trim();
+            if (!chunk.isEmpty()) {
+                int queueMode = part == 0 ? TextToSpeech.QUEUE_FLUSH : TextToSpeech.QUEUE_ADD;
+                aiTextToSpeech.speak(chunk, queueMode, null, "aitod4s3_" + generation + "_" + part);
+                part++;
+            }
+            offset = end;
+            while (offset < textToSpeak.length() && Character.isWhitespace(textToSpeak.charAt(offset))) offset++;
+        }
+        if (aiChatStatus != null) aiChatStatus.setText("AiTod4S3 está respondiendo en voz alta.");
     }
 
     private static final class AiChatMessage {
@@ -6077,6 +6210,13 @@ public final class MainActivity extends Activity {
         handler.removeCallbacks(poller);
         ussdBalanceRequestInFlight = false;
         hideUssdOrbitAnimation();
+        pendingAiSpeech = "";
+        if (aiTextToSpeech != null) {
+            aiTextToSpeech.stop();
+            aiTextToSpeech.shutdown();
+            aiTextToSpeech = null;
+            aiTtsReady = false;
+        }
         super.onDestroy();
     }
 }

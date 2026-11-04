@@ -3543,6 +3543,25 @@ def todus_messages_for_delivery(user_id: int, task_id: str) -> list[dict]:
     return [item for item in entries if belongs(item)] if isinstance(entries, list) else []
 
 
+def _delete_todus_message_with_retry(client, target: str, message_id: str,
+                                     task_id: str) -> tuple[bool, object]:
+    """Try once with the current ToDus session, then relogin and retry once."""
+    try:
+        client.delete_message(target, message_id)
+        return True, client
+    except Exception as first_error:
+        log.warning("Falló el borrado ToDus task=%s message=%s (%s); se renovará la sesión.",
+                    task_id, message_id, type(first_error).__name__)
+    try:
+        client = get_todus_client(force_relogin=True)
+        client.delete_message(target, message_id)
+        return True, client
+    except Exception as retry_error:
+        log.error("Falló el borrado ToDus tras renovar sesión task=%s message=%s (%s).",
+                  task_id, message_id, type(retry_error).__name__, exc_info=True)
+        return False, client
+
+
 def delete_todus_messages_for_delivery(user_id: int, task_id: str) -> tuple[int, int, bool]:
     """Delete registered ToDus messages for one authenticated owner's delivery."""
     target = get_user_todus_number(user_id)
@@ -3574,13 +3593,14 @@ def delete_todus_messages_for_delivery(user_id: int, task_id: str) -> tuple[int,
                     or str(item.get("message_id", "")) not in selected_ids):
                 remaining.append(item)
                 continue
-            try:
-                client.delete_message(target, str(item["message_id"]))
+            deleted_ok, client = _delete_todus_message_with_retry(
+                client, target, str(item["message_id"]), task_id,
+            )
+            if deleted_ok:
                 deleted += 1
-            except Exception as exc:
+            else:
                 failed += 1
                 remaining.append(item)
-                log.warning("No se pudo borrar la parte ToDus task=%s (%s).", task_id, type(exc).__name__)
         _save_json(TODUS_SENT_MESSAGES_FILE, {"messages": remaining})
         return len(selected), deleted, failed == 0 and deleted == len(selected)
 
@@ -3622,14 +3642,14 @@ def delete_todus_messages_for_user(user_id: int) -> tuple[int, int, bool]:
                     or str(item.get("message_id", "")) not in selected_ids):
                 remaining.append(item)
                 continue
-            try:
-                client.delete_message(target, str(item["message_id"]))
+            deleted_ok, client = _delete_todus_message_with_retry(
+                client, target, str(item["message_id"]), "user-clear",
+            )
+            if deleted_ok:
                 deleted += 1
-            except Exception as exc:
+            else:
                 failed += 1
                 remaining.append(item)
-                log.warning("No se pudo borrar el mensaje ToDus del user=%s (%s).",
-                            user_id, type(exc).__name__)
         _save_json(TODUS_SENT_MESSAGES_FILE, {"messages": remaining})
         return len(selected), deleted, failed == 0 and deleted == len(selected)
 
