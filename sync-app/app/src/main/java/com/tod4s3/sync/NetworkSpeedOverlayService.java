@@ -42,8 +42,7 @@ public final class NetworkSpeedOverlayService extends Service {
     private static final String PREF_Y = "speed_overlay_y_v1";
     private static final int NOTIFICATION_ID = 8820;
     private static final long SAMPLE_INTERVAL_MS = 1_000L;
-    private static final int TRANSLUCENT_NAVY = Color.argb(128, 20, 28, 43);
-    private static final int RED = Color.rgb(213, 31, 42);
+    private static final int TRANSLUCENT_NAVY = Color.argb(64, 20, 28, 43);
     private static final int DOWNLOAD_BLUE = Color.rgb(110, 190, 255);
     private static final int SOFT_WHITE = Color.rgb(242, 245, 250);
     private static final int MUTED = Color.rgb(177, 190, 207);
@@ -109,9 +108,8 @@ public final class NetworkSpeedOverlayService extends Service {
         background.setShape(GradientDrawable.RECTANGLE);
         background.setCornerRadius(dp(5));
         background.setColor(TRANSLUCENT_NAVY);
-        background.setStroke(dp(1), Color.argb(205, 213, 31, 42));
         bubble.setBackground(background);
-        bubble.setElevation(dp(10));
+        bubble.setElevation(dp(4));
         bubble.setContentDescription("Panel rectangular de velocidad de red. Arrastra para moverlo.");
 
         LinearLayout rates = new LinearLayout(this);
@@ -122,7 +120,7 @@ public final class NetworkSpeedOverlayService extends Service {
         networkLabel.setTextColor(MUTED);
         networkLabel.setTextSize(9);
         networkLabel.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        networkLabel.setShadowLayer(dp(2), 0f, dp(1), Color.BLACK);
+        networkLabel.setShadowLayer(dp(3), 0f, dp(1), Color.BLACK);
         rates.addView(networkLabel, new LinearLayout.LayoutParams(-2, -2));
 
         downloadRate = rateText(DOWNLOAD_BLUE);
@@ -237,7 +235,7 @@ public final class NetworkSpeedOverlayService extends Service {
         if (networkLabel != null) networkLabel.setText(transport);
         if (networkLabel != null) {
             networkLabel.setTextColor("WI-FI".equals(transport) ? DOWNLOAD_BLUE
-                    : ("DATOS MÓVILES".equals(transport) ? Color.rgb(255, 164, 171) : MUTED));
+                    : ("DATOS MÓVILES".equals(transport) ? Color.rgb(255, 164, 171) : SOFT_WHITE));
         }
         if (downloadRate != null) downloadRate.setText("↓ " + formatRate(rxPerSecond));
         if (uploadRate != null) uploadRate.setText("↑ " + formatRate(txPerSecond));

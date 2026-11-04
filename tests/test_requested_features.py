@@ -235,12 +235,14 @@ class RequestedFeatureTests(unittest.TestCase):
         self.assertIn('↑ ', service)
         self.assertIn('handleDrag', service)
         self.assertIn('Desactivar', service)
-        self.assertIn('Color.argb(128, 20, 28, 43)', service)
+        self.assertIn('Color.argb(64, 20, 28, 43)', service)
+        overlay = service.split('private void ensureOverlay()', 1)[1].split('private TextView rateText', 1)[0]
+        self.assertNotIn('setStroke(', overlay)
         self.assertIn('return "WI-FI"', service)
         self.assertIn('return "DATOS MÓVILES"', service)
         self.assertIn('return "SIN CONEXIÓN"', service)
         self.assertIn('NetworkCapabilities.TRANSPORT_CELLULAR', service)
-        self.assertIn('setShadowLayer(dp(2)', service)
+        self.assertIn('setShadowLayer(dp(3)', service)
 
     def test_android_ai_has_centered_help_orb_and_keeps_chat_scroll_position(self):
         source = (Path(__file__).resolve().parents[1]

@@ -1,7 +1,7 @@
 {
-  "version_code": 63,
-  "version_name": "1.5.18",
+  "version_code": 64,
+  "version_name": "1.5.19",
   "manifest_url": "https://raw.githubusercontent.com/yunierki1234-coder/Tod4S3/main/web/android-update.json",
   "apk_url": "https://raw.githubusercontent.com/yunierki1234-coder/Tod4S3/main/Tod4S3-Sync-latest.apk",
-  "sha256": "3226122a53015d00f58ab18c656f261b2d047e3e0ee56c4487473d5195ad5c5f"
+  "sha256": "6401ad5868b9cfb6ee57bc83872a7b2907a64da718c500513a6a14d5d5cf0153"
 }
