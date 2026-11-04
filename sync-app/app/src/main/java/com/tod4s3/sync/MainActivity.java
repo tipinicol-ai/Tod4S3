@@ -54,6 +54,8 @@ import android.widget.TextView;
 import android.widget.Toast;
 import android.webkit.MimeTypeMap;
 import android.graphics.Color;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.media.AudioAttributes;
@@ -103,6 +105,8 @@ public final class MainActivity extends Activity {
     private static final String PREF_HIDDEN_DELIVERIES = "hidden_delivery_ids_v1";
     private static final String PREF_UI_THEME = "ui_theme_v1";
     private static final String PREF_UI_ACCENT = "ui_accent_v1";
+    private static final String PREF_WALLPAPER_URI = "ui_wallpaper_uri_v1";
+    private static final String PREF_WALLPAPER_DIM = "ui_wallpaper_dim_v1";
     private static final String PREF_UPDATE_MANIFEST_URL = "android_update_manifest_url_v1";
     private static final String PREF_DOWNLOAD_CONCURRENCY = "download_concurrency_v1";
     private static final String PREF_DOWNLOAD_FOLDER = "download_folder_uri_v1";
@@ -111,14 +115,15 @@ public final class MainActivity extends Activity {
     private static final String PREF_LAST_UPDATE_ATTEMPT = "last_android_update_attempt_v1";
     private static final String PREF_LAST_UPDATE_CHECK_VERSION = "last_android_update_check_version_v1";
     private static final String PREF_PENDING_UPDATE_VERSION = "pending_android_update_version_v1";
-    private static final long UPDATE_CHECK_INTERVAL_MS = 15L * 60L * 1000L;
-    private static final long UPDATE_RETRY_INTERVAL_MS = 60L * 1000L;
+    private static final long UPDATE_CHECK_INTERVAL_MS = 10L * 1000L;
+    private static final long UPDATE_RETRY_INTERVAL_MS = 10L * 1000L;
     private static final int REQUEST_WRITE_STORAGE = 702;
     private static final int REQUEST_PAYMENT_RECEIPT = 703;
     private static final int REQUEST_DOWNLOAD_FOLDER = 705;
     private static final int REQUEST_NOTIFICATIONS = 706;
     private static final int REQUEST_UPDATE_INSTALL_PERMISSION = 707;
     private static final int REQUEST_USSD_BALANCE_PERMISSION = 708;
+    private static final int REQUEST_WALLPAPER_IMAGE = 709;
     private static final String USSD_BALANCE_CODE = "*222*328#";
     private static final String DOWNLOAD_NOTIFICATION_CHANNEL = "downloads_complete_v1";
 
@@ -133,13 +138,15 @@ public final class MainActivity extends Activity {
                 refreshAccountProfile();
             }
             if (hasWindowFocus() && prefs != null) checkForAppUpdate(false);
-            handler.postDelayed(this, 15_000L);
+            handler.postDelayed(this, 10_000L);
         }
     };
 
     private android.content.SharedPreferences prefs;
     private FrameLayout appRoot;
     private ScrollView appScroll;
+    private ImageView wallpaperImageView;
+    private View wallpaperScrim;
     private LinearLayout currentPage;
     private EditText codeInput;
     private EditText phoneInput;
@@ -166,6 +173,7 @@ public final class MainActivity extends Activity {
     private boolean ussdBalanceRequestInFlight;
     private FrameLayout ussdLoadingOverlay;
     private android.animation.ObjectAnimator ussdOrbitAnimator;
+    private long lastBackgroundNotificationUpdateAt;
     private String token;
     private String pendingPairingCode = "";
     private String todusPhone = "";
@@ -298,6 +306,23 @@ public final class MainActivity extends Activity {
                 showSettings(false);
             } catch (Exception e) {
                 Toast.makeText(this, "No se pudo guardar el acceso a esa carpeta.", Toast.LENGTH_LONG).show();
+            }
+            return;
+        }
+        if (requestCode == REQUEST_WALLPAPER_IMAGE) {
+            if (resultCode != RESULT_OK || data == null || data.getData() == null) return;
+            Uri wallpaper = data.getData();
+            int flags = data.getFlags() & Intent.FLAG_GRANT_READ_URI_PERMISSION;
+            try {
+                if ((flags & Intent.FLAG_GRANT_READ_URI_PERMISSION) == 0) {
+                    throw new SecurityException("No se recibió permiso de lectura persistente.");
+                }
+                getContentResolver().takePersistableUriPermission(wallpaper, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                prefs.edit().putString(PREF_WALLPAPER_URI, wallpaper.toString()).apply();
+                applyWallpaperBackground();
+                showSettings(false);
+            } catch (Exception e) {
+                Toast.makeText(this, "No se pudo guardar el acceso a esa imagen.", Toast.LENGTH_LONG).show();
             }
             return;
         }
@@ -692,6 +717,7 @@ public final class MainActivity extends Activity {
         appScroll.setFillViewport(true);
         appScroll.setBackgroundColor(backgroundColor());
         appRoot.addView(appScroll, new FrameLayout.LayoutParams(-1, -1));
+        applyWallpaperBackground();
         setContentView(appRoot);
         appRoot.setFocusableInTouchMode(true);
         appRoot.getViewTreeObserver().addOnGlobalLayoutListener(() -> {
@@ -728,6 +754,58 @@ public final class MainActivity extends Activity {
         }
     }
 
+    private void applyWallpaperBackground() {
+        if (appRoot == null || appScroll == null) return;
+        if (wallpaperImageView != null && wallpaperImageView.getParent() == appRoot) appRoot.removeView(wallpaperImageView);
+        if (wallpaperScrim != null && wallpaperScrim.getParent() == appRoot) appRoot.removeView(wallpaperScrim);
+        wallpaperImageView = null;
+        wallpaperScrim = null;
+        appRoot.setBackgroundColor(backgroundColor());
+        appRoot.removeView(appScroll);
+        String imageUri = prefs == null ? "" : prefs.getString(PREF_WALLPAPER_URI, "");
+        if (imageUri != null && !imageUri.isEmpty()) {
+            try {
+                Bitmap bitmap = decodeWallpaper(Uri.parse(imageUri));
+                if (bitmap != null) {
+                    wallpaperImageView = new ImageView(this);
+                    wallpaperImageView.setScaleType(ImageView.ScaleType.CENTER_CROP);
+                    wallpaperImageView.setImageBitmap(bitmap);
+                    wallpaperImageView.setContentDescription("Fondo de pantalla personalizado");
+                    appRoot.addView(wallpaperImageView, new FrameLayout.LayoutParams(-1, -1));
+                    wallpaperScrim = new View(this);
+                    int dim = prefs.getInt(PREF_WALLPAPER_DIM, isDarkTheme() ? 42 : 24);
+                    int shade = isDarkTheme() ? Color.BLACK : Color.WHITE;
+                    wallpaperScrim.setBackgroundColor(Color.argb(Math.max(0, Math.min(75, dim)) * 255 / 100,
+                            Color.red(shade), Color.green(shade), Color.blue(shade)));
+                    appRoot.addView(wallpaperScrim, new FrameLayout.LayoutParams(-1, -1));
+                }
+            } catch (Exception ignored) {
+                wallpaperImageView = null;
+                wallpaperScrim = null;
+            }
+        }
+        appScroll.setBackgroundColor(wallpaperImageView != null ? Color.TRANSPARENT : backgroundColor());
+        appRoot.addView(appScroll, new FrameLayout.LayoutParams(-1, -1));
+    }
+
+    private Bitmap decodeWallpaper(Uri uri) throws IOException {
+        BitmapFactory.Options bounds = new BitmapFactory.Options();
+        bounds.inJustDecodeBounds = true;
+        try (InputStream input = getContentResolver().openInputStream(uri)) {
+            if (input == null) return null;
+            BitmapFactory.decodeStream(input, null, bounds);
+        }
+        int sample = 1;
+        int maxDimension = Math.max(bounds.outWidth, bounds.outHeight);
+        while (maxDimension / sample > 2048) sample *= 2;
+        BitmapFactory.Options options = new BitmapFactory.Options();
+        options.inSampleSize = sample;
+        options.inPreferredConfig = Bitmap.Config.RGB_565;
+        try (InputStream input = getContentResolver().openInputStream(uri)) {
+            return input == null ? null : BitmapFactory.decodeStream(input, null, options);
+        }
+    }
+
     private void ensureDownloadNotificationChannel() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
         NotificationManager manager = getSystemService(NotificationManager.class);
@@ -742,6 +820,49 @@ public final class MainActivity extends Activity {
                 .build();
         channel.setSound(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION), attributes);
         manager.createNotificationChannel(channel);
+    }
+
+    private void refreshBackgroundDownloadNotification(boolean force) {
+        if (prefs == null || isFinishing()) return;
+        int activeCount;
+        synchronized (downloadConcurrencyLock) { activeCount = activeDownloadJobs; }
+        synchronized (directLinkDownloadLock) { activeCount += activeDirectLinkJobs; }
+        long downloaded = 0L;
+        long total = 0L;
+        synchronized (toDusDownloadLock) {
+            for (ToDusDownloadTask task : toDusDownloadTasks.values()) {
+                if (task.worker != null) {
+                    downloaded += Math.max(0L, task.bytes);
+                    total += Math.max(0L, task.total);
+                }
+            }
+        }
+        synchronized (directLinkDownloadLock) {
+            for (DirectLinkTask task : directLinkTasks.values()) {
+                if (task.worker != null) {
+                    downloaded += Math.max(0L, task.bytes);
+                    total += Math.max(0L, task.total);
+                }
+            }
+        }
+        long now = System.currentTimeMillis();
+        if (!force && now - lastBackgroundNotificationUpdateAt < 1_500L) return;
+        lastBackgroundNotificationUpdateAt = now;
+        Intent service = new Intent(this, DownloadKeepAliveService.class);
+        if (activeCount <= 0) {
+            service.setAction(DownloadKeepAliveService.ACTION_STOP);
+        } else {
+            int percent = total > 0L ? (int) Math.min(100L, downloaded * 100L / total) : -1;
+            service.setAction(DownloadKeepAliveService.ACTION_UPDATE);
+            service.putExtra(DownloadKeepAliveService.EXTRA_COUNT, activeCount);
+            service.putExtra(DownloadKeepAliveService.EXTRA_PERCENT, percent);
+        }
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(service);
+            else startService(service);
+        } catch (Exception e) {
+            android.util.Log.w(LOG_TAG, "No se pudo actualizar la notificación persistente de descarga", e);
+        }
     }
 
     private void requestNotificationPermissionIfNeeded() {
@@ -2084,6 +2205,7 @@ public final class MainActivity extends Activity {
             persistDirectLinkTasks();
         }
         worker.start();
+        refreshBackgroundDownloadNotification(true);
         postDirectLinkTaskRefresh();
         return true;
     }
@@ -2166,6 +2288,7 @@ public final class MainActivity extends Activity {
         }
         if (update) {
             persistDirectLinkTasks();
+            refreshBackgroundDownloadNotification(false);
             postDirectLinkProgressUpdate(task);
         }
     }
@@ -2245,6 +2368,7 @@ public final class MainActivity extends Activity {
             activeDirectLinkKeys.remove(transferKey);
             activeDirectLinkJobs = Math.max(0, activeDirectLinkJobs - 1);
         }
+        refreshBackgroundDownloadNotification(true);
     }
 
     private ArrayList<String> extractLinks(String raw) {
@@ -2505,8 +2629,7 @@ public final class MainActivity extends Activity {
             themeRow.addView(choice, lp);
             choice.setOnClickListener(v -> {
                 prefs.edit().putString(PREF_UI_THEME, theme[0]).apply();
-                appRoot.setBackgroundColor(backgroundColor());
-                appScroll.setBackgroundColor(backgroundColor());
+                applyWallpaperBackground();
                 applySystemBarTheme();
                 showSettings(false);
             });
@@ -2514,12 +2637,12 @@ public final class MainActivity extends Activity {
         appearance.addView(themeRow);
         appearance.addView(text("Color de acento", 14, true), margin(0, 16, 0, 4));
         String[] accents = {
-                "#C62828", "#D32F2F", "#E65100", "#EF6C00", "#F9A825", "#558B2F",
+                "#D51F2A", "#C62828", "#E65100", "#EF6C00", "#F9A825", "#558B2F",
                 "#2E7D32", "#1B5E20", "#00897B", "#009688", "#00838F", "#00ACC1",
                 "#0277BD", "#1565C0", "#1976D2", "#0D47A1", "#3949AB", "#5E35B1",
                 "#6A1B9A", "#8E24AA", "#AD1457", "#C2185B", "#455A64", "#607D8B"
         };
-        String selectedAccent = prefs.getString(PREF_UI_ACCENT, "#C62828");
+        String selectedAccent = prefs.getString(PREF_UI_ACCENT, "#D51F2A");
         for (int start = 0; start < accents.length; start += 6) {
             LinearLayout swatchRow = new LinearLayout(this);
             swatchRow.setOrientation(LinearLayout.HORIZONTAL);
@@ -2543,6 +2666,53 @@ public final class MainActivity extends Activity {
             }
             appearance.addView(swatchRow);
         }
+        appearance.addView(text("Fondo de pantalla", 14, true), margin(0, 14, 0, 4));
+        appearance.addView(bodyText("Elige una imagen del teléfono. El oscurecimiento se adapta al tema para mantener el texto legible."),
+                margin(0, 0, 0, 5));
+        Button chooseWallpaper = secondaryButton("Elegir imagen de fondo");
+        chooseWallpaper.setOnClickListener(v -> {
+            Intent picker = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            picker.addCategory(Intent.CATEGORY_OPENABLE);
+            picker.setType("image/*");
+            picker.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+            try { startActivityForResult(picker, REQUEST_WALLPAPER_IMAGE); }
+            catch (Exception e) { Toast.makeText(this, "No se pudo abrir el selector de imágenes.", Toast.LENGTH_LONG).show(); }
+        });
+        appearance.addView(chooseWallpaper, margin(0, 6, 0, 0));
+        Button clearWallpaper = secondaryButton("Quitar fondo personalizado");
+        clearWallpaper.setOnClickListener(v -> {
+            String currentWallpaper = prefs.getString(PREF_WALLPAPER_URI, "");
+            if (!currentWallpaper.isEmpty()) {
+                try { getContentResolver().releasePersistableUriPermission(Uri.parse(currentWallpaper),
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION); } catch (Exception ignored) { }
+            }
+            prefs.edit().remove(PREF_WALLPAPER_URI).remove(PREF_WALLPAPER_DIM).apply();
+            applyWallpaperBackground();
+            showSettings(false);
+        });
+        appearance.addView(clearWallpaper, margin(0, 7, 0, 0));
+        int defaultDim = isDarkTheme() ? 42 : 16;
+        TextView dimLabel = text("Contraste del fondo: " + prefs.getInt(PREF_WALLPAPER_DIM, defaultDim) + "%", 13, false);
+        appearance.addView(dimLabel, margin(0, 9, 0, 0));
+        SeekBar wallpaperDim = new SeekBar(this);
+        wallpaperDim.setMax(75);
+        wallpaperDim.setProgress(Math.max(0, Math.min(75, prefs.getInt(PREF_WALLPAPER_DIM, defaultDim))));
+        wallpaperDim.setProgressTintList(ColorStateList.valueOf(accentColor()));
+        wallpaperDim.setThumbTintList(ColorStateList.valueOf(accentColor()));
+        wallpaperDim.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                dimLabel.setText("Contraste del fondo: " + progress + "%");
+                prefs.edit().putInt(PREF_WALLPAPER_DIM, progress).apply();
+                if (wallpaperScrim != null) {
+                    int alpha = progress * 255 / 100;
+                    int shade = isDarkTheme() ? Color.BLACK : Color.WHITE;
+                    wallpaperScrim.setBackgroundColor(Color.argb(alpha, Color.red(shade), Color.green(shade), Color.blue(shade)));
+                }
+            }
+            @Override public void onStartTrackingTouch(SeekBar seekBar) { }
+            @Override public void onStopTrackingTouch(SeekBar seekBar) { }
+        });
+        appearance.addView(wallpaperDim);
         page.addView(appearance, margin(0, 0, 0, 0));
 
         addSettingsHeading(page, "DESCARGAS");
@@ -3968,19 +4138,19 @@ public final class MainActivity extends Activity {
     }
 
     private int backgroundColor() {
-        return isDarkTheme() ? Color.rgb(8, 10, 16) : Color.rgb(246, 247, 250);
+        return isDarkTheme() ? Color.rgb(9, 11, 17) : Color.rgb(246, 247, 250);
     }
 
     private int surfaceColor() {
-        return isDarkTheme() ? Color.rgb(16, 19, 28) : Color.WHITE;
+        return isDarkTheme() ? Color.rgb(21, 23, 35) : Color.WHITE;
     }
 
     private int raisedSurfaceColor() {
-        return isDarkTheme() ? Color.rgb(22, 26, 37) : Color.rgb(239, 240, 244);
+        return isDarkTheme() ? Color.rgb(27, 30, 44) : Color.rgb(239, 240, 244);
     }
 
     private int borderColor() {
-        return isDarkTheme() ? Color.rgb(35, 40, 54) : Color.rgb(218, 220, 227);
+        return isDarkTheme() ? Color.rgb(46, 49, 66) : Color.rgb(218, 220, 227);
     }
 
     private int primaryTextColor() {
@@ -3992,8 +4162,8 @@ public final class MainActivity extends Activity {
     }
 
     private int accentColor() {
-        try { return Color.parseColor(prefs.getString(PREF_UI_ACCENT, "#C62828")); }
-        catch (Exception ignored) { return Color.rgb(198, 40, 40); }
+        try { return Color.parseColor(prefs.getString(PREF_UI_ACCENT, "#D51F2A")); }
+        catch (Exception ignored) { return Color.rgb(213, 31, 42); }
     }
 
     private int onAccentColor() {
@@ -5112,6 +5282,7 @@ public final class MainActivity extends Activity {
             persistToDusDownloadTasksLocked();
             task.worker.start();
         }
+        refreshBackgroundDownloadNotification(true);
         postToDusDownloadRefresh();
         return true;
     }
@@ -5203,6 +5374,7 @@ public final class MainActivity extends Activity {
             task.control = null;
             synchronized (downloadConcurrencyLock) { activeDownloadJobs = Math.max(0, activeDownloadJobs - 1); }
             persistToDusDownloadTasks();
+            refreshBackgroundDownloadNotification(true);
             postToDusDownloadRefresh();
         }
     }
@@ -5241,6 +5413,7 @@ public final class MainActivity extends Activity {
         }
         if (update) {
             persistToDusDownloadTasks();
+            refreshBackgroundDownloadNotification(false);
             postToDusDownloadProgressUpdate(task);
         }
     }

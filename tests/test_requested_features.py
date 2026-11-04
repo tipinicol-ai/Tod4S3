@@ -113,8 +113,9 @@ class RequestedFeatureTests(unittest.TestCase):
         installer = (root / "sync-app/app/src/main/java/com/tod4s3/sync/UpdateInstallReceiver.java").read_text()
         workflow = (root / ".github/workflows/android-update-manifest.yml").read_text()
         self.assertIn('openUpdateManifestConnection(manifestEntryUrl)', source)
-        self.assertIn('private static final long UPDATE_CHECK_INTERVAL_MS = 15L * 60L * 1000L', source)
-        self.assertIn('private static final long UPDATE_RETRY_INTERVAL_MS = 60L * 1000L', source)
+        self.assertIn('private static final long UPDATE_CHECK_INTERVAL_MS = 10L * 1000L', source)
+        self.assertIn('private static final long UPDATE_RETRY_INTERVAL_MS = 10L * 1000L', source)
+        self.assertIn('handler.postDelayed(this, 10_000L)', source)
         self.assertIn('PREF_LAST_UPDATE_CHECK_VERSION', source)
         self.assertIn('if (hasWindowFocus() && prefs != null) checkForAppUpdate(false)', source)
         self.assertIn('connection.setRequestProperty("Cache-Control", "no-cache, no-store, max-age=0")', source)
@@ -183,6 +184,27 @@ class RequestedFeatureTests(unittest.TestCase):
         self.assertIn("dp(98)", fabs)
         self.assertIn("roundRect(surfaceColor(), 18, borderColor())", source)
         self.assertIn("box.setElevation(dp(3))", source)
+
+    def test_android_wallpaper_tracks_selected_theme_and_downloads_run_foreground(self):
+        root = Path(__file__).resolve().parents[1]
+        source = (root / "sync-app/app/src/main/java/com/tod4s3/sync/MainActivity.java").read_text()
+        service = (root / "sync-app/app/src/main/java/com/tod4s3/sync/DownloadKeepAliveService.java").read_text()
+        manifest = (root / "sync-app/app/src/main/AndroidManifest.xml").read_text()
+        self.assertIn('PREF_WALLPAPER_URI', source)
+        self.assertIn('Intent.ACTION_OPEN_DOCUMENT', source)
+        self.assertIn('takePersistableUriPermission(wallpaper', source)
+        self.assertIn('applyWallpaperBackground()', source)
+        self.assertIn('wallpaperScrim.setBackgroundColor', source)
+        self.assertIn('isDarkTheme() ? Color.BLACK : Color.WHITE', source)
+        self.assertIn('Color.rgb(21, 23, 35)', source)
+        self.assertIn('"#D51F2A"', source)
+        self.assertIn('refreshBackgroundDownloadNotification(true)', source)
+        self.assertIn('refreshBackgroundDownloadNotification(false)', source)
+        self.assertIn('FOREGROUND_SERVICE_DATA_SYNC', manifest)
+        self.assertIn('android:foregroundServiceType="dataSync"', manifest)
+        self.assertIn('startForeground(NOTIFICATION_ID, notification', service)
+        self.assertIn('setOngoing(true)', service)
+        self.assertIn('builder.setProgress(100, Math.min(100, percent), false)', service)
 
     def test_android_ai_has_centered_help_orb_and_keeps_chat_scroll_position(self):
         source = (Path(__file__).resolve().parents[1]
@@ -316,12 +338,13 @@ class RequestedFeatureTests(unittest.TestCase):
         self.assertNotIn("caption=", editor)
         self.assertIn("await message.delete()", editor)
 
-    def test_text_menus_replace_photo_instead_of_editing_caption(self):
+    def test_photo_menus_replace_caption_only_when_telegram_limit_is_exceeded(self):
         source = (Path(__file__).resolve().parents[1] / "bot.py").read_text()
         editor = source.split("async def edit_query_message_text", 1)[1].split("def membership_keyboard", 1)[0]
         self.assertIn("reply = await message.reply_text(text, **kwargs)", editor)
         self.assertIn("await message.delete()", editor)
-        self.assertNotIn("edit_caption(caption=text", editor)
+        self.assertIn('caption_units > 1024 and hasattr(message, "reply_text")', editor)
+        self.assertIn("message.edit_caption(caption=text, **kwargs)", editor)
 
     def test_service_button_opens_service_info(self):
         source = (Path(__file__).resolve().parents[1] / "bot.py").read_text()

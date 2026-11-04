@@ -4599,13 +4599,16 @@ async def edit_query_message_text(message, text: str, **kwargs):
     if getattr(message, "photo", None) and hasattr(message, "edit_caption"):
         # Los menús pueden superar el límite de caption de Telegram. Publicar
         # el texto como mensaje nuevo evita ese límite y conserva la botonera.
-        reply = await message.reply_text(text, **kwargs)
-        if hasattr(message, "delete"):
-            try:
-                await message.delete()
-            except Exception:
-                pass
-        return reply
+        caption_units = len(str(text).encode("utf-16-le")) // 2
+        if caption_units > 1024 and hasattr(message, "reply_text"):
+            reply = await message.reply_text(text, **kwargs)
+            if hasattr(message, "delete"):
+                try:
+                    await message.delete()
+                except Exception:
+                    pass
+            return reply
+        return await message.edit_caption(caption=text, **kwargs)
     return await message.edit_text(text, **kwargs)
 
 
