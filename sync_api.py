@@ -17,7 +17,7 @@ DATA_DIR = Path(os.getenv("BOT_DATA_DIR", "/data"))
 STATE_FILE = Path(os.getenv("SYNC_APP_STATE_FILE", str(DATA_DIR / "sync_app.json")))
 _LOCK = threading.RLock()
 _PAIRING_TTL = 10 * 60
-_TOKEN_TTL = 365 * 24 * 60 * 60
+_TOKEN_TTL = 365 * 24 * 60 * 60  # caduca tras un año sin actividad, no desde el pairing inicial
 
 
 def _default_state() -> dict[str, Any]:
@@ -141,7 +141,10 @@ def app_identity_for_token(token: str) -> dict[str, Any] | None:
         item = state["tokens"].get(token_hash)
         if not isinstance(item, dict):
             return None
-        if int(item.get("created_at", 0)) + _TOKEN_TTL <= int(time.time()):
+        now = int(time.time())
+        created_at = int(item.get("created_at", 0) or 0)
+        last_seen_at = int(item.get("last_seen_at", 0) or created_at)
+        if last_seen_at + _TOKEN_TTL <= now:
             state["tokens"].pop(token_hash, None)
             _write(state)
             return None
@@ -149,7 +152,6 @@ def app_identity_for_token(token: str) -> dict[str, Any] | None:
         device_id = str(item.get("device_id", "")).strip()[:128]
         if user_id <= 0 or not device_id:
             return None
-        now = int(time.time())
         if now - int(item.get("last_seen_at", 0) or 0) >= 60:
             item["last_seen_at"] = now
             _write(state)

@@ -1,9 +1,50 @@
+import hashlib
+
 import sync_api
 import web_store
 import json
 from http.server import ThreadingHTTPServer
 from threading import Thread
 from urllib.request import Request, urlopen
+
+
+def test_active_app_token_expires_after_inactivity_not_from_pairing_date(tmp_path, monkeypatch):
+    monkeypatch.setattr(sync_api, "STATE_FILE", tmp_path / "sync_app.json")
+    now = 2_000_000_000
+    monkeypatch.setattr(sync_api.time, "time", lambda: now)
+    code = sync_api.create_pairing_code(4242)
+    token = sync_api.consume_pairing_code(code, "device-4242")
+    assert token
+
+    state = sync_api._read()
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    state["tokens"][token_hash]["created_at"] = now - sync_api._TOKEN_TTL - 10
+    state["tokens"][token_hash]["last_seen_at"] = now - 120
+    sync_api._write(state)
+
+    assert sync_api.app_identity_for_token(token) == {
+        "user_id": 4242,
+        "device_id": "device-4242",
+    }
+    renewed = sync_api._read()["tokens"][token_hash]
+    assert renewed["last_seen_at"] == now
+
+
+def test_app_token_still_expires_after_a_year_of_inactivity(tmp_path, monkeypatch):
+    monkeypatch.setattr(sync_api, "STATE_FILE", tmp_path / "sync_app.json")
+    now = 2_000_000_000
+    monkeypatch.setattr(sync_api.time, "time", lambda: now)
+    code = sync_api.create_pairing_code(5252)
+    token = sync_api.consume_pairing_code(code, "device-5252")
+    assert token
+
+    state = sync_api._read()
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    state["tokens"][token_hash]["last_seen_at"] = now - sync_api._TOKEN_TTL - 1
+    sync_api._write(state)
+
+    assert sync_api.app_identity_for_token(token) is None
+    assert token_hash not in sync_api._read()["tokens"]
 
 
 def test_deliveries_only_return_tod4s3_bot_source(tmp_path, monkeypatch):
