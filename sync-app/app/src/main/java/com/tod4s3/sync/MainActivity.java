@@ -108,7 +108,11 @@ public final class MainActivity extends Activity {
     private static final String PREF_DOWNLOAD_FOLDER = "download_folder_uri_v1";
     private static final String PREF_AI_CHAT_HISTORY = "ai_chat_history_v1";
     private static final String PREF_LAST_UPDATE_CHECK = "last_android_update_check_v1";
+    private static final String PREF_LAST_UPDATE_ATTEMPT = "last_android_update_attempt_v1";
+    private static final String PREF_LAST_UPDATE_CHECK_VERSION = "last_android_update_check_version_v1";
     private static final String PREF_PENDING_UPDATE_VERSION = "pending_android_update_version_v1";
+    private static final long UPDATE_CHECK_INTERVAL_MS = 15L * 60L * 1000L;
+    private static final long UPDATE_RETRY_INTERVAL_MS = 60L * 1000L;
     private static final int REQUEST_WRITE_STORAGE = 702;
     private static final int REQUEST_PAYMENT_RECEIPT = 703;
     private static final int REQUEST_DOWNLOAD_FOLDER = 705;
@@ -128,6 +132,7 @@ public final class MainActivity extends Activity {
                 refreshAppTasks();
                 refreshAccountProfile();
             }
+            if (hasWindowFocus() && prefs != null) checkForAppUpdate(false);
             handler.postDelayed(this, 15_000L);
         }
     };
@@ -159,6 +164,8 @@ public final class MainActivity extends Activity {
     private View dashboardFab;
     private View dashboardBalanceFab;
     private boolean ussdBalanceRequestInFlight;
+    private FrameLayout ussdLoadingOverlay;
+    private android.animation.ObjectAnimator ussdOrbitAnimator;
     private String token;
     private String pendingPairingCode = "";
     private String todusPhone = "";
@@ -315,19 +322,21 @@ public final class MainActivity extends Activity {
     private void checkForAppUpdate(boolean force) {
         if (updateCheckInFlight || prefs == null || isFinishing()) return;
         long now = System.currentTimeMillis();
-        if (!force && now - prefs.getLong(PREF_LAST_UPDATE_CHECK, 0L) < 6L * 60L * 60L * 1000L) return;
+        long installedVersion = currentVersionCode();
+        long lastSuccessfulCheck = prefs.getLong(PREF_LAST_UPDATE_CHECK, 0L);
+        long checkedAppVersion = prefs.getLong(PREF_LAST_UPDATE_CHECK_VERSION, -1L);
+        long lastAttempt = prefs.getLong(PREF_LAST_UPDATE_ATTEMPT, 0L);
+        if (!force && checkedAppVersion == installedVersion
+                && now - lastSuccessfulCheck < UPDATE_CHECK_INTERVAL_MS) return;
+        if (!force && now - lastAttempt < UPDATE_RETRY_INTERVAL_MS) return;
         updateCheckInFlight = true;
-        prefs.edit().putLong(PREF_LAST_UPDATE_CHECK, now).apply();
+        prefs.edit().putLong(PREF_LAST_UPDATE_ATTEMPT, now).apply();
         new Thread(() -> {
             HttpURLConnection connection = null;
             try {
                 String manifestEntryUrl = prefs.getString(PREF_UPDATE_MANIFEST_URL, UPDATE_MANIFEST_URL);
                 if (!isAllowedUpdateUrl(manifestEntryUrl)) manifestEntryUrl = UPDATE_MANIFEST_URL;
-                connection = (HttpURLConnection) new URL(manifestEntryUrl).openConnection();
-                connection.setConnectTimeout(12_000);
-                connection.setReadTimeout(12_000);
-                connection.setRequestMethod("GET");
-                connection.setRequestProperty("Accept", "application/json");
+                connection = openUpdateManifestConnection(manifestEntryUrl);
                 if (connection.getResponseCode() != HttpURLConnection.HTTP_OK) return;
                 JSONObject manifest = new JSONObject(readUpdateManifest(connection.getInputStream()));
                 String redirectedManifest = manifest.optString("manifest_url", "").trim();
@@ -335,11 +344,7 @@ public final class MainActivity extends Activity {
                     if (!isAllowedUpdateUrl(redirectedManifest)) return;
                     prefs.edit().putString(PREF_UPDATE_MANIFEST_URL, redirectedManifest).apply();
                     connection.disconnect();
-                    connection = (HttpURLConnection) new URL(redirectedManifest).openConnection();
-                    connection.setConnectTimeout(12_000);
-                    connection.setReadTimeout(12_000);
-                    connection.setRequestMethod("GET");
-                    connection.setRequestProperty("Accept", "application/json");
+                    connection = openUpdateManifestConnection(redirectedManifest);
                     if (connection.getResponseCode() != HttpURLConnection.HTTP_OK) return;
                     manifest = new JSONObject(readUpdateManifest(connection.getInputStream()));
                 }
@@ -347,8 +352,11 @@ public final class MainActivity extends Activity {
                 String versionName = manifest.optString("version_name", "");
                 String apkUrl = manifest.optString("apk_url", "");
                 String sha256 = manifest.optString("sha256", "").toLowerCase(java.util.Locale.ROOT);
-                if (versionCode <= currentVersionCode() || !versionName.matches("[0-9A-Za-z._+-]{1,32}")
+                if (versionCode <= 0 || !versionName.matches("[0-9A-Za-z._+-]{1,32}")
                         || !sha256.matches("[a-f0-9]{64}") || !isAllowedUpdateUrl(apkUrl)) return;
+                prefs.edit().putLong(PREF_LAST_UPDATE_CHECK, System.currentTimeMillis())
+                        .putLong(PREF_LAST_UPDATE_CHECK_VERSION, currentVersionCode()).apply();
+                if (versionCode <= currentVersionCode()) return;
                 int availableVersion = versionCode;
                 handler.post(() -> beginAppUpdateDownload(availableVersion, versionName, apkUrl, sha256));
             } catch (Exception e) {
@@ -358,6 +366,19 @@ public final class MainActivity extends Activity {
                 updateCheckInFlight = false;
             }
         }, "tod4s3-update-check").start();
+    }
+
+    private HttpURLConnection openUpdateManifestConnection(String manifestUrl) throws IOException {
+        HttpURLConnection connection = (HttpURLConnection) new URL(manifestUrl).openConnection();
+        connection.setConnectTimeout(12_000);
+        connection.setReadTimeout(12_000);
+        connection.setRequestMethod("GET");
+        connection.setUseCaches(false);
+        connection.setInstanceFollowRedirects(true);
+        connection.setRequestProperty("Accept", "application/json");
+        connection.setRequestProperty("Cache-Control", "no-cache, no-store, max-age=0");
+        connection.setRequestProperty("Pragma", "no-cache");
+        return connection;
     }
 
     private long currentVersionCode() {
@@ -1424,6 +1445,8 @@ public final class MainActivity extends Activity {
 
     private void requestToDusBalance() {
         if (ussdBalanceRequestInFlight) return;
+        ussdBalanceRequestInFlight = true;
+        showUssdOrbitAnimation();
         if (checkSelfPermission(Manifest.permission.CALL_PHONE) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.CALL_PHONE}, REQUEST_USSD_BALANCE_PERMISSION);
             return;
@@ -1443,6 +1466,10 @@ public final class MainActivity extends Activity {
                     throw new IllegalStateException("No hay servicio de llamadas disponible.");
                 }
                 startActivity(call);
+                handler.postDelayed(() -> {
+                    ussdBalanceRequestInFlight = false;
+                    hideUssdOrbitAnimation();
+                }, 1_200L);
             } catch (Exception e) {
                 finishToDusBalanceRequest("No se pudo enviar la consulta USSD. Comprueba la SIM y los permisos.", true);
             }
@@ -1475,8 +1502,78 @@ public final class MainActivity extends Activity {
         }
     }
 
+    private void showUssdOrbitAnimation() {
+        if (appRoot == null) return;
+        hideUssdOrbitAnimation();
+        FrameLayout overlay = new FrameLayout(this);
+        overlay.setBackgroundColor(Color.argb(72, 4, 8, 20));
+        overlay.setClickable(true);
+        overlay.setFocusable(true);
+        overlay.setContentDescription("Consulta de saldo en curso");
+
+        FrameLayout orbit = new FrameLayout(this);
+        GradientDrawable orbitTrack = new GradientDrawable();
+        orbitTrack.setShape(GradientDrawable.OVAL);
+        orbitTrack.setColor(Color.TRANSPARENT);
+        orbitTrack.setStroke(dp(2), Color.rgb(98, 215, 239));
+        orbit.setBackground(orbitTrack);
+        View orbitingDot = new View(this);
+        GradientDrawable dot = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
+                new int[]{Color.rgb(255, 231, 147), Color.rgb(255, 171, 94)});
+        dot.setShape(GradientDrawable.OVAL);
+        orbitingDot.setBackground(dot);
+        orbitingDot.setElevation(dp(5));
+        FrameLayout.LayoutParams dotLayout = new FrameLayout.LayoutParams(dp(12), dp(12),
+                Gravity.TOP | Gravity.CENTER_HORIZONTAL);
+        dotLayout.topMargin = dp(1);
+        orbit.addView(orbitingDot, dotLayout);
+
+        FrameLayout core = new FrameLayout(this);
+        GradientDrawable coreBackground = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
+                new int[]{Color.rgb(93, 82, 220), Color.rgb(37, 164, 198)});
+        coreBackground.setShape(GradientDrawable.OVAL);
+        coreBackground.setStroke(dp(2), Color.argb(210, 255, 255, 255));
+        core.setBackground(coreBackground);
+        core.setElevation(dp(12));
+        ImageView balanceGlyph = new ImageView(this);
+        balanceGlyph.setImageResource(R.drawable.saldo_movil_icon);
+        balanceGlyph.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        balanceGlyph.setColorFilter(Color.WHITE);
+        core.addView(balanceGlyph, new FrameLayout.LayoutParams(dp(42), dp(42), Gravity.CENTER));
+
+        FrameLayout stage = new FrameLayout(this);
+        stage.addView(orbit, new FrameLayout.LayoutParams(dp(116), dp(116), Gravity.CENTER));
+        stage.addView(core, new FrameLayout.LayoutParams(dp(76), dp(76), Gravity.CENTER));
+        overlay.addView(stage, new FrameLayout.LayoutParams(dp(132), dp(132), Gravity.CENTER));
+        appRoot.addView(overlay, new FrameLayout.LayoutParams(-1, -1));
+        ussdLoadingOverlay = overlay;
+
+        ussdOrbitAnimator = android.animation.ObjectAnimator.ofFloat(orbit, View.ROTATION, 0f, 360f);
+        ussdOrbitAnimator.setDuration(920L);
+        ussdOrbitAnimator.setRepeatCount(android.animation.ValueAnimator.INFINITE);
+        ussdOrbitAnimator.setInterpolator(new android.view.animation.LinearInterpolator());
+        ussdOrbitAnimator.start();
+        overlay.setAlpha(0f);
+        overlay.animate().alpha(1f).setDuration(160L).start();
+    }
+
+    private void hideUssdOrbitAnimation() {
+        if (ussdOrbitAnimator != null) {
+            ussdOrbitAnimator.cancel();
+            ussdOrbitAnimator = null;
+        }
+        if (ussdLoadingOverlay != null) {
+            ussdLoadingOverlay.animate().cancel();
+            if (appRoot != null && ussdLoadingOverlay.getParent() == appRoot) {
+                appRoot.removeView(ussdLoadingOverlay);
+            }
+            ussdLoadingOverlay = null;
+        }
+    }
+
     private void finishToDusBalanceRequest(String message, boolean failed) {
         ussdBalanceRequestInFlight = false;
+        hideUssdOrbitAnimation();
         if (isFinishing()) return;
         new AlertDialog.Builder(this)
                 .setTitle(failed ? "No se pudo consultar el saldo" : "Saldo ToDus")
@@ -1486,6 +1583,8 @@ public final class MainActivity extends Activity {
     }
 
     private void showBalancePermissionDenied() {
+        ussdBalanceRequestInFlight = false;
+        hideUssdOrbitAnimation();
         Toast.makeText(this, "Hace falta permitir llamadas para enviar la consulta USSD de ToDus.", Toast.LENGTH_LONG).show();
     }
 
@@ -5625,6 +5724,8 @@ public final class MainActivity extends Activity {
 
     @Override protected void onDestroy() {
         handler.removeCallbacks(poller);
+        ussdBalanceRequestInFlight = false;
+        hideUssdOrbitAnimation();
         super.onDestroy();
     }
 }
