@@ -48,6 +48,7 @@ import android.widget.ImageView;
 import android.widget.RadioButton;
 import android.widget.RadioGroup;
 import android.widget.ScrollView;
+import android.widget.Switch;
 import android.widget.PopupWindow;
 import android.widget.SeekBar;
 import android.widget.TextView;
@@ -107,6 +108,7 @@ public final class MainActivity extends Activity {
     private static final String PREF_UI_ACCENT = "ui_accent_v1";
     private static final String PREF_WALLPAPER_URI = "ui_wallpaper_uri_v1";
     private static final String PREF_WALLPAPER_DIM = "ui_wallpaper_dim_v1";
+    private static final String PREF_SPEED_OVERLAY_ENABLED = "speed_overlay_enabled_v1";
     private static final String PREF_UPDATE_MANIFEST_URL = "android_update_manifest_url_v1";
     private static final String PREF_DOWNLOAD_CONCURRENCY = "download_concurrency_v1";
     private static final String PREF_DOWNLOAD_FOLDER = "download_folder_uri_v1";
@@ -124,6 +126,7 @@ public final class MainActivity extends Activity {
     private static final int REQUEST_UPDATE_INSTALL_PERMISSION = 707;
     private static final int REQUEST_USSD_BALANCE_PERMISSION = 708;
     private static final int REQUEST_WALLPAPER_IMAGE = 709;
+    private static final int REQUEST_SPEED_OVERLAY_PERMISSION = 710;
     private static final String USSD_BALANCE_CODE = "*222*328#";
     private static final String DOWNLOAD_NOTIFICATION_CHANNEL = "downloads_complete_v1";
 
@@ -171,6 +174,7 @@ public final class MainActivity extends Activity {
     private View dashboardFab;
     private View dashboardBalanceFab;
     private boolean ussdBalanceRequestInFlight;
+    private boolean awaitingSpeedOverlayPermission;
     private FrameLayout ussdLoadingOverlay;
     private android.animation.ObjectAnimator ussdOrbitAnimator;
     private long lastBackgroundNotificationUpdateAt;
@@ -342,6 +346,62 @@ public final class MainActivity extends Activity {
         super.onResume();
         if (prefs != null && token != null && !token.isEmpty()) refreshAccountProfile();
         if (prefs != null) checkForAppUpdate(false);
+        if (prefs != null && awaitingSpeedOverlayPermission) {
+            awaitingSpeedOverlayPermission = false;
+            if (Settings.canDrawOverlays(this)) {
+                prefs.edit().putBoolean(PREF_SPEED_OVERLAY_ENABLED, true).apply();
+                startNetworkSpeedOverlayService();
+                if (!viewingDashboard && !showingPlansPage) showSettings(false);
+            } else {
+                prefs.edit().putBoolean(PREF_SPEED_OVERLAY_ENABLED, false).apply();
+                Toast.makeText(this, "Sin ese permiso no se puede mostrar la burbuja flotante.", Toast.LENGTH_LONG).show();
+                if (!viewingDashboard && !showingPlansPage) showSettings(false);
+            }
+        } else if (prefs != null && prefs.getBoolean(PREF_SPEED_OVERLAY_ENABLED, false)) {
+            if (Settings.canDrawOverlays(this)) {
+                startNetworkSpeedOverlayService();
+            } else {
+                prefs.edit().putBoolean(PREF_SPEED_OVERLAY_ENABLED, false).apply();
+                if (!viewingDashboard && !showingPlansPage) showSettings(false);
+            }
+        }
+    }
+
+    private void setNetworkSpeedOverlayEnabled(boolean enabled) {
+        if (!enabled) {
+            prefs.edit().putBoolean(PREF_SPEED_OVERLAY_ENABLED, false).apply();
+            stopService(new Intent(this, NetworkSpeedOverlayService.class));
+            showSettings(false);
+            return;
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
+            awaitingSpeedOverlayPermission = true;
+            try {
+                Intent permission = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                        Uri.parse("package:" + getPackageName()));
+                startActivityForResult(permission, REQUEST_SPEED_OVERLAY_PERMISSION);
+            } catch (Exception e) {
+                awaitingSpeedOverlayPermission = false;
+                Toast.makeText(this, "No se pudo abrir el permiso de superposición.", Toast.LENGTH_LONG).show();
+                showSettings(false);
+            }
+            return;
+        }
+        prefs.edit().putBoolean(PREF_SPEED_OVERLAY_ENABLED, true).apply();
+        startNetworkSpeedOverlayService();
+        showSettings(false);
+    }
+
+    private void startNetworkSpeedOverlayService() {
+        Intent service = new Intent(this, NetworkSpeedOverlayService.class)
+                .setAction(NetworkSpeedOverlayService.ACTION_START);
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(service);
+            else startService(service);
+        } catch (Exception e) {
+            prefs.edit().putBoolean(PREF_SPEED_OVERLAY_ENABLED, false).apply();
+            Toast.makeText(this, "Android no permitió iniciar la burbuja de velocidad.", Toast.LENGTH_LONG).show();
+        }
     }
 
     private void checkForAppUpdate(boolean force) {
@@ -2714,6 +2774,20 @@ public final class MainActivity extends Activity {
         });
         appearance.addView(wallpaperDim);
         page.addView(appearance, margin(0, 0, 0, 0));
+
+        addSettingsHeading(page, "INDICADOR DE RED");
+        LinearLayout networkSpeed = card();
+        Switch speedOverlayToggle = new Switch(this);
+        speedOverlayToggle.setText("Panel rectangular de velocidad");
+        speedOverlayToggle.setTextColor(primaryTextColor());
+        speedOverlayToggle.setTextSize(15);
+        speedOverlayToggle.setChecked(prefs.getBoolean(PREF_SPEED_OVERLAY_ENABLED, false));
+        speedOverlayToggle.setContentDescription("Activar o desactivar el panel rectangular de velocidad de red");
+        speedOverlayToggle.setOnCheckedChangeListener((button, enabled) -> setNetworkSpeedOverlayEnabled(enabled));
+        networkSpeed.addView(speedOverlayToggle);
+        networkSpeed.addView(bodyText("Como en UtilEs: indicador rectangular sobre otras apps con Wi-Fi o datos móviles y velocidades de bajada/subida. Puedes moverlo y apagarlo aquí."),
+                margin(0, 5, 0, 0));
+        page.addView(networkSpeed);
 
         addSettingsHeading(page, "DESCARGAS");
         LinearLayout downloads = card();

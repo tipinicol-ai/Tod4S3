@@ -206,6 +206,30 @@ class RequestedFeatureTests(unittest.TestCase):
         self.assertIn('setOngoing(true)', service)
         self.assertIn('builder.setProgress(100, Math.min(100, percent), false)', service)
 
+    def test_android_network_speed_bubble_is_user_toggleable_and_shows_live_rates(self):
+        root = Path(__file__).resolve().parents[1]
+        source = (root / "sync-app/app/src/main/java/com/tod4s3/sync/MainActivity.java").read_text()
+        service = (root / "sync-app/app/src/main/java/com/tod4s3/sync/NetworkSpeedOverlayService.java").read_text()
+        manifest = (root / "sync-app/app/src/main/AndroidManifest.xml").read_text()
+        settings = source.split('addSettingsHeading(page, "INDICADOR DE RED")', 1)[1].split('addSettingsHeading(page, "DESCARGAS")', 1)[0]
+        self.assertIn('Switch speedOverlayToggle = new Switch(this)', settings)
+        self.assertIn('setNetworkSpeedOverlayEnabled(enabled)', settings)
+        self.assertIn('Settings.ACTION_MANAGE_OVERLAY_PERMISSION', source)
+        self.assertIn('Settings.canDrawOverlays(this)', source)
+        self.assertIn('PREF_SPEED_OVERLAY_ENABLED', source)
+        self.assertIn('android.permission.SYSTEM_ALERT_WINDOW', manifest)
+        self.assertIn('android.permission.FOREGROUND_SERVICE_SPECIAL_USE', manifest)
+        self.assertIn('android:foregroundServiceType="specialUse"', manifest)
+        self.assertIn('PROPERTY_SPECIAL_USE_FGS_SUBTYPE', manifest)
+        self.assertIn('TYPE_APPLICATION_OVERLAY', service)
+        self.assertIn('TrafficStats.getTotalRxBytes()', service)
+        self.assertIn('TrafficStats.getMobileRxBytes()', service)
+        self.assertIn('SAMPLE_INTERVAL_MS = 1_000L', service)
+        self.assertIn('↓ ', service)
+        self.assertIn('↑ ', service)
+        self.assertIn('handleDrag', service)
+        self.assertIn('Desactivar', service)
+
     def test_android_ai_has_centered_help_orb_and_keeps_chat_scroll_position(self):
         source = (Path(__file__).resolve().parents[1]
                   / "sync-app/app/src/main/java/com/tod4s3/sync/MainActivity.java").read_text()
