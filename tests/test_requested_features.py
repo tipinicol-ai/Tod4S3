@@ -547,8 +547,12 @@ class RequestedFeatureTests(unittest.TestCase):
     def test_download_menu_exposes_todus_only(self):
         markup = download_menu_keyboard()
         callbacks = [button.callback_data for row in markup.inline_keyboard for button in row]
-        self.assertIn("download:mode:todus", callbacks)
+        self.assertIn("download:telegram", callbacks)
+        self.assertIn("download:url", callbacks)
         self.assertNotIn("download:mode:s3", callbacks)
+        labels = [button.text for row in markup.inline_keyboard for button in row]
+        self.assertTrue(any("📁" in label for label in labels))
+        self.assertTrue(any("🔗" in label for label in labels))
         self.assertNotIn("s3", download_menu_text().lower())
         source_callbacks = [
             button.callback_data

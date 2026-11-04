@@ -64,7 +64,8 @@ class DownloadDeliveryModeTests(IsolatedAsyncioTestCase):
     async def test_download_menu_exposes_only_todus(self):
         markup = bot.download_menu_keyboard()
         callbacks = [button.callback_data for row in markup.inline_keyboard for button in row]
-        self.assertIn("download:mode:todus", callbacks)
+        self.assertIn("download:telegram", callbacks)
+        self.assertIn("download:url", callbacks)
         self.assertNotIn("download:mode:s3", callbacks)
         self.assertNotIn("s3", bot.download_menu_text().lower())
 

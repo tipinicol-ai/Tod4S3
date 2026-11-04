@@ -2783,19 +2783,20 @@ def data_package_confirmation_keyboard(package_key: str) -> InlineKeyboardMarkup
 
 def download_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [btn("📲 Continuar con ToDus", callback_data="download:mode:todus", style="primary")],
+        [btn("📁 Por Telegram", callback_data="download:telegram", style="primary")],
+        [btn("🔗 Enlaces", callback_data="download:url")],
         [btn("🏠 ɪɴɪᴄɪᴏ", callback_data="home")],
     ])
 
 
 def download_menu_text() -> str:
     return card("📥 ᴄᴇɴᴛʀᴏ ᴅᴇ ᴅᴇꜱᴄᴀʀɢᴀꜱ", [
-        "Tus archivos se entregan por ToDus.",
+        "Elige qué quieres enviar:",
+        "un archivo de Telegram o un enlace.",
+        "Todo se entregará por ToDus.",
         "",
         "Registra tu número cubano",
         "para recibirlos en tu cuenta.",
-        "",
-        "Después elige Telegram o enlace.",
     ])
 
 
