@@ -42,7 +42,7 @@ public final class NetworkSpeedOverlayService extends Service {
     private static final String PREF_Y = "speed_overlay_y_v1";
     private static final int NOTIFICATION_ID = 8820;
     private static final long SAMPLE_INTERVAL_MS = 1_000L;
-    private static final int NAVY = Color.rgb(20, 28, 43);
+    private static final int TRANSLUCENT_NAVY = Color.argb(128, 20, 28, 43);
     private static final int RED = Color.rgb(213, 31, 42);
     private static final int DOWNLOAD_BLUE = Color.rgb(110, 190, 255);
     private static final int SOFT_WHITE = Color.rgb(242, 245, 250);
@@ -108,8 +108,8 @@ public final class NetworkSpeedOverlayService extends Service {
         GradientDrawable background = new GradientDrawable();
         background.setShape(GradientDrawable.RECTANGLE);
         background.setCornerRadius(dp(5));
-        background.setColor(NAVY);
-        background.setStroke(dp(1), Color.argb(190, 213, 31, 42));
+        background.setColor(TRANSLUCENT_NAVY);
+        background.setStroke(dp(1), Color.argb(205, 213, 31, 42));
         bubble.setBackground(background);
         bubble.setElevation(dp(10));
         bubble.setContentDescription("Panel rectangular de velocidad de red. Arrastra para moverlo.");
@@ -118,10 +118,11 @@ public final class NetworkSpeedOverlayService extends Service {
         rates.setOrientation(LinearLayout.VERTICAL);
         rates.setGravity(Gravity.CENTER_VERTICAL);
         networkLabel = new TextView(this);
-        networkLabel.setText("RED");
+        networkLabel.setText("SIN CONEXIÓN");
         networkLabel.setTextColor(MUTED);
         networkLabel.setTextSize(9);
         networkLabel.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        networkLabel.setShadowLayer(dp(2), 0f, dp(1), Color.BLACK);
         rates.addView(networkLabel, new LinearLayout.LayoutParams(-2, -2));
 
         downloadRate = rateText(DOWNLOAD_BLUE);
@@ -165,6 +166,7 @@ public final class NetworkSpeedOverlayService extends Service {
         text.setTextSize(12);
         text.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
         text.setIncludeFontPadding(false);
+        text.setShadowLayer(dp(2), 0f, dp(1), Color.BLACK);
         text.setText("↓ 0 B/s");
         return text;
     }
@@ -233,6 +235,10 @@ public final class NetworkSpeedOverlayService extends Service {
         previousSampleAt = now;
 
         if (networkLabel != null) networkLabel.setText(transport);
+        if (networkLabel != null) {
+            networkLabel.setTextColor("WI-FI".equals(transport) ? DOWNLOAD_BLUE
+                    : ("DATOS MÓVILES".equals(transport) ? Color.rgb(255, 164, 171) : MUTED));
+        }
         if (downloadRate != null) downloadRate.setText("↓ " + formatRate(rxPerSecond));
         if (uploadRate != null) uploadRate.setText("↑ " + formatRate(txPerSecond));
         handler.postDelayed(sampleRunnable, SAMPLE_INTERVAL_MS);
@@ -240,17 +246,19 @@ public final class NetworkSpeedOverlayService extends Service {
 
     private String activeTransport() {
         ConnectivityManager manager = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
-        if (manager == null) return "RED";
+        if (manager == null) return "SIN CONEXIÓN";
         try {
             Network network = manager.getActiveNetwork();
+            if (network == null) return "SIN CONEXIÓN";
             NetworkCapabilities capabilities = network == null ? null : manager.getNetworkCapabilities(network);
             if (capabilities != null) {
                 if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) return "WI-FI";
-                if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) return "MÓVIL";
-                if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)) return "RED";
+                if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) return "DATOS MÓVILES";
+                if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)) return "ETHERNET";
+                if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) return "VPN";
             }
         } catch (RuntimeException ignored) { }
-        return "RED";
+        return "SIN CONEXIÓN";
     }
 
     private long[] countersFor(String transport) {
@@ -258,7 +266,7 @@ public final class NetworkSpeedOverlayService extends Service {
         long totalTx = TrafficStats.getTotalTxBytes();
         long mobileRx = TrafficStats.getMobileRxBytes();
         long mobileTx = TrafficStats.getMobileTxBytes();
-        if ("MÓVIL".equals(transport) && mobileRx >= 0L && mobileTx >= 0L) {
+        if ("DATOS MÓVILES".equals(transport) && mobileRx >= 0L && mobileTx >= 0L) {
             return new long[]{mobileRx, mobileTx};
         }
         if ("WI-FI".equals(transport) && totalRx >= 0L && totalTx >= 0L
