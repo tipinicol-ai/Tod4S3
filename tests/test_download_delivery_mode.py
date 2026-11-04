@@ -15,7 +15,7 @@ class FakeQueue:
 
 
 class DownloadDeliveryModeTests(IsolatedAsyncioTestCase):
-    async def test_destination_callback_then_source_callback_keeps_selected_mode(self):
+    async def test_legacy_s3_callback_is_normalized_to_todus(self):
         message = SimpleNamespace(edit_text=AsyncMock(), reply_text=AsyncMock())
         user = SimpleNamespace(id=73421, username="demo", full_name="Demo User")
         context = SimpleNamespace(
@@ -25,11 +25,7 @@ class DownloadDeliveryModeTests(IsolatedAsyncioTestCase):
         )
 
         async def invoke(callback_data):
-            query = SimpleNamespace(
-                data=callback_data,
-                answer=AsyncMock(),
-                message=message,
-            )
+            query = SimpleNamespace(data=callback_data, answer=AsyncMock(), message=message)
             update = SimpleNamespace(
                 callback_query=query,
                 effective_user=user,
@@ -44,35 +40,36 @@ class DownloadDeliveryModeTests(IsolatedAsyncioTestCase):
             query.answer.assert_awaited_once()
             return message.edit_text.call_args
 
+        # Los botones antiguos pueden seguir en Telegram, pero nunca vuelven a activar S3.
         mode_call = await invoke("download:mode:s3")
-        self.assertEqual(context.user_data["download_delivery_mode"], "s3")
-        source_markup = mode_call.kwargs["reply_markup"]
-        self.assertEqual(source_markup.inline_keyboard[0][0].callback_data, "download:telegram")
-        self.assertEqual(source_markup.inline_keyboard[0][1].callback_data, "download:url")
+        self.assertEqual(context.user_data["download_delivery_mode"], "todus")
+        self.assertIn("ᴛᴏᴅᴜꜱ", mode_call.args[0].lower())
 
         prompt_call = await invoke("download:url")
-        self.assertIn("ʟᴀ ɴᴜʙᴇ", prompt_call.args[0])
-        self.assertIn("ꜱ3", prompt_call.args[0])
+        self.assertIn("ᴛᴏᴅᴜꜱ", prompt_call.args[0].lower())
+        self.assertNotIn("s3", prompt_call.args[0].lower())
         prompt_callbacks = [
             button.callback_data
             for row in prompt_call.kwargs["reply_markup"].inline_keyboard
             for button in row
         ]
-        self.assertNotIn("todus:register", prompt_callbacks)
+        self.assertIn("todus:register", prompt_callbacks)
 
-        await invoke("downloads")
-        await invoke("download:mode:todus")
+        # También se normaliza una sesión que aún guardaba S3 antes de actualizar.
+        context.user_data["download_delivery_mode"] = "s3"
+        old_session_prompt = await invoke("download:telegram")
         self.assertEqual(context.user_data["download_delivery_mode"], "todus")
-        todus_prompt = await invoke("download:telegram")
-        todus_callbacks = [
-            button.callback_data
-            for row in todus_prompt.kwargs["reply_markup"].inline_keyboard
-            for button in row
-        ]
-        self.assertIn("todus:register", todus_callbacks)
+        self.assertIn("ᴛᴏᴅᴜꜱ", old_session_prompt.args[0].lower())
 
-    async def test_enqueue_transfer_captures_the_selected_destination(self):
-        for mode in ("s3", "todus"):
+    async def test_download_menu_exposes_only_todus(self):
+        markup = bot.download_menu_keyboard()
+        callbacks = [button.callback_data for row in markup.inline_keyboard for button in row]
+        self.assertIn("download:mode:todus", callbacks)
+        self.assertNotIn("download:mode:s3", callbacks)
+        self.assertNotIn("s3", bot.download_menu_text().lower())
+
+    async def test_enqueue_transfer_always_uses_todus_even_for_legacy_session(self):
+        for mode in ("s3", "todus", None):
             with self.subTest(mode=mode):
                 queue = FakeQueue()
                 status = SimpleNamespace(edit_text=AsyncMock())
@@ -93,9 +90,10 @@ class DownloadDeliveryModeTests(IsolatedAsyncioTestCase):
                         context,
                         source_kind="url",
                         source_url="https://example.org/file.bin",
+                        delivery_mode=mode,
                     )
                 self.assertEqual(len(queue.jobs), 1)
-                self.assertEqual(queue.jobs[0].delivery_mode, mode)
+                self.assertEqual(queue.jobs[0].delivery_mode, "todus")
 
     async def test_todus_mode_requires_sender_credentials_before_registration(self):
         message = SimpleNamespace(reply_text=AsyncMock())

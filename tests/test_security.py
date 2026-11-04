@@ -119,10 +119,12 @@ class TelegramCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(buttons[1].style, "success")
         self.assertTrue(all(button.style == "primary" for button in buttons[2:]))
 
-    def test_download_menu_offers_s3_or_todus_then_telegram_or_url_sources(self):
+    def test_download_menu_offers_todus_then_telegram_or_url_sources(self):
         buttons = [button for row in download_menu_keyboard().inline_keyboard for button in row]
         callbacks = [button.callback_data for button in buttons]
-        self.assertEqual(callbacks[:2], ["download:mode:s3", "download:mode:todus"])
+        self.assertIn("download:mode:todus", callbacks)
+        self.assertNotIn("download:mode:s3", callbacks)
+        self.assertNotIn("s3", download_menu_text().lower())
         source_buttons = [
             button for row in download_source_keyboard().inline_keyboard for button in row
         ]

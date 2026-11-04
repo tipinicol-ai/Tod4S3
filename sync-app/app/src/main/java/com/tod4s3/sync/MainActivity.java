@@ -25,6 +25,7 @@ import android.provider.MediaStore;
 import android.provider.DocumentsContract;
 import android.telephony.TelephonyManager;
 import android.speech.tts.TextToSpeech;
+import android.speech.tts.UtteranceProgressListener;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
 import android.util.Base64;
@@ -217,6 +218,12 @@ public final class MainActivity extends Activity {
     private Button aiSendButton;
     private Switch aiVoiceToggle;
     private TextView aiChatStatus;
+    private LinearLayout aiActivityPanel;
+    private TextView aiActivityLabel;
+    private LinearLayout aiVoiceVisualizer;
+    private ObjectAnimator aiTypingAnimator;
+    private final ArrayList<ObjectAnimator> aiVoiceAnimators = new ArrayList<>();
+    private volatile String aiLastUtteranceId = "";
     private TextToSpeech aiTextToSpeech;
     private boolean aiTtsReady;
     private String pendingAiSpeech = "";
@@ -1712,21 +1719,7 @@ public final class MainActivity extends Activity {
         if (appRoot == null) return;
         if (dashboardFab != null) appRoot.removeView(dashboardFab);
         if (dashboardBalanceFab != null) appRoot.removeView(dashboardBalanceFab);
-        TextView fab = text("＋", 29, false);
-        fab.setGravity(Gravity.CENTER);
-        fab.setTextColor(onAccentColor());
-        GradientDrawable circle = new GradientDrawable();
-        circle.setShape(GradientDrawable.OVAL);
-        circle.setColor(accentColor());
-        circle.setStroke(dp(2), isDarkTheme() ? Color.rgb(67, 76, 96) : Color.WHITE);
-        fab.setBackground(circle);
-        fab.setElevation(dp(10));
-        fab.setContentDescription("Nueva descarga");
-        fab.setOnClickListener(v -> openNewDownloadDialog());
-        FrameLayout.LayoutParams layout = new FrameLayout.LayoutParams(dp(58), dp(58), Gravity.BOTTOM | Gravity.END);
-        layout.setMargins(0, 0, dp(20), dp(28));
-        appRoot.addView(fab, layout);
-        dashboardFab = fab;
+        dashboardFab = null;
 
         FrameLayout balance = new FrameLayout(this);
         GradientDrawable balanceCircle = new GradientDrawable();
@@ -1922,9 +1915,6 @@ public final class MainActivity extends Activity {
         boolean toDusTab = "all".equals(dashboardFilter);
         if (toDusTab) addToDusSessionStatus(dashboardItemsBox);
         shown += renderToDusDownloadTasks();
-        if ("active".equals(dashboardFilter)) {
-            shown += renderDirectLinkTasks();
-        }
         if (!toDusTab) {
             ArrayList<JSONObject> tasks = new ArrayList<>();
             for (int i = 0; i < latestAppTaskRows.length(); i++) {
@@ -1974,6 +1964,7 @@ public final class MainActivity extends Activity {
     }
 
     private int renderToDusDownloadTasks() {
+        if ("completed".equals(dashboardFilter)) return 0;
         ArrayList<ToDusDownloadTask> tasks;
         synchronized (toDusDownloadLock) {
             tasks = new ArrayList<>(toDusDownloadTasks.values());
@@ -2221,17 +2212,13 @@ public final class MainActivity extends Activity {
         TextView title = text(toDusTab ? "Todo sincronizado" : "Tu lista está limpia", 17, true);
         title.setGravity(Gravity.CENTER);
         empty.addView(title, margin(0, 10, 0, 0));
-        TextView hint = bodyText(toDusTab
+        String hintMessage = toDusTab
                 ? "No hay entregas nuevas pendientes. Los próximos archivos de ToDus aparecerán aquí."
-                : "Pega el enlace que recibiste del bot para guardarlo en este teléfono.");
+                : "Pulsa Descargar en una entrega de Todo; su progreso aparecerá en Activas y el archivo guardado en Completadas.";
+        TextView hint = bodyText(hintMessage);
         hint.setGravity(Gravity.CENTER);
         hint.setTextSize(12);
-        empty.addView(hint, margin(0, 5, 0, toDusTab ? 0 : 12));
-        if (!toDusTab) {
-            Button add = primaryButton("Nueva descarga");
-            add.setOnClickListener(v -> openNewDownloadDialog());
-            empty.addView(add, margin(0, 0, 0, 0));
-        }
+        empty.addView(hint, margin(0, 5, 0, 0));
         container.addView(empty, margin(0, 24, 0, 0));
     }
 
@@ -3425,6 +3412,50 @@ public final class MainActivity extends Activity {
                 isDarkTheme() ? Color.rgb(42, 58, 78) : Color.rgb(208, 229, 239)));
         page.addView(aiChatStatus, margin(2, 2, 2, 7));
 
+        aiActivityPanel = new LinearLayout(this);
+        aiActivityPanel.setOrientation(LinearLayout.HORIZONTAL);
+        aiActivityPanel.setGravity(Gravity.CENTER_VERTICAL);
+        aiActivityPanel.setPadding(dp(11), dp(7), dp(12), dp(7));
+        aiActivityPanel.setBackground(roundRect(isDarkTheme() ? Color.rgb(25, 31, 51) : Color.rgb(244, 246, 255),
+                16, isDarkTheme() ? Color.rgb(73, 72, 117) : Color.rgb(219, 221, 247)));
+        aiActivityPanel.setVisibility(View.GONE);
+        FrameLayout activityOrb = new FrameLayout(this);
+        GradientDrawable activityOrbBackground = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
+                new int[]{Color.rgb(142, 72, 228), Color.rgb(39, 176, 205)});
+        activityOrbBackground.setShape(GradientDrawable.OVAL);
+        activityOrb.setBackground(activityOrbBackground);
+        ImageView activityGlyph = new ImageView(this);
+        activityGlyph.setImageResource(R.drawable.ic_ai_sparkle);
+        activityGlyph.setColorFilter(Color.WHITE);
+        activityOrb.addView(activityGlyph, new FrameLayout.LayoutParams(dp(15), dp(15), Gravity.CENTER));
+        aiActivityPanel.addView(activityOrb, new LinearLayout.LayoutParams(dp(26), dp(26)));
+        aiActivityLabel = text("AiTod4S3 está escribiendo", 11, true);
+        aiActivityLabel.setTextColor(isDarkTheme() ? Color.rgb(223, 221, 255) : Color.rgb(74, 70, 142));
+        LinearLayout.LayoutParams activityLabelParams = new LinearLayout.LayoutParams(0, -2, 1f);
+        activityLabelParams.setMargins(dp(9), 0, dp(8), 0);
+        aiActivityPanel.addView(aiActivityLabel, activityLabelParams);
+        aiVoiceVisualizer = new LinearLayout(this);
+        aiVoiceVisualizer.setGravity(Gravity.CENTER);
+        aiVoiceVisualizer.setOrientation(LinearLayout.HORIZONTAL);
+        aiVoiceVisualizer.setVisibility(View.GONE);
+        int[] barHeights = {dp(9), dp(16), dp(12), dp(19), dp(10)};
+        for (int i = 0; i < barHeights.length; i++) {
+            View bar = new View(this);
+            bar.setBackground(roundRect(new int[]{Color.rgb(147, 91, 246), Color.rgb(63, 196, 220)}[i % 2], 4, 0));
+            LinearLayout.LayoutParams barParams = new LinearLayout.LayoutParams(dp(3), barHeights[i]);
+            barParams.setMargins(dp(2), 0, dp(2), 0);
+            aiVoiceVisualizer.addView(bar, barParams);
+            ObjectAnimator wave = ObjectAnimator.ofFloat(bar, View.SCALE_Y, 0.35f, 1.2f, 0.5f);
+            wave.setDuration(420L + (i % 3) * 90L);
+            wave.setStartDelay(i * 65L);
+            wave.setRepeatCount(ObjectAnimator.INFINITE);
+            wave.setRepeatMode(ObjectAnimator.REVERSE);
+            wave.setInterpolator(new DecelerateInterpolator());
+            aiVoiceAnimators.add(wave);
+        }
+        aiActivityPanel.addView(aiVoiceVisualizer, new LinearLayout.LayoutParams(-2, dp(23)));
+        page.addView(aiActivityPanel, margin(2, 0, 2, 7));
+
         aiConversationScroll = new ScrollView(this);
         aiConversationScroll.setFillViewport(true);
         aiConversationScroll.setVerticalScrollBarEnabled(true);
@@ -3507,6 +3538,32 @@ public final class MainActivity extends Activity {
         showPage(page, animated);
         showingAiChat = true;
         homeTabPageVisible = true;
+    }
+
+    private void setAiActivityState(String label, boolean speaking, boolean visible) {
+        if (aiActivityPanel == null || aiActivityLabel == null) return;
+        if (aiTypingAnimator != null) {
+            aiTypingAnimator.cancel();
+            aiTypingAnimator = null;
+        }
+        aiActivityLabel.setText(label == null ? "AiTod4S3" : label);
+        aiActivityPanel.setContentDescription(label);
+        aiActivityPanel.setVisibility(visible ? View.VISIBLE : View.GONE);
+        aiVoiceVisualizer.setVisibility(visible && speaking ? View.VISIBLE : View.GONE);
+        if (speaking && visible) {
+            for (ObjectAnimator animator : aiVoiceAnimators) {
+                if (!animator.isRunning()) animator.start();
+            }
+        } else {
+            for (ObjectAnimator animator : aiVoiceAnimators) animator.cancel();
+            if (visible) {
+                aiTypingAnimator = ObjectAnimator.ofFloat(aiActivityLabel, View.ALPHA, 1f, 0.52f, 1f);
+                aiTypingAnimator.setDuration(780L);
+                aiTypingAnimator.setRepeatCount(ObjectAnimator.INFINITE);
+                aiTypingAnimator.setRepeatMode(ObjectAnimator.RESTART);
+                aiTypingAnimator.start();
+            }
+        }
     }
 
     private void renderAiConversation() {
@@ -3715,11 +3772,12 @@ public final class MainActivity extends Activity {
         if (aiChatMessages.size() > 24) aiChatMessages.subList(0, aiChatMessages.size() - 24).clear();
         persistAiChatHistory();
         aiComposer.setText("");
-        renderAiConversation();
         aiChatRequestInFlight = true;
+        renderAiConversation();
+        setAiActivityState("AiTod4S3 está escribiendo…", false, true);
         aiSendButton.setEnabled(false);
         aiSendButton.setText("…");
-        aiChatStatus.setText("AiTod4S3 está preparando una respuesta…");
+        aiChatStatus.setText("●  PREPARANDO TU RESPUESTA");
         final int requestGeneration = appAccessGeneration;
         JSONArray messages = new JSONArray();
         int from = Math.max(0, aiChatMessages.size() - 12);
@@ -3786,13 +3844,17 @@ public final class MainActivity extends Activity {
                         && aiConversationBox != null) {
                     if (finalReply != null) {
                         aiChatMessages.add(new AiChatMessage("assistant", finalReply));
-                        aiChatStatus.setText("Respuesta recibida.");
                         if (prefs != null && prefs.getBoolean(PREF_AI_VOICE_MODE, false)) {
+                            aiChatStatus.setText("●  RESPUESTA LISTA · INICIANDO VOZ");
                             speakAiReply(finalReply);
+                        } else {
+                            aiChatStatus.setText("●  RESPUESTA RECIBIDA");
+                            setAiActivityState("Respuesta lista", false, false);
                         }
                     } else {
                         String visibleFailure = finalFailure == null ? "No se pudo obtener una respuesta." : finalFailure;
-                        aiChatStatus.setText("No se pudo responder.");
+                        aiChatStatus.setText("●  NO SE PUDO RESPONDER");
+                        setAiActivityState("Inténtalo de nuevo", false, false);
                         aiChatMessages.add(new AiChatMessage("assistant", visibleFailure));
                     }
                     if (aiChatMessages.size() > 24) aiChatMessages.subList(0, aiChatMessages.size() - 24).clear();
@@ -3810,13 +3872,16 @@ public final class MainActivity extends Activity {
     private void setAiVoiceMode(boolean enabled) {
         if (prefs != null) prefs.edit().putBoolean(PREF_AI_VOICE_MODE, enabled).apply();
         if (enabled) {
-            if (aiChatStatus != null) aiChatStatus.setText("Preparando la voz en español…");
+            if (aiChatStatus != null) aiChatStatus.setText("●  PREPARANDO VOZ EN ESPAÑOL");
+            setAiActivityState("Preparando voz en español…", false, true);
             ensureAiTextToSpeech();
         } else {
             pendingAiSpeech = "";
             aiSpeechGeneration++;
+            aiLastUtteranceId = "";
             if (aiTextToSpeech != null) aiTextToSpeech.stop();
-            if (aiChatStatus != null) aiChatStatus.setText("Modo solo texto activado.");
+            setAiActivityState("", false, false);
+            if (aiChatStatus != null) aiChatStatus.setText("●  MODO SOLO TEXTO ACTIVADO");
         }
     }
 
@@ -3841,6 +3906,34 @@ public final class MainActivity extends Activity {
                     return;
                 }
                 aiTtsReady = true;
+                aiTextToSpeech.setOnUtteranceProgressListener(new UtteranceProgressListener() {
+                    @Override public void onStart(String utteranceId) {
+                        runOnUiThread(() -> {
+                            if (aiChatStatus != null) aiChatStatus.setText("●  AiTod4S3 ESTÁ HABLANDO");
+                            setAiActivityState("AiTod4S3 está hablando…", true, true);
+                        });
+                    }
+
+                    @Override public void onDone(String utteranceId) {
+                        if (utteranceId != null && utteranceId.equals(aiLastUtteranceId)) {
+                            runOnUiThread(() -> {
+                                aiLastUtteranceId = "";
+                                setAiActivityState("", false, false);
+                                if (aiChatStatus != null) aiChatStatus.setText("●  RESPUESTA HABLADA COMPLETA");
+                            });
+                        }
+                    }
+
+                    @Override public void onError(String utteranceId) {
+                        if (utteranceId != null && utteranceId.equals(aiLastUtteranceId)) {
+                            runOnUiThread(() -> {
+                                aiLastUtteranceId = "";
+                                setAiActivityState("", false, false);
+                                if (aiChatStatus != null) aiChatStatus.setText("●  RESPUESTA DISPONIBLE POR TEXTO");
+                            });
+                        }
+                    }
+                });
                 if (prefs != null && prefs.getBoolean(PREF_AI_VOICE_MODE, false)
                         && !pendingAiSpeech.isEmpty()) {
                     String textToSpeak = pendingAiSpeech;
@@ -3860,6 +3953,8 @@ public final class MainActivity extends Activity {
     private void handleAiVoiceUnavailable() {
         aiTtsReady = false;
         pendingAiSpeech = "";
+        aiLastUtteranceId = "";
+        setAiActivityState("", false, false);
         if (prefs != null) prefs.edit().putBoolean(PREF_AI_VOICE_MODE, false).apply();
         if (aiVoiceToggle != null) aiVoiceToggle.setChecked(false);
         if (aiChatStatus != null) aiChatStatus.setText("Voz en español no disponible; se responderá por texto.");
@@ -3879,6 +3974,7 @@ public final class MainActivity extends Activity {
         if (speakable.isEmpty()) return;
         if (aiTextToSpeech == null || !aiTtsReady) {
             pendingAiSpeech = speakable;
+            setAiActivityState("Preparando voz en español…", false, true);
             ensureAiTextToSpeech();
             return;
         }
@@ -3888,9 +3984,11 @@ public final class MainActivity extends Activity {
     private void speakAiText(String textToSpeak) {
         if (aiTextToSpeech == null || !aiTtsReady || textToSpeak == null || textToSpeak.isEmpty()) return;
         int generation = ++aiSpeechGeneration;
+        setAiActivityState("AiTod4S3 está hablando…", true, true);
         int maxChunk = Math.max(500, TextToSpeech.getMaxSpeechInputLength() - 100);
         int offset = 0;
         int part = 0;
+        String lastUtteranceId = "";
         while (offset < textToSpeak.length()) {
             int end = Math.min(textToSpeak.length(), offset + maxChunk);
             if (end < textToSpeak.length()) {
@@ -3900,13 +3998,15 @@ public final class MainActivity extends Activity {
             String chunk = textToSpeak.substring(offset, end).trim();
             if (!chunk.isEmpty()) {
                 int queueMode = part == 0 ? TextToSpeech.QUEUE_FLUSH : TextToSpeech.QUEUE_ADD;
-                aiTextToSpeech.speak(chunk, queueMode, null, "aitod4s3_" + generation + "_" + part);
+                lastUtteranceId = "aitod4s3_" + generation + "_" + part;
+                aiTextToSpeech.speak(chunk, queueMode, null, lastUtteranceId);
                 part++;
             }
             offset = end;
             while (offset < textToSpeak.length() && Character.isWhitespace(textToSpeak.charAt(offset))) offset++;
         }
-        if (aiChatStatus != null) aiChatStatus.setText("AiTod4S3 está respondiendo en voz alta.");
+        aiLastUtteranceId = lastUtteranceId;
+        if (aiChatStatus != null) aiChatStatus.setText("●  AiTod4S3 ESTÁ HABLANDO");
     }
 
     private static final class AiChatMessage {
@@ -6211,6 +6311,12 @@ public final class MainActivity extends Activity {
         ussdBalanceRequestInFlight = false;
         hideUssdOrbitAnimation();
         pendingAiSpeech = "";
+        if (aiTypingAnimator != null) {
+            aiTypingAnimator.cancel();
+            aiTypingAnimator = null;
+        }
+        for (ObjectAnimator animator : aiVoiceAnimators) animator.cancel();
+        aiVoiceAnimators.clear();
         if (aiTextToSpeech != null) {
             aiTextToSpeech.stop();
             aiTextToSpeech.shutdown();
