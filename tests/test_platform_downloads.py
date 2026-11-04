@@ -13,6 +13,7 @@ from yt_dlp.utils import DownloadError
 from bot import download_to_temp, filename_from_response, normalize_apk_filename, validate_downloaded_file
 from platform_downloads import (
     _check_public_dns_target,
+    _format_selector,
     download_platform_video,
     is_play_store_page,
     is_supported_platform_url,
@@ -58,6 +59,44 @@ class PlatformRecognitionTests(unittest.TestCase):
 
 
 class PlatformDownloadTests(unittest.TestCase):
+    def test_format_selector_keeps_quality_preference_and_has_available_format_fallback(self):
+        selector = _format_selector("720")
+        self.assertIn("height<=720", selector)
+        self.assertTrue(selector.endswith("/best"))
+
+    def test_instagram_retries_with_best_when_requested_format_is_unavailable(self):
+        with tempfile.TemporaryDirectory() as folder:
+            output = Path(folder) / "platform-download"
+            first = MagicMock()
+            first.extract_info.side_effect = DownloadError(
+                "[Instagram] abc123: Requested format is not available. Use --list-formats"
+            )
+            second = MagicMock()
+
+            def successful_fallback(_url, download=True):
+                self.assertTrue(download)
+                (output / "reel.mp4").write_bytes(b"video")
+
+            second.extract_info.side_effect = successful_fallback
+            ydl_class = MagicMock()
+            ydl_class.return_value.__enter__.side_effect = [first, second]
+
+            with patch("platform_downloads._check_public_dns_target"), patch.object(
+                yt_dlp, "YoutubeDL", ydl_class
+            ):
+                path, name, size = download_platform_video(
+                    "https://www.instagram.com/reel/abc123/",
+                    output,
+                    max_bytes=1024,
+                    video_quality="720",
+                )
+
+        self.assertEqual((path.name, name, size), ("reel.mp4", "reel.mp4", 5))
+        self.assertIn("height<=720", ydl_class.call_args_list[0].args[0]["format"])
+        self.assertEqual(ydl_class.call_args_list[1].args[0]["format"], "best")
+        first.extract_info.assert_called_once()
+        second.extract_info.assert_called_once()
+
     def test_download_uses_single_mp4_preferred_format_and_reports_progress(self):
         with tempfile.TemporaryDirectory() as folder:
             output = Path(folder) / "platform-download"
