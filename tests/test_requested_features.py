@@ -243,6 +243,10 @@ class RequestedFeatureTests(unittest.TestCase):
         self.assertIn('return "SIN CONEXIÓN"', service)
         self.assertIn('NetworkCapabilities.TRANSPORT_CELLULAR', service)
         self.assertIn('setShadowLayer(dp(3)', service)
+        self.assertIn('android.permission.ACCESS_NETWORK_STATE', manifest)
+        self.assertIn('manager.getActiveNetworkInfo()', service)
+        self.assertIn('info.getType() == ConnectivityManager.TYPE_WIFI', service)
+        self.assertIn('info.getType() == ConnectivityManager.TYPE_MOBILE', service)
 
     def test_android_ai_has_centered_help_orb_and_keeps_chat_scroll_position(self):
         source = (Path(__file__).resolve().parents[1]

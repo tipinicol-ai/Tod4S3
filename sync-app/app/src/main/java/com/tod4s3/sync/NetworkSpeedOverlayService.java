@@ -247,15 +247,31 @@ public final class NetworkSpeedOverlayService extends Service {
         if (manager == null) return "SIN CONEXIÓN";
         try {
             Network network = manager.getActiveNetwork();
-            if (network == null) return "SIN CONEXIÓN";
             NetworkCapabilities capabilities = network == null ? null : manager.getNetworkCapabilities(network);
             if (capabilities != null) {
                 if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) return "WI-FI";
                 if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) return "DATOS MÓVILES";
                 if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)) return "ETHERNET";
                 if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) return "VPN";
+                return "RED ACTIVA";
             }
-        } catch (RuntimeException ignored) { }
+        } catch (SecurityException e) {
+            android.util.Log.e("Tod4S3Speed", "Falta permiso ACCESS_NETWORK_STATE", e);
+        } catch (RuntimeException e) {
+            android.util.Log.w("Tod4S3Speed", "No se pudieron leer capacidades de red", e);
+        }
+        try {
+            android.net.NetworkInfo info = manager.getActiveNetworkInfo();
+            if (info != null && info.isConnected()) {
+                if (info.getType() == ConnectivityManager.TYPE_WIFI) return "WI-FI";
+                if (info.getType() == ConnectivityManager.TYPE_MOBILE) return "DATOS MÓVILES";
+                if (info.getType() == ConnectivityManager.TYPE_ETHERNET) return "ETHERNET";
+                if (info.getType() == ConnectivityManager.TYPE_VPN) return "VPN";
+                return "RED ACTIVA";
+            }
+        } catch (RuntimeException e) {
+            android.util.Log.w("Tod4S3Speed", "Fallback de estado de red no disponible", e);
+        }
         return "SIN CONEXIÓN";
     }
 
