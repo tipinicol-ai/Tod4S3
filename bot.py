@@ -7992,9 +7992,23 @@ def main() -> None:
     if bool(api_base) != bool(file_base):
         raise RuntimeError("Configura juntos TELEGRAM_API_BASE_URL y TELEGRAM_FILE_BASE_URL")
 
-    # ⚡ Habilitar HTML por defecto para que <code>...</code> funcione
+    # ⚡ Habilitar HTML y reutilizar conexiones para responder con menos espera.
     defaults = Defaults(parse_mode=ParseMode.HTML)
-    builder = Application.builder().token(token).defaults(defaults).post_init(post_init).post_shutdown(post_shutdown)
+    builder = (
+        Application.builder()
+        .token(token)
+        .defaults(defaults)
+        .connection_pool_size(32)
+        .pool_timeout(10)
+        .get_updates_connection_pool_size(4)
+        .get_updates_pool_timeout(10)
+        .connect_timeout(15)
+        .read_timeout(30)
+        .write_timeout(60)
+        .media_write_timeout(120)
+        .post_init(post_init)
+        .post_shutdown(post_shutdown)
+    )
     if api_base:
         builder = builder.base_url(api_base).base_file_url(file_base)
     application = builder.build()
@@ -8004,7 +8018,9 @@ def main() -> None:
         "owner_id": parse_owner_id(),
         "allowed_users": parse_allowed_users(),
         "task_queue": FairTaskQueue(),
-        "task_worker_count": env_int("MAX_CONCURRENT_UPLOADS", 2),
+        # Tres transferencias paralelas mejoran el tiempo de espera sin saturar Railway.
+        # Se puede ajustar desde MAX_CONCURRENT_UPLOADS si el servidor tiene otros límites.
+        "task_worker_count": env_int("MAX_CONCURRENT_UPLOADS", 3),
         "per_user_task_limit": env_int("MAX_PENDING_PER_USER", 25),
     })
     application.add_handler(CommandHandler("start", start_command))
