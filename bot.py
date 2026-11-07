@@ -4360,6 +4360,19 @@ async def task_worker(application: Application) -> None:
                 log.exception("No se pudo publicar el error de task=%s", job.task_id)
 
 
+async def task_worker_supervisor(application: Application) -> None:
+    """Mantiene vivos los workers aunque uno termine por un fallo externo."""
+    while True:
+        try:
+            ensure_task_workers(application)
+            await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("El supervisor de la cola falló; reintentará en 5 s")
+            await asyncio.sleep(5)
+
+
 def ensure_task_workers(application: Application) -> int:
     """Repone workers que hayan terminado y devuelve cuántos están vivos."""
     expected = max(1, int(application.bot_data.get("task_worker_count", 1)))
@@ -7384,6 +7397,9 @@ async def post_init(application: Application) -> None:
             log.warning("No se pudo confirmar el respaldo después de conectar (%s).", type(exc).__name__)
     if application.bot_data.get("task_queue"):
         ensure_task_workers(application)
+        application.bot_data["task_worker_supervisor"] = asyncio.create_task(
+            task_worker_supervisor(application), name="transfer-worker-supervisor"
+        )
     api_id_raw = os.getenv("TELEGRAM_API_ID", "").strip()
     api_hash = os.getenv("TELEGRAM_API_HASH", "").strip()
     application.bot_data["mtproto_client"] = None
@@ -7480,6 +7496,10 @@ async def post_shutdown(application: Application) -> None:
     pending_backup = application.bot_data.get("telegram_backup_pending_task")
     if pending_backup:
         await asyncio.gather(pending_backup, return_exceptions=True)
+    worker_supervisor = application.bot_data.get("task_worker_supervisor")
+    if worker_supervisor:
+        worker_supervisor.cancel()
+        await asyncio.gather(worker_supervisor, return_exceptions=True)
     workers = application.bot_data.get("task_workers", [])
     for worker in workers:
         worker.cancel()
