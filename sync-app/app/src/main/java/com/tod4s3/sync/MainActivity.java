@@ -2570,6 +2570,9 @@ public final class MainActivity extends Activity {
                     accepted++;
                 } catch (Exception e) {
                     error = e.getMessage() == null ? "No se pudo enviar el enlace." : e.getMessage();
+                    if (error.contains("quota_exhausted") || error.contains("HTTP 429")) {
+                        error = "Cuota del plan Gratis agotada. Revisa Mi cuota o espera el reinicio de 24 horas.";
+                    }
                     break;
                 }
             }

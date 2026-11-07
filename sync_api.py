@@ -159,7 +159,7 @@ def app_identity_for_token(token: str) -> dict[str, Any] | None:
 
 
 def issue_premium_activation_token(user_id: int, expires_at: str | None = None) -> str:
-    """Issue a one-user code; store only its digest and keep an existing device binding."""
+    """Emite un código de un solo usuario y permite migrarlo al móvil actual."""
     user_id = int(user_id)
     if user_id <= 0:
         raise ValueError("invalid_user_id")
@@ -178,14 +178,14 @@ def issue_premium_activation_token(user_id: int, expires_at: str | None = None) 
         records = state.get("premium_activations", {})
         if not isinstance(records, dict):
             records = {}
-        previous = records.get(str(user_id), {})
-        bound_device = str(previous.get("device_id", "")) if isinstance(previous, dict) else ""
         records[str(user_id)] = {
             "token_hash": digest,
             "user_id": user_id,
             "expires_at": normalized_expiry,
             "issued_at": int(time.time()),
-            "device_id": bound_device,
+            # La reemisión por el administrador autoriza explícitamente la
+            # migración después de reinstalar o actualizar la APK.
+            "device_id": "",
             "verified_at": None,
         }
         state["premium_activations"] = records

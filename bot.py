@@ -3971,6 +3971,13 @@ async def enqueue_transfer(update: Update, context: ContextTypes.DEFAULT_TYPE, *
     message, user = update.effective_message, update.effective_user
     if not message or not user:
         return
+    # Las URLs no siempre exponen su tamaño antes de descargarse. Aun así,
+    # una cuenta Gratis agotada no debe crear otra tarea ni consumir ancho de
+    # banda antes de recibir el aviso de cuota.
+    if not (is_owner(user.id) or get_user_plan(user.id) == "premium"):
+        if get_remaining_quota(user.id) <= 0:
+            await message.reply_text(quota_exhausted_text(user.id), reply_markup=quota_exhausted_keyboard())
+            return
     # Ignora destinos antiguos guardados en sesiones del bot: S3 ya no se ofrece.
     selected_mode = "todus"
     selected_quality = normalize_video_quality(
@@ -8123,6 +8130,11 @@ async def sync_app_task_request(application: Application, action: str, user_id: 
         if not target_number:
             return {"ok": False, "error": "todus_number_required",
                     "message": "Configura primero tu número en el bot con /todus <tu número>."}, 409
+        if not (is_owner(user_id) or get_user_plan(user_id) == "premium"):
+            remaining = get_remaining_quota(user_id)
+            if remaining <= 0:
+                return {"ok": False, "error": "quota_exhausted",
+                        "message": quota_exhausted_text(user_id)}, 429
         queue_limit = get_user_queue_limit(user_id)
         try:
             status_message = await application.bot.send_message(
