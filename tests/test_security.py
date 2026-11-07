@@ -433,6 +433,15 @@ class FairTaskQueueTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(await queue.take(), third)
         self.assertIs(await queue.take(), second)
 
+    async def test_priority_selects_vip_before_free_user(self):
+        queue = FairTaskQueue()
+        free = TransferTask(1, 1, "url", None, None, priority=0)
+        vip = TransferTask(2, 2, "url", None, None, priority=2)
+        await queue.enqueue(free, 5)
+        await queue.enqueue(vip, 5)
+        self.assertIs(await queue.take(), vip)
+        self.assertIs(await queue.take(), free)
+
     async def test_per_user_limit_rejects_excess_tasks(self):
         queue = FairTaskQueue()
         self.assertTrue(await queue.enqueue(TransferTask(1, 1, "url", None, None), 1))

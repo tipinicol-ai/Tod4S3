@@ -60,6 +60,10 @@ El bot restaura primero la copia fijada y luego inicia MTProto. Guarda automáti
 - `MAX_FILE_SIZE_MIB`: máximo de entrada; `0` significa sin límite artificial. El modo ToDus divide los archivos grandes en partes de hasta 950 MiB.
 - `MAX_PART_SIZE_MIB`: tamaño de cada parte; predeterminado 1900 MiB. Los archivos mayores se dividen en partes con enlaces separados.
 - `MAX_TRANSFER_HOURS`: tiempo máximo para una transferencia; predeterminado 24 horas.
+- `MAX_CONCURRENT_UPLOADS`: workers simultáneos de transferencias; predeterminado 3.
+- `MAX_AUTO_RETRIES`: reintentos ante errores temporales de red, Telegram o ToDus; predeterminado 2.
+
+Las tareas de usuarios VIP usan una cola prioritaria: VIP Básico, VIP Medio y Premium se atienden antes que el plan Gratis, conservando el orden FIFO entre tareas del mismo nivel. Los reintentos automáticos solo se aplican a fallos transitorios; los enlaces inválidos, límites de cuota y errores permanentes siguen mostrando el error sin repetir la tarea indefinidamente.
 
 ## Saldo y referidos
 

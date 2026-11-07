@@ -3972,6 +3972,7 @@ async def enqueue_transfer(update: Update, context: ContextTypes.DEFAULT_TYPE, *
         username=f"@{user.username}" if user.username else None,
         display_name=getattr(user, "full_name", None),
         compress_after_download=compress_after_download,
+        priority=int(get_plan_info(get_user_plan(user.id)).get("rank", 0)),
     )
     manager: FairTaskQueue = context.application.bot_data["task_queue"]
     if not await manager.enqueue(job, get_user_queue_limit(user.id)):
@@ -3987,6 +3988,19 @@ async def enqueue_transfer(update: Update, context: ContextTypes.DEFAULT_TYPE, *
         return
     ensure_task_workers(context.application)
     await _edit_task_status(job, card("⏳ ᴇɴ ᴄᴏʟᴀ", ["Esperando turno..."]))
+
+
+def is_retryable_transfer_error(error: BaseException) -> bool:
+    """Identifica fallos transitorios sin reintentar enlaces inválidos o límites."""
+    if isinstance(error, (aiohttp.ClientError, asyncio.TimeoutError, TimeoutError, ConnectionError, TimedOut)):
+        return True
+    text = str(error).lower()
+    return any(marker in text for marker in (
+        "http 429", "http 500", "http 502", "http 503", "http 504",
+        "temporarily", "temporalmente", "timed out", "timeout",
+        "connection reset", "connection refused", "server disconnected",
+        "todus no está disponible",
+    ))
 
 
 async def process_task(job: TransferTask, application: Application) -> None:
@@ -4355,6 +4369,22 @@ async def process_task(job: TransferTask, application: Application) -> None:
         log.exception("Transfer failed user=%s task=%s", job.user_id, job.task_id)
         if job.cancel_requested:
             job.set_state("paused")
+        elif (
+            job.state != "done"
+            and job.retry_count < max(0, env_int("MAX_AUTO_RETRIES", 2))
+            and is_retryable_transfer_error(exc)
+        ):
+            job.retry_count += 1
+            retry_delay = min(8, 2 ** job.retry_count)
+            job.error = f"Fallo temporal; reintento {job.retry_count} en {retry_delay} s."
+            job.set_state("queued")
+            await _edit_task_status(job, card("🔁 ʀᴇɪɴᴛᴇɴᴛᴏ ᴀᴜᴛᴏᴍáᴛɪᴄᴏ", [
+                "El servicio respondió con un error temporal.",
+                f"Reintentando {job.retry_count}/{max(0, env_int('MAX_AUTO_RETRIES', 2))}...",
+            ]))
+            await asyncio.sleep(retry_delay)
+            await application.bot_data["task_queue"].requeue(job)
+            return
         else:
             error_text = str(exc)
             if "HTTP 502" in error_text and "Sandbox does not exist" in error_text:
@@ -6542,6 +6572,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             if job.state not in {"error", "cancelled"}:
                 await query.answer(sc("No necesita reintento"), show_alert=True)
             else:
+                job.retry_count = 0
                 await manager.requeue(job)
                 await _edit_task_status(job, card("🔄 ʀᴇᴀɴᴜᴅᴀɴᴅᴏ", ["Reanudando partes..."]))
         elif action == "links":
@@ -7920,6 +7951,7 @@ async def sync_app_task_request(application: Application, action: str, user_id: 
             status_message=status_message, source_url=url,
             delivery_mode="todus", display_name="Tod4S3 Sync",
             submission_source="android_app",
+            priority=int(get_plan_info(get_user_plan(user_id)).get("rank", 0)),
         )
         try:
             accepted = await manager.enqueue(job, queue_limit)

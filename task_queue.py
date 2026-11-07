@@ -37,6 +37,8 @@ class TransferTask:
     audio_only: bool = False
     audio_quality: str = "192"
     submission_source: str = "telegram"
+    priority: int = 0
+    retry_count: int = 0
 
     def set_state(self, state: str) -> None:
         self.state = state
@@ -50,6 +52,7 @@ class FairTaskQueue:
         self.jobs: dict[str, TransferTask] = {}
         self.queues: dict[int, deque[str]] = defaultdict(deque)
         self.rotation: deque[int] = deque()
+        self.user_priorities: dict[int, int] = {}
         self.lock = asyncio.Lock()
         self.wakeup = asyncio.Event()
 
@@ -62,6 +65,9 @@ class FairTaskQueue:
             queue = self.queues[job.user_id]
             if not queue:
                 self.rotation.append(job.user_id)
+            self.user_priorities[job.user_id] = max(
+                self.user_priorities.get(job.user_id, 0), int(job.priority or 0)
+            )
             queue.append(job.task_id)
             self.wakeup.set()
             return True
@@ -71,16 +77,25 @@ class FairTaskQueue:
             await self.wakeup.wait()
             async with self.lock:
                 while self.rotation:
-                    user_id = self.rotation.popleft()
+                    rotation = list(self.rotation)
+                    highest_priority = max(self.user_priorities.get(uid, 0) for uid in rotation)
+                    selected_index = next(
+                        index for index, uid in enumerate(rotation)
+                        if self.user_priorities.get(uid, 0) == highest_priority
+                    )
+                    user_id = rotation.pop(selected_index)
+                    self.rotation = deque(rotation)
                     queue = self.queues[user_id]
                     if not queue:
                         self.queues.pop(user_id, None)
+                        self.user_priorities.pop(user_id, None)
                         continue
                     task_id = queue.popleft()
                     if queue:
                         self.rotation.append(user_id)
                     else:
                         self.queues.pop(user_id, None)
+                        self.user_priorities.pop(user_id, None)
                     job = self.jobs.get(task_id)
                     if job is None or job.cancel_requested:
                         if not self.rotation and not any(self.queues.values()):
@@ -100,6 +115,9 @@ class FairTaskQueue:
             queue = self.queues[job.user_id]
             if not queue:
                 self.rotation.append(job.user_id)
+            self.user_priorities[job.user_id] = max(
+                self.user_priorities.get(job.user_id, 0), int(job.priority or 0)
+            )
             queue.append(job.task_id)
             self.wakeup.set()
 
@@ -115,6 +133,7 @@ class FairTaskQueue:
                 queue.remove(task_id)
                 if not queue:
                     self.queues.pop(user_id, None)
+                    self.user_priorities.pop(user_id, None)
                     try:
                         self.rotation.remove(user_id)
                     except ValueError:
