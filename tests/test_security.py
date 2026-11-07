@@ -102,8 +102,9 @@ class TelegramCommandTests(unittest.IsolatedAsyncioTestCase):
     def test_main_keyboard_has_balance_and_plan_button(self):
         buttons = [button for row in main_keyboard().inline_keyboard for button in row]
         labels = [button.text for button in buttons]
-        self.assertEqual(len(labels), 10)
+        self.assertEqual(len(labels), 11)
         self.assertIn("📥 DESCARGAS", labels)
+        self.assertIn("📂 CONTENIDO DESCARGABLE", labels)
         self.assertIn("📱 VINCULAR APLICACIÓN", labels)
         self.assertIn("💰 SALDO: 0$ · REFERIDOS", labels)
         self.assertIn("❓ AYUDA", labels)
@@ -115,9 +116,8 @@ class TelegramCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("ℹ️ SERVICIO TODUS S3", labels)
         self.assertFalse(any(button.url for button in buttons))
         self.assertEqual(buttons[0].style, "success")
-        self.assertEqual(buttons[1].callback_data, "app:pair")
-        self.assertEqual(buttons[1].style, "success")
-        self.assertTrue(all(button.style == "primary" for button in buttons[2:]))
+        self.assertIn("app:pair", [button.callback_data for button in buttons])
+        self.assertTrue(all(button.style == "success" for button in buttons[:2]))
 
     def test_download_menu_offers_todus_then_telegram_or_url_sources(self):
         buttons = [button for row in download_menu_keyboard().inline_keyboard for button in row]

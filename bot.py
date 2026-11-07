@@ -19,6 +19,7 @@ import subprocess
 import zipfile
 from datetime import datetime, timedelta, timezone
 from email.message import Message
+from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import quote, quote_plus, unquote, urljoin, urlsplit
 
@@ -153,6 +154,13 @@ S3_UPLOAD_URL = f"{TODUS_S3_BASE_URL.rstrip('/')}/{S3_UPLOAD_PREFIX}/"
 S3_UPLOAD_TTL_HOURS = 12  # Retención en users/df antes de la eliminación automática.
 # Límite de Bot API para enviar documentos: 50 MiB.
 BOT_API_SEND_LIMIT = 50 * MIB
+DOWNLOADABLE_CONTENT_ROOT = "https://visuales.uclv.cu/"
+DOWNLOADABLE_CONTENT_CATEGORIES = {
+    "peliculas": ("🎬 PELÍCULAS", "https://visuales.uclv.cu/Peliculas/Extranjeras/"),
+    "series": ("📺 SERIES", "https://visuales.uclv.cu/Series/"),
+    "otros": ("📚 OTROS", DOWNLOADABLE_CONTENT_ROOT),
+}
+DOWNLOADABLE_CONTENT_PAGE_SIZE = 8
 
 _SMALL_CAPS_MAP = {
     "a": "ᴀ", "b": "ʙ", "c": "ᴄ", "d": "ᴅ", "e": "ᴇ", "f": "ꜰ",
@@ -2705,6 +2713,7 @@ def btn(text: str, **kwargs) -> InlineKeyboardButton:
 def main_keyboard(user_id: int | None = None) -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton("📥 DESCARGAS", callback_data="downloads", style="success")],
+        [InlineKeyboardButton("📂 CONTENIDO DESCARGABLE", callback_data="content:menu", style="success")],
         [InlineKeyboardButton("📱 VINCULAR APLICACIÓN", callback_data="app:pair", style="success")],
         [InlineKeyboardButton(
             f"💰 SALDO: {get_user_balance(user_id) if user_id is not None else 0}$ · REFERIDOS",
@@ -2725,6 +2734,110 @@ def main_keyboard(user_id: int | None = None) -> InlineKeyboardMarkup:
     if user_id is not None and is_admin(user_id):
         rows.append([InlineKeyboardButton("⚙️ PANEL DE CREADOR", callback_data="admin:open", style="primary")])
     return InlineKeyboardMarkup(rows)
+
+
+class _DirectoryListingParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.links: list[tuple[str, str]] = []
+        self._href: str | None = None
+        self._text: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        if tag.lower() != "a":
+            return
+        href = dict(attrs).get("href")
+        if href:
+            self._href = href
+            self._text = []
+
+    def handle_data(self, data: str) -> None:
+        if self._href is not None:
+            self._text.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() == "a" and self._href is not None:
+            self.links.append((self._href, " ".join("".join(self._text).split())))
+            self._href = None
+            self._text = []
+
+
+def _content_url_allowed(url: str) -> bool:
+    parsed = urlsplit(url)
+    return parsed.scheme == "https" and parsed.hostname == "visuales.uclv.cu"
+
+
+def parse_downloadable_listing(html_text: str, base_url: str) -> list[dict[str, str]]:
+    """Extrae solo enlaces HTTPS del directorio autorizado, sin scripts ni externos."""
+    parser = _DirectoryListingParser()
+    parser.feed(html_text[:2_000_000])
+    result: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for href, label in parser.links:
+        if not href or href in {"../", "./", "..", "."} or href.startswith(("#", "?", "/?")):
+            continue
+        absolute = urljoin(base_url, href)
+        if not _content_url_allowed(absolute) or absolute in seen:
+            continue
+        parsed = urlsplit(absolute)
+        if parsed.path == urlsplit(base_url).path and not href.endswith("/"):
+            continue
+        seen.add(absolute)
+        display = clean_filename(label or unquote(parsed.path.rstrip("/").rsplit("/", 1)[-1]), "contenido")
+        result.append({"url": absolute, "label": display, "kind": "dir" if parsed.path.endswith("/") else "file"})
+    return sorted(result, key=lambda item: (item["kind"] != "dir", item["label"].casefold()))
+
+
+def content_menu_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [btn(label, callback_data=f"content:open:{key}")] for key, (label, _) in DOWNLOADABLE_CONTENT_CATEGORIES.items()
+    ] + [[btn("🏠 INICIO", callback_data="home")]])
+
+
+def content_listing_keyboard(entries: list[dict[str, str]], page: int, total_pages: int) -> InlineKeyboardMarkup:
+    rows = []
+    for index, entry in enumerate(entries):
+        prefix = "📁" if entry["kind"] == "dir" else "📄"
+        callback = f"content:dir:{index}" if entry["kind"] == "dir" else f"content:select:{index}"
+        rows.append([btn(f"{prefix} {entry['label'][:52]}", callback_data=callback)])
+    navigation = []
+    if page > 0:
+        navigation.append(btn("⬅️ ANTERIOR", callback_data=f"content:page:{page - 1}"))
+    if page + 1 < total_pages:
+        navigation.append(btn("SIGUIENTE ➡️", callback_data=f"content:page:{page + 1}"))
+    if navigation:
+        rows.append(navigation)
+    rows.append([btn("📂 CATEGORÍAS", callback_data="content:menu"), btn("🏠 INICIO", callback_data="home")])
+    return InlineKeyboardMarkup(rows)
+
+
+async def fetch_downloadable_listing(url: str) -> list[dict[str, str]]:
+    url = validate_url_syntax(url)
+    if not _content_url_allowed(url):
+        raise ValueError("Este contenido no pertenece al catálogo autorizado.")
+    timeout = aiohttp.ClientTimeout(total=30, connect=10, sock_read=20)
+    connector = aiohttp.TCPConnector(resolver=PublicOnlyResolver(), limit=8, ttl_dns_cache=60)
+    async with aiohttp.ClientSession(timeout=timeout, connector=connector, headers={"User-Agent": "Tod4S3Bot/1.0"}) as session:
+        async with session.get(url, allow_redirects=True, max_redirects=3) as response:
+            if not _content_url_allowed(str(response.url)):
+                raise ValueError("El catálogo redirigió fuera del sitio autorizado.")
+            if response.status != 200:
+                raise ValueError(f"El catálogo respondió HTTP {response.status}.")
+            content_type = (response.headers.get("Content-Type") or "").lower()
+            if "html" not in content_type:
+                raise ValueError("La ubicación no contiene un directorio navegable.")
+            return parse_downloadable_listing(await response.text(errors="replace"), url)
+
+
+def _content_page_state(context, entries: list[dict[str, str]], url: str, page: int) -> None:
+    start = page * DOWNLOADABLE_CONTENT_PAGE_SIZE
+    context.user_data["downloadable_content"] = {
+        "url": url,
+        "entries": entries,
+        "page": page,
+        "page_entries": entries[start:start + DOWNLOADABLE_CONTENT_PAGE_SIZE],
+        "total_pages": max(1, (len(entries) + DOWNLOADABLE_CONTENT_PAGE_SIZE - 1) // DOWNLOADABLE_CONTENT_PAGE_SIZE),
+    }
 
 
 def premium_tools_keyboard() -> InlineKeyboardMarkup:
@@ -6311,6 +6424,92 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         context.user_data.pop("download_delivery_mode", None)
         context.user_data.pop("pending_platform_download", None)
         await edit_query_message_text(query.message, download_menu_text(), reply_markup=download_menu_keyboard())
+        return
+
+    if query.data == "content:menu":
+        context.user_data.pop("downloadable_content", None)
+        await query.answer()
+        await edit_query_message_text(query.message, card("📂 ᴄᴏɴᴛᴇɴɪᴅᴏ ᴅᴇꜱᴄᴀʀɢᴀʙʟᴇ", [
+            "Navega por el catálogo",
+            "y elige qué quieres descargar.",
+            "",
+            "El bot mostrará carpetas y archivos",
+            "con botones interactivos.",
+        ]), reply_markup=content_menu_keyboard())
+        return
+
+    if query.data.startswith("content:open:"):
+        category = query.data.rsplit(":", 1)[-1]
+        config = DOWNLOADABLE_CONTENT_CATEGORIES.get(category)
+        if config is None:
+            await query.answer(sc("Categoría no válida."), show_alert=True)
+            return
+        await query.answer(sc("Cargando catálogo…"))
+        try:
+            url = config[1]
+            entries = await fetch_downloadable_listing(url)
+            _content_page_state(context, entries, url, 0)
+            state = context.user_data["downloadable_content"]
+            await edit_query_message_text(
+                query.message,
+                card(config[0], [f"Elementos encontrados: {len(entries)}", "Selecciona una carpeta o archivo."]),
+                reply_markup=content_listing_keyboard(state["page_entries"], 0, state["total_pages"]),
+            )
+        except Exception as exc:
+            log.warning("No se pudo cargar catálogo %s: %s", category, type(exc).__name__)
+            await edit_query_message_text(query.message, card("⚠️ ᴄᴀᴛáʟᴏɢᴏ ɴᴏ ᴅɪꜱᴘᴏɴɪʙʟᴇ", [
+                "No pude leer este catálogo ahora.",
+                "Inténtalo de nuevo más tarde.",
+            ]), reply_markup=content_menu_keyboard())
+        return
+
+    if query.data.startswith("content:page:"):
+        state = context.user_data.get("downloadable_content")
+        try:
+            page = int(query.data.rsplit(":", 1)[-1])
+            entries = state["entries"]
+            url = state["url"]
+            if page < 0 or page >= state["total_pages"]:
+                raise ValueError
+            _content_page_state(context, entries, url, page)
+            state = context.user_data["downloadable_content"]
+            await query.answer()
+            await edit_query_message_text(query.message, card("📂 ᴄᴏɴᴛᴇɴɪᴅᴏ", [
+                f"Página {page + 1} de {state['total_pages']}",
+                "Selecciona una carpeta o archivo.",
+            ]), reply_markup=content_listing_keyboard(state["page_entries"], page, state["total_pages"]))
+        except (KeyError, TypeError, ValueError):
+            await query.answer(sc("La navegación venció. Abre la categoría otra vez."), show_alert=True)
+        return
+
+    if query.data in {"content:dir", "content:select"} or query.data.startswith(("content:dir:", "content:select:")):
+        state = context.user_data.get("downloadable_content")
+        try:
+            index = int(query.data.rsplit(":", 1)[-1])
+            entry = state["page_entries"][index]
+            if not _content_url_allowed(entry["url"]):
+                raise ValueError
+        except (KeyError, TypeError, ValueError, IndexError):
+            await query.answer(sc("Ese elemento ya no está disponible."), show_alert=True)
+            return
+        if query.data.startswith("content:dir:"):
+            await query.answer(sc("Cargando carpeta…"))
+            try:
+                entries = await fetch_downloadable_listing(entry["url"])
+                _content_page_state(context, entries, entry["url"], 0)
+                new_state = context.user_data["downloadable_content"]
+                await edit_query_message_text(query.message, card("📁 " + entry["label"], [
+                    f"Elementos encontrados: {len(entries)}",
+                ]), reply_markup=content_listing_keyboard(new_state["page_entries"], 0, new_state["total_pages"]))
+            except Exception:
+                await edit_query_message_text(query.message, card("⚠️ ᴄᴀʀᴘᴇᴛᴀ ɴᴏ ᴅɪꜱᴘᴏɴɪʙʟᴇ", ["No se pudo abrir esta carpeta."]), reply_markup=content_menu_keyboard())
+            return
+        await query.answer(sc("Descarga añadida a la cola."))
+        await enqueue_transfer(update, context, source_kind="url", source_url=entry["url"], delivery_mode="todus")
+        await edit_query_message_text(query.message, card("✅ ᴅᴇꜱᴄᴀʀɢᴀ ᴇɴᴄᴏʟᴀᴅᴀ", [
+            entry["label"][:100],
+            "Revisa el mensaje de la tarea para ver su progreso.",
+        ]), reply_markup=home_keyboard())
         return
 
     if query.data in {"download:mode:s3", "download:mode:todus"}:
