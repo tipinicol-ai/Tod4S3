@@ -62,6 +62,7 @@ El bot restaura primero la copia fijada y luego inicia MTProto. Guarda automáti
 - `MAX_TRANSFER_HOURS`: tiempo máximo para una transferencia; predeterminado 24 horas.
 - `MAX_CONCURRENT_UPLOADS`: workers simultáneos de transferencias; predeterminado 3.
 - `MAX_AUTO_RETRIES`: reintentos ante errores temporales de red, Telegram o ToDus; predeterminado 2.
+- `DOWNLOADABLE_CONTENT_PROXY`: opcional; URL de un proxy/relay HTTP(S) propio con salida cubana para que el catálogo Premium de `visuales.uclv.cu` sea accesible desde Railway. No uses proxies públicos ni guardes sus credenciales en el repositorio.
 
 Las tareas de usuarios VIP usan una cola prioritaria: VIP Básico, VIP Medio y Premium se atienden antes que el plan Gratis, conservando el orden FIFO entre tareas del mismo nivel. Los reintentos automáticos solo se aplican a fallos transitorios; los enlaces inválidos, límites de cuota y errores permanentes siguen mostrando el error sin repetir la tarea indefinidamente.
 
@@ -79,6 +80,6 @@ Con `MAX_FILE_SIZE_MIB=0` no hay un límite artificial de entrada. Esto no signi
 
 ## Despliegue en Railway
 
- Crea un servicio desde `https://github.com/tipinicol-ai/Tod4S3` en la rama `main`; Railway usa `Dockerfile` y `railway.json`. En **Variables**, configura `TELEGRAM_BOT_TOKEN`, `TELEGRAM_BACKUP_CHAT_ID` y `BOT_DATA_DIR=/data`. Monta un Volume con ruta `/data`. Añade `TELEGRAM_API_ID` y `TELEGRAM_API_HASH` solo si el bot debe descargar reenvíos grandes de Telegram. Guarda los cambios y espera el redeploy.
+ Crea un servicio desde `https://github.com/tipinicol-ai/Tod4S3` en la rama `main`; Railway usa `Dockerfile` y `railway.json`. En **Variables**, configura `TELEGRAM_BOT_TOKEN`, `TELEGRAM_BACKUP_CHAT_ID` y `BOT_DATA_DIR=/data`. Monta un Volume con ruta `/data`. Añade `TELEGRAM_API_ID` y `TELEGRAM_API_HASH` solo si el bot debe descargar reenvíos grandes de Telegram. Para el catálogo cubano, añade `DOWNLOADABLE_CONTENT_PROXY` apuntando a un relay propio ubicado en Cuba; sin ese relay un servicio desplegado en Railway puede ser redirigido por geolocalización. Guarda los cambios y espera el redeploy.
 
 Si aparece el aviso de directorio **NO PERSISTENTE**, el volumen no está montado en `/data` o `BOT_DATA_DIR` apunta a otra ruta; los datos locales podrían perderse al redesplegar.

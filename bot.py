@@ -155,6 +155,9 @@ S3_UPLOAD_TTL_HOURS = 12  # Retención en users/df antes de la eliminación auto
 # Límite de Bot API para enviar documentos: 50 MiB.
 BOT_API_SEND_LIMIT = 50 * MIB
 DOWNLOADABLE_CONTENT_ROOT = "https://visuales.uclv.cu/"
+# Railway está fuera de Cuba. Si el catálogo restringe por geolocalización,
+# configura una URL de proxy/relay con salida cubana en Railway.
+DOWNLOADABLE_CONTENT_PROXY = os.getenv("DOWNLOADABLE_CONTENT_PROXY", "").strip()
 DOWNLOADABLE_CONTENT_CATEGORIES = {
     "peliculas": ("🎬 PELÍCULAS", "https://visuales.uclv.cu/Peliculas/Extranjeras/"),
     "series": ("📺 SERIES", "https://visuales.uclv.cu/Series/"),
@@ -2832,7 +2835,10 @@ async def fetch_downloadable_listing(url: str) -> list[dict[str, str]]:
         "Referer": "https://visuales.uclv.cu/",
     }
     async with aiohttp.ClientSession(timeout=timeout, connector=connector, headers=browser_headers) as session:
-        async with session.get(url, allow_redirects=True, max_redirects=3) as response:
+        request_options = {"allow_redirects": True, "max_redirects": 3}
+        if DOWNLOADABLE_CONTENT_PROXY:
+            request_options["proxy"] = DOWNLOADABLE_CONTENT_PROXY
+        async with session.get(url, **request_options) as response:
             if not _content_url_allowed(str(response.url)):
                 raise ValueError("El catálogo redirigió fuera del sitio autorizado.")
             if response.status != 200:
