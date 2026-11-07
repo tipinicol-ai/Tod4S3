@@ -1,7 +1,7 @@
 {
-  "version_code": 69,
-  "version_name": "1.5.24",
+  "version_code": 70,
+  "version_name": "1.5.25",
   "manifest_url": "https://raw.githubusercontent.com/tipinicol-ai/Tod4S3/main/web/android-update.json",
   "apk_url": "https://raw.githubusercontent.com/tipinicol-ai/Tod4S3/main/Tod4S3-Sync-latest.apk",
-  "sha256": "ecfd6be6677f2a3227d80ea74b2a7a3649e7934344f5a8d54da0c407f8be6d75"
+  "sha256": "972b7fdd952e37850a7f87c4deff77db8aa13d402413c48b2848278f97e017cd"
 }

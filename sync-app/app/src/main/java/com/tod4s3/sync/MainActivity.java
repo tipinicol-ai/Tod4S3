@@ -1141,9 +1141,10 @@ public final class MainActivity extends Activity {
 
         page.addView(text("Planes Premium", 19, true), margin(0, 2, 0, 3));
         page.addView(bodyText("Descargas ilimitadas y AiTod4S3 mientras el plan esté activo."), margin(0, 0, 0, 9));
-        page.addView(planOffer("Premium 15 días", "250 CUP", "Descargas sin límite · ToDus · AiTod4S3.", "Premium 15 días · 250 CUP"), margin(0, 0, 0, 8));
-        page.addView(planOffer("Premium 20 días", "300 CUP", "Descargas sin límite · ToDus · AiTod4S3.", "Premium 20 días · 300 CUP"), margin(0, 0, 0, 8));
-        page.addView(planOffer("Premium 30 días", "500 CUP", "Descargas sin límite · ToDus · AiTod4S3.", "Premium 30 días · 500 CUP"), margin(0, 0, 0, 8));
+        page.addView(bodyText("Premium también incluye cola prioritaria, reintentos automáticos, hasta 3 descargas en paralelo y herramientas multimedia desde el bot: subtítulos SRT, corte/unión de videos y conversión de imágenes por lotes."), margin(0, 0, 0, 9));
+        page.addView(planOffer("Premium 15 días", "250 CUP", "Descargas sin límite · 3 en paralelo · herramientas multimedia · AiTod4S3.", "Premium 15 días · 250 CUP"), margin(0, 0, 0, 8));
+        page.addView(planOffer("Premium 20 días", "300 CUP", "Descargas sin límite · cola prioritaria · herramientas multimedia · AiTod4S3.", "Premium 20 días · 300 CUP"), margin(0, 0, 0, 8));
+        page.addView(planOffer("Premium 30 días", "500 CUP", "Descargas sin límite · reintentos automáticos · herramientas multimedia · AiTod4S3.", "Premium 30 días · 500 CUP"), margin(0, 0, 0, 8));
         LinearLayout streamsContact = card();
         streamsContact.setPadding(dp(13), dp(11), dp(13), dp(11));
         streamsContact.setOrientation(LinearLayout.HORIZONTAL);

@@ -69,6 +69,13 @@ from telegram_backup import (
     restore_from_telegram,
 )
 from task_queue import FairTaskQueue, TransferTask
+from premium_tools import (
+    cleanup_tool_directory,
+    convert_images_batch,
+    cut_video,
+    extract_embedded_subtitles,
+    join_videos,
+)
 import sync_api
 
 load_dotenv()
@@ -2714,9 +2721,20 @@ def main_keyboard(user_id: int | None = None) -> InlineKeyboardMarkup:
     ]
     if user_id is not None and (is_owner(user_id) or get_user_plan(user_id) == "premium"):
         rows.insert(1, [InlineKeyboardButton("🗜️ COMPRESOR PREMIUM", callback_data="premium:compressor", style="success")])
+        rows.insert(2, [InlineKeyboardButton("🛠️ HERRAMIENTAS PREMIUM", callback_data="premium:tools", style="success")])
     if user_id is not None and is_admin(user_id):
         rows.append([InlineKeyboardButton("⚙️ PANEL DE CREADOR", callback_data="admin:open", style="primary")])
     return InlineKeyboardMarkup(rows)
+
+
+def premium_tools_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [btn("🎞️ SUBTÍTULOS → SRT", callback_data="premium:tool:subtitles")],
+        [btn("✂️ CORTAR VIDEO", callback_data="premium:tool:cut"),
+         btn("🔗 UNIR VIDEOS", callback_data="premium:tool:join")],
+        [btn("🖼️ IMÁGENES POR LOTES", callback_data="premium:tool:images")],
+        [btn("⬅️ VOLVER", callback_data="home")],
+    ])
 
 
 def all_menu_keyboard() -> InlineKeyboardMarkup:
@@ -5213,6 +5231,84 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if query.message and hasattr(query.message, "reply_text"):
             await query.message.reply_text(app_pairing_message(user.id))
         return
+    if query.data == "premium:tools":
+        if not (is_owner(user.id) or get_user_plan(user.id) == "premium"):
+            await query.answer(sc("Estas herramientas son exclusivas de Premium."), show_alert=True)
+            return
+        await query.answer()
+        await edit_query_message_text(
+            query.message,
+            card("🛠️ ʜᴇʀʀᴀᴍɪᴇɴᴛᴀꜱ ᴘʀᴇᴍɪᴜᴍ", [
+                "Elige una herramienta y",
+                "envía el archivo indicado.",
+                "",
+                "También puedes usar hasta 3",
+                "descargas en paralelo.",
+            ]),
+            reply_markup=premium_tools_keyboard(),
+        )
+        return
+    if query.data in {
+        "premium:tool:subtitles",
+        "premium:tool:cut",
+        "premium:tool:join",
+        "premium:tool:images",
+    }:
+        if not (is_owner(user.id) or get_user_plan(user.id) == "premium"):
+            await query.answer(sc("Esta herramienta es exclusiva de Premium."), show_alert=True)
+            return
+        tool = query.data.rsplit(":", 1)[-1]
+        context.user_data.pop("premium_tool_files", None)
+        context.user_data["premium_tool_mode"] = tool
+        await query.answer()
+        prompts = {
+            "subtitles": ["Envía un video con subtítulos embebidos.", "Te devolveré la pista en formato SRT."],
+            "cut": ["Escribe primero el rango, por ejemplo:", "00:01:30-00:03:45"],
+            "join": ["Envía dos o más videos.", "Después pulsa «Terminar unión» para unirlos."],
+            "images": ["Envía hasta 20 imágenes.", "Después pulsa «Terminar lote» para convertirlas a JPG."],
+        }
+        keyboard = premium_tools_keyboard() if tool in {"cut", "subtitles"} else InlineKeyboardMarkup([
+            [btn("✅ TERMINAR", callback_data=f"premium:tool:finish:{tool}")],
+            [btn("❌ CANCELAR", callback_data="premium:tool:cancel")],
+        ])
+        await edit_query_message_text(query.message, card("🛠️ ᴘʀᴇᴍɪᴜᴍ", prompts.get(tool, ["Envía un archivo."])), reply_markup=keyboard)
+        return
+    if query.data == "premium:tool:cancel":
+        context.user_data.pop("premium_tool_mode", None)
+        context.user_data.pop("premium_tool_files", None)
+        await query.answer()
+        await edit_query_message_text(query.message, card("🛠️ ʜᴇʀʀᴀᴍɪᴇɴᴛᴀꜱ", ["Operación cancelada."]), reply_markup=main_keyboard(user.id))
+        return
+    if query.data.startswith("premium:tool:finish:"):
+        tool = query.data.rsplit(":", 1)[-1]
+        files = context.user_data.get("premium_tool_files") or []
+        if len(files) < 1 or (tool == "join" and len(files) < 2):
+            await query.answer(sc("Aún no hay suficientes archivos."), show_alert=True)
+            return
+        await query.answer(sc("Procesando…"))
+        await edit_query_message_text(query.message, card("⏳ ᴘʀᴏᴄᴇꜱᴀɴᴅᴏ", ["Estoy preparando tus archivos Premium.", "Espera un momento."]), reply_markup=home_keyboard())
+        directory = Path(context.user_data.get("premium_tool_directory", tempfile.mkdtemp(prefix="premium-tool-")))
+        try:
+            paths = [Path(item["path"]) for item in files]
+            names = [str(item.get("name", path.name)) for item, path in zip(files, paths)]
+            if tool == "join":
+                output, name = await asyncio.to_thread(join_videos, paths, names, directory)
+                await _send_premium_tool_file(context.bot, user.id, output, name)
+                result_text = "✅ Videos unidos correctamente."
+            else:
+                outputs = await asyncio.to_thread(convert_images_batch, paths, names, directory / "converted")
+                for output, name in outputs:
+                    await _send_premium_tool_file(context.bot, user.id, output, name)
+                result_text = f"✅ Convertidas {len(outputs)} imágenes a JPG."
+            await context.bot.send_message(chat_id=user.id, text=sc(result_text), reply_markup=main_keyboard(user.id))
+        except Exception as exc:
+            await context.bot.send_message(chat_id=user.id, text=sc(f"❌ No se pudo completar la herramienta: {exc}"), reply_markup=main_keyboard(user.id))
+        finally:
+            cleanup_tool_directory(directory)
+            context.user_data.pop("premium_tool_mode", None)
+            context.user_data.pop("premium_tool_files", None)
+            context.user_data.pop("premium_tool_directory", None)
+        return
     if query.data == "premium:compressor":
         if not (is_owner(user.id) or get_user_plan(user.id) == "premium"):
             await query.answer(sc("Esta herramienta es exclusiva de Premium."), show_alert=True)
@@ -6703,6 +6799,79 @@ async def owner_reply_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 # ═══════════════════════════════════════════════════════════════
 #  MANEJADORES DE TEXTO Y MULTIMEDIA
 # ═══════════════════════════════════════════════════════════════
+def _parse_tool_clock(value: str) -> int:
+    parts = value.strip().split(":")
+    if len(parts) not in {2, 3} or not all(part.isdigit() for part in parts):
+        raise ValueError("hora inválida")
+    parts = [int(part) for part in parts]
+    if len(parts) == 2:
+        minutes, seconds = parts
+        if seconds >= 60:
+            raise ValueError("segundos inválidos")
+        return minutes * 60 + seconds
+    hours, minutes, seconds = parts
+    if minutes >= 60 or seconds >= 60:
+        raise ValueError("hora inválida")
+    return hours * 3600 + minutes * 60 + seconds
+
+
+async def _send_premium_tool_file(bot_obj, chat_id: int, path: Path, filename: str) -> None:
+    with path.open("rb") as handle:
+        await bot_obj.send_document(chat_id=chat_id, document=handle, filename=filename,
+                                     read_timeout=600, write_timeout=3600, connect_timeout=60)
+
+
+async def _process_premium_tool_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    mode = context.user_data.get("premium_tool_mode")
+    message = update.effective_message
+    user = update.effective_user
+    if not mode or not message or not user:
+        return False
+    if not (is_owner(user.id) or get_user_plan(user.id) == "premium"):
+        context.user_data.pop("premium_tool_mode", None)
+        await message.reply_text(sc("Estas herramientas son exclusivas de Premium."))
+        return True
+    try:
+        source, filename, _ = await download_telegram_media(message, local_bot_api=True)
+        if mode == "subtitles":
+            output, name = await asyncio.to_thread(extract_embedded_subtitles, source, filename)
+            await _send_premium_tool_file(context.bot, user.id, output, name)
+            await message.reply_text(sc("✅ Subtítulos extraídos en formato SRT."), reply_markup=main_keyboard(user.id))
+            cleanup_tool_directory(output.parent)
+            source.unlink(missing_ok=True)
+            context.user_data.pop("premium_tool_mode", None)
+            return True
+        if mode == "cut":
+            start = int(context.user_data.pop("premium_tool_start", 0))
+            end = int(context.user_data.pop("premium_tool_end", 0))
+            output, name = await asyncio.to_thread(cut_video, source, filename, start, end)
+            await _send_premium_tool_file(context.bot, user.id, output, name)
+            await message.reply_text(sc("✅ Video cortado correctamente."), reply_markup=main_keyboard(user.id))
+            cleanup_tool_directory(output.parent)
+            source.unlink(missing_ok=True)
+            context.user_data.pop("premium_tool_mode", None)
+            return True
+        if mode in {"images", "join"}:
+            directory = context.user_data.get("premium_tool_directory")
+            if not directory:
+                directory = tempfile.mkdtemp(prefix="premium-tool-")
+                context.user_data["premium_tool_directory"] = directory
+            target = Path(directory) / clean_filename(filename, "archivo")
+            shutil.move(str(source), str(target))
+            files = context.user_data.setdefault("premium_tool_files", [])
+            files.append({"path": str(target), "name": filename})
+            if len(files) >= 20:
+                context.user_data["premium_tool_finish_requested"] = True
+            await message.reply_text(sc(f"✅ Archivo añadido ({len(files)}). Pulsa TERMINAR cuando quieras procesarlo."))
+            return True
+    except Exception as exc:
+        log.warning("Herramienta Premium falló para user=%s: %s", user.id, type(exc).__name__)
+        await message.reply_text(sc(f"❌ No se pudo procesar el archivo: {exc}"), reply_markup=main_keyboard(user.id))
+        context.user_data.pop("premium_tool_mode", None)
+        return True
+    return False
+
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_private_update(update):
         return
@@ -6715,6 +6884,20 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
     if chat.type != "private":
         await message.reply_text(sc("Usa el chat privado del bot."))
+        return
+
+    if context.user_data.get("premium_tool_mode") == "cut":
+        raw = (message.text or "").replace("–", "-").replace("—", "-")
+        try:
+            start_raw, end_raw = [part.strip() for part in raw.split("-", 1)]
+            start, end = _parse_tool_clock(start_raw), _parse_tool_clock(end_raw)
+            if end <= start:
+                raise ValueError
+            context.user_data["premium_tool_start"] = start
+            context.user_data["premium_tool_end"] = end
+            await message.reply_text(sc("✅ Rango guardado. Ahora envía el video."))
+        except ValueError:
+            await message.reply_text(sc("Usa el formato HH:MM:SS-HH:MM:SS, por ejemplo 00:01:30-00:03:45."))
         return
 
     text = (message.text or "").strip()
@@ -7304,6 +7487,8 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 reply_markup=broadcast_cancel_keyboard(),
             )
             return
+    if await _process_premium_tool_media(update, context):
+        return
     allowed: set[int] = context.application.bot_data["allowed_users"]
     if allowed and user.id not in allowed and not is_owner(user.id):
         await message.reply_text(sc("Bot limitado a usuarios autorizados."))
