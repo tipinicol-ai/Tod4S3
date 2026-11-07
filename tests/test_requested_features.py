@@ -346,6 +346,14 @@ class RequestedFeatureTests(unittest.TestCase):
         self.assertIn("toDusPinRequestGeneration++", source)
         self.assertIn("toDusValidationGeneration++", source)
 
+    def test_android_todus_restore_keeps_valid_credentials_after_partial_read_failure(self):
+        source = (Path(__file__).resolve().parents[1]
+                  / "sync-app/app/src/main/java/com/tod4s3/sync/MainActivity.java").read_text()
+        loader = source.split("private void loadToDusCredentials", 1)[1].split("private void clearToDusCredentials", 1)[0]
+        self.assertIn("Leer cada campo por separado", loader)
+        self.assertIn("handler.post(this::restoreToDusSession)", source)
+        self.assertNotIn("savedCredentialsCouldNotBeDecrypted && todusStatus != null) {\n            todusStatus.setText(\"La sesión guardada ya no se pudo descifrar", source)
+
     def test_admin_user_section_exposes_premium_status_lookup_by_telegram_id(self):
         callbacks = [button.callback_data for button in all_buttons(admin_section_keyboard("users"))]
         self.assertIn("admin:premium_status", callbacks)

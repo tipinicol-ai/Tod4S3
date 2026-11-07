@@ -292,11 +292,11 @@ public final class MainActivity extends Activity {
         handler.postDelayed(() -> checkForAppUpdate(false), 2_000L);
 
         if (!prefs.getString(PREF_SELECTED_PLAN, "").isEmpty()
-                && savedCredentialsCouldNotBeDecrypted && todusStatus != null) {
-            todusStatus.setText("La sesión guardada ya no se pudo descifrar. Solicita un código nuevo para conectar ToDus.");
-        } else if (!prefs.getString(PREF_SELECTED_PLAN, "").isEmpty()
                 && token != null && !token.isEmpty() && !todusPhone.isEmpty() && !todusPassword.isEmpty()) {
             handler.post(this::restoreToDusSession);
+        } else if (!prefs.getString(PREF_SELECTED_PLAN, "").isEmpty()
+                && savedCredentialsCouldNotBeDecrypted && todusStatus != null) {
+            todusStatus.setText("La sesión guardada no pudo restaurarse completa. Solicita un código nuevo solo si la restauración automática falla.");
         }
         handler.post(poller);
     }
@@ -5047,16 +5047,26 @@ public final class MainActivity extends Activity {
     }
 
     private void loadToDusCredentials() {
-        try {
-            todusPhone = readEncrypted(PREF_TODUS_PHONE);
-            todusPassword = readEncrypted(PREF_TODUS_PASSWORD);
-            todusToken = readEncrypted(PREF_TODUS_TOKEN);
-            setToDusSessionStatus(!todusPhone.isEmpty() && !todusPassword.isEmpty()
-                    ? "Sesión guardada; comprobando conexión con ToDus…"
-                    : "No hay una sesión ToDus guardada.");
-        } catch (Exception e) {
-            savedCredentialsCouldNotBeDecrypted = true;
-            clearToDusCredentials();
+        // Leer cada campo por separado. Un token caducado o una credencial
+        // dañada no debe borrar el teléfono y la contraseña que todavía
+        // permiten volver a iniciar sesión automáticamente después de una
+        // actualización de la APK.
+        boolean readFailure = false;
+        try { todusPhone = readEncrypted(PREF_TODUS_PHONE); }
+        catch (Exception ignored) { readFailure = true; }
+        try { todusPassword = readEncrypted(PREF_TODUS_PASSWORD); }
+        catch (Exception ignored) { readFailure = true; }
+        try { todusToken = readEncrypted(PREF_TODUS_TOKEN); }
+        catch (Exception ignored) { readFailure = true; }
+        savedCredentialsCouldNotBeDecrypted = readFailure;
+        if (!todusPhone.isEmpty() && !todusPassword.isEmpty()) {
+            setToDusSessionStatus(readFailure
+                    ? "Sesión ToDus guardada; se renovará automáticamente."
+                    : "Sesión guardada; comprobando conexión con ToDus…");
+        } else if (readFailure) {
+            setToDusSessionStatus("La sesión ToDus guardada no pudo leerse completa. Vuelve a conectar solo si falla la restauración.");
+        } else {
+            setToDusSessionStatus("No hay una sesión ToDus guardada.");
         }
     }
 
