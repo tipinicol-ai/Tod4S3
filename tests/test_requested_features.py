@@ -167,7 +167,7 @@ class RequestedFeatureTests(unittest.TestCase):
         self.assertIn('android.permission.CALL_PHONE', manifest)
         self.assertNotIn('Intent.ACTION_DIAL, Uri.parse("tel:*222*328%23")', source)
 
-    def test_android_visual_refresh_compacts_navigation_and_groups_dashboard_fabs(self):
+    def test_android_visual_refresh_compacts_navigation_and_disables_plus_fab(self):
         source = (Path(__file__).resolve().parents[1]
                   / "sync-app/app/src/main/java/com/tod4s3/sync/MainActivity.java").read_text()
         drawer = source.split("private void showNavigationDrawer", 1)[1].split("private void addDrawerRow", 1)[0]
@@ -186,10 +186,18 @@ class RequestedFeatureTests(unittest.TestCase):
         self.assertIn('addIconTab(tabs, "Descargas activas", R.drawable.ic_active_download', source)
         self.assertIn('addIconTab(tabs, "Completadas", R.drawable.ic_completed_check', source)
         self.assertIn('R.drawable.ic_ai_sparkle', source)
-        self.assertIn("Gravity.BOTTOM | Gravity.END", fabs)
+        self.assertIn("dashboardFab = null", fabs)
+        self.assertNotIn('text("＋"', fabs)
         self.assertIn("dp(98)", fabs)
         self.assertIn("roundRect(surfaceColor(), 18, borderColor())", source)
         self.assertIn("box.setElevation(dp(3))", source)
+        active_tasks = source.split("private int renderToDusDownloadTasks()", 1)[1].split("private LinearLayout toDusDownloadTaskCard", 1)[0]
+        self.assertIn('"completed".equals(dashboardFilter)', active_tasks)
+        start_download = source.split("private boolean startToDusDownload", 1)[1].split("private void runToDusDownload", 1)[0]
+        self.assertIn("refreshBackgroundDownloadNotification(true)", start_download)
+        notification = source.split("private void refreshBackgroundDownloadNotification", 1)[1].split("private void requestNotificationPermissionIfNeeded", 1)[0]
+        self.assertIn("DownloadKeepAliveService.ACTION_UPDATE", notification)
+        self.assertIn("DownloadKeepAliveService.EXTRA_PERCENT", notification)
 
     def test_android_wallpaper_tracks_selected_theme_and_downloads_run_foreground(self):
         root = Path(__file__).resolve().parents[1]
@@ -200,6 +208,10 @@ class RequestedFeatureTests(unittest.TestCase):
         self.assertIn('Intent.ACTION_OPEN_DOCUMENT', source)
         self.assertIn('takePersistableUriPermission(wallpaper', source)
         self.assertIn('applyWallpaperBackground()', source)
+        self.assertIn('secondaryButton("Restablecer fondo predeterminado")', source)
+        reset_wallpaper = source.split('private void resetWallpaperToDefault()', 1)[1].split('private Bitmap decodeWallpaper', 1)[0]
+        self.assertIn('remove(PREF_WALLPAPER_URI).remove(PREF_WALLPAPER_DIM)', reset_wallpaper)
+        self.assertIn('applyWallpaperBackground()', reset_wallpaper)
         self.assertIn('wallpaperScrim.setBackgroundColor', source)
         self.assertIn('isDarkTheme() ? Color.BLACK : Color.WHITE', source)
         self.assertIn('Color.rgb(21, 23, 35)', source)
@@ -261,6 +273,36 @@ class RequestedFeatureTests(unittest.TestCase):
         self.assertIn("Math.max(0, aiConversationBox.getHeight() - aiConversationScroll.getHeight())", render)
         self.assertNotIn("aiConversationScroll.fullScroll(View.FOCUS_DOWN)", source)
         self.assertNotIn("appScroll.scrollTo(0, 0)", source)
+
+    def test_android_ai_voice_mode_reads_new_replies_and_can_be_turned_off(self):
+        root = Path(__file__).resolve().parents[1]
+        source = (root / "sync-app/app/src/main/java/com/tod4s3/sync/MainActivity.java").read_text()
+        manifest = (root / "sync-app/app/src/main/AndroidManifest.xml").read_text()
+        chat = source.split("private void showAiChat", 1)[1].split("private void renderAiConversation", 1)[0]
+        self.assertIn('PREF_AI_VOICE_MODE = "ai_voice_mode_v1"', source)
+        self.assertIn('aiVoiceToggle.setText("La IA responde hablando")', chat)
+        self.assertIn('aiVoiceToggle.setOnCheckedChangeListener((button, enabled) -> setAiVoiceMode(enabled))', chat)
+        self.assertIn('prefs.getBoolean(PREF_AI_VOICE_MODE, false)', chat)
+        self.assertIn('speakAiReply(finalReply)', source)
+        self.assertIn('new java.util.Locale("es", "CU")', source)
+        self.assertIn('TextToSpeech.QUEUE_FLUSH', source)
+        self.assertIn('aiTextToSpeech.stop()', source)
+        self.assertIn('aiTextToSpeech.shutdown()', source)
+        self.assertIn('aiChatStatus.setText("●  PREPARANDO TU RESPUESTA")', source)
+        self.assertIn('AiTod4S3 está escribiendo…', source)
+        self.assertIn('AiTod4S3 está hablando…', source)
+        self.assertIn('setOnUtteranceProgressListener', source)
+        self.assertIn('aiVoiceAnimators', source)
+        self.assertIn('aiActivityPanel.setVisibility(visible ? View.VISIBLE : View.GONE)', source)
+        self.assertIn('android.intent.action.TTS_SERVICE', manifest)
+
+    def test_android_delete_delivery_does_not_route_to_clear_entire_cloud(self):
+        source = (Path(__file__).resolve().parents[1]
+                  / "sync-app/app/src/main/java/com/tod4s3/sync/MainActivity.java").read_text()
+        delete = source.split("private void deleteCloudDelivery", 1)[1].split("private void postToDusDownloadRefresh", 1)[0]
+        self.assertIn('request("POST", "/api/app/deliveries/delete"', delete)
+        self.assertNotIn("/api/app/cloud/clear", delete)
+        self.assertIn("confirmDeleteCloudDelivery(taskId, copyName, todusDeletable)", source)
 
     def test_android_visual_refresh_keeps_premium_controls_and_compacts_login_header(self):
         source = (Path(__file__).resolve().parents[1]
@@ -502,13 +544,16 @@ class RequestedFeatureTests(unittest.TestCase):
         self.assertEqual(len(many.inline_keyboard), 2)
         self.assertIn("ᴘᴀʀᴛᴇ", many.inline_keyboard[1][0].text)
 
-    def test_download_method_menu_puts_two_methods_on_one_row(self):
+    def test_download_menu_exposes_todus_only(self):
         markup = download_menu_keyboard()
-        self.assertEqual([len(row) for row in markup.inline_keyboard], [2, 1])
-        self.assertEqual(
-            [button.callback_data for button in markup.inline_keyboard[0]],
-            ["download:mode:s3", "download:mode:todus"],
-        )
+        callbacks = [button.callback_data for row in markup.inline_keyboard for button in row]
+        self.assertIn("download:telegram", callbacks)
+        self.assertIn("download:url", callbacks)
+        self.assertNotIn("download:mode:s3", callbacks)
+        labels = [button.text for row in markup.inline_keyboard for button in row]
+        self.assertTrue(any("📁" in label for label in labels))
+        self.assertTrue(any("🔗" in label for label in labels))
+        self.assertNotIn("s3", download_menu_text().lower())
         source_callbacks = [
             button.callback_data
             for row in download_source_keyboard().inline_keyboard
@@ -527,7 +572,9 @@ class RequestedFeatureTests(unittest.TestCase):
         prompt_text = download_prompt_text("url", "s3").lower()
         self.assertNotIn("users/df", source_text)
         self.assertNotIn("https://s3.todus.cu/stream", source_text)
-        self.assertIn("ɴᴜʙᴇ ꜱ3", menu_text)
+        self.assertNotIn("s3", menu_text)
+        self.assertNotIn("s3", source_text)
+        self.assertNotIn("s3", prompt_text)
         for text in (prompt_text,):
             self.assertIn("ᴘᴜ́ʙʟɪᴄᴏ", text)
             self.assertIn("ᴠɪᴅᴇᴏ", text)
@@ -1042,7 +1089,7 @@ class PlatformFormatFlowTests(unittest.IsolatedAsyncioTestCase):
 
         enqueue.assert_not_awaited()
         self.assertEqual(context.user_data["pending_platform_download"]["urls"], [url])
-        self.assertEqual(context.user_data["pending_platform_download"]["delivery_mode"], "s3")
+        self.assertEqual(context.user_data["pending_platform_download"]["delivery_mode"], "todus")
         message.reply_text.assert_awaited_once()
         buttons = all_buttons(message.reply_text.call_args.kwargs["reply_markup"])
         self.assertIn("platform:format:video:1080", [button.callback_data for button in buttons])

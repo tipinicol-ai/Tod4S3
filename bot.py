@@ -135,7 +135,8 @@ except ValueError:
 # Modo de entrega del archivo descargado:
 #   "cloud" = subir a ToDus S3 y dar enlaces (comportamiento original)
 #   "chat"  = enviar el archivo directamente al chat privado del usuario
-DELIVERY_MODE = os.getenv("DELIVERY_MODE", "chat").strip().lower() or "chat"
+# Las nuevas descargas del bot se entregan únicamente por ToDus.
+DELIVERY_MODE = "todus"
 S3_UPLOAD_PREFIX = os.getenv("TODUS_S3_UPLOAD_PREFIX", "users/df").strip("/") or "users/df"
 S3_UPLOAD_URL = f"{TODUS_S3_BASE_URL.rstrip('/')}/{S3_UPLOAD_PREFIX}/"
 S3_UPLOAD_TTL_HOURS = 12  # Retención en users/df antes de la eliminación automática.
@@ -2782,40 +2783,27 @@ def data_package_confirmation_keyboard(package_key: str) -> InlineKeyboardMarkup
 
 def download_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [btn("☁️ Nube S3", callback_data="download:mode:s3", style="success"),
-         btn("📲 Modo ToDus", callback_data="download:mode:todus", style="primary")],
+        [btn("📁 Por Telegram", callback_data="download:telegram", style="primary")],
+        [btn("🔗 Enlaces", callback_data="download:url")],
         [btn("🏠 ɪɴɪᴄɪᴏ", callback_data="home")],
     ])
 
 
 def download_menu_text() -> str:
     return card("📥 ᴄᴇɴᴛʀᴏ ᴅᴇ ᴅᴇꜱᴄᴀʀɢᴀꜱ", [
-        "Elige dónde entregar tus archivos.",
+        "Elige qué quieres enviar:",
+        "un archivo de Telegram o un enlace.",
+        "Todo se entregará por ToDus.",
         "",
-        "☁️ Nube S3: se sube el",
-        "archivo y recibes el enlace.",
-        "",
-        "📲 Modo ToDus: conserva",
-        "la entrega normal a tu",
-        "número registrado.",
-        "",
-        "Después eliges enviar un",
-        "archivo de Telegram o un enlace.",
+        "Registra tu número cubano",
+        "para recibirlos en tu cuenta.",
     ])
 
 
 def download_source_menu_text(delivery_mode: str) -> str:
-    if delivery_mode == "todus":
-        return card("📲 ᴍᴏᴅᴏ ᴛᴏᴅᴜꜱ", [
-            "Destino elegido: ToDus.",
-            "El archivo se enviará a",
-            "tu número registrado.",
-            "",
-            "Ahora elige si vas a",
-            "enviar un archivo o enlace.",
-        ])
-    return card("☁️ ɴᴜʙᴇ ꜱ3", [
-        "Destino elegido: nube S3.",
+    return card("📲 ᴇɴᴛʀᴇɢᴀ ᴘᴏʀ ᴛᴏᴅᴜꜱ", [
+        "El archivo llegará a tu",
+        "número ToDus registrado.",
         "",
         "Ahora elige si vas a",
         "enviar un archivo o enlace.",
@@ -2852,26 +2840,17 @@ def download_source_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [btn("📁 Telegram", callback_data="download:telegram"),
          btn("🔗 Enlace", callback_data="download:url")],
-        [btn("⬅️ Cambiar destino", callback_data="downloads"),
+        [btn("⬅️ Atrás", callback_data="downloads"),
          btn("🏠 ɪɴɪᴄɪᴏ", callback_data="home")],
     ])
 
 
 def download_prompt_text(source: str, delivery_mode: str | None = None) -> str:
-    mode = delivery_mode or DELIVERY_MODE
-    delivery_note = []
-    if mode == "todus":
-        delivery_note = [
-            "",
-            "📲 Se enviará a tu chat de ToDus.",
-            "Debes tener registrado tu número.",
-        ]
-    elif mode in {"s3", "cloud"}:
-        delivery_note = [
-            "",
-            "☁️ Se subirá a la nube S3.",
-            "Después recibirás el enlace.",
-        ]
+    delivery_note = [
+        "",
+        "📲 Se enviará a tu chat de ToDus.",
+        "Debes tener registrado tu número.",
+    ]
     if source == "telegram":
         return card("📁 ᴍᴏᴅᴏ ᴛᴇʟᴇɢʀᴀᴍ", [
             "Envía o reenvía el",
@@ -3543,6 +3522,25 @@ def todus_messages_for_delivery(user_id: int, task_id: str) -> list[dict]:
     return [item for item in entries if belongs(item)] if isinstance(entries, list) else []
 
 
+def _delete_todus_message_with_retry(client, target: str, message_id: str,
+                                     task_id: str) -> tuple[bool, object]:
+    """Try once with the current ToDus session, then relogin and retry once."""
+    try:
+        client.delete_message(target, message_id)
+        return True, client
+    except Exception as first_error:
+        log.warning("Falló el borrado ToDus task=%s message=%s (%s); se renovará la sesión.",
+                    task_id, message_id, type(first_error).__name__)
+    try:
+        client = get_todus_client(force_relogin=True)
+        client.delete_message(target, message_id)
+        return True, client
+    except Exception as retry_error:
+        log.error("Falló el borrado ToDus tras renovar sesión task=%s message=%s (%s).",
+                  task_id, message_id, type(retry_error).__name__, exc_info=True)
+        return False, client
+
+
 def delete_todus_messages_for_delivery(user_id: int, task_id: str) -> tuple[int, int, bool]:
     """Delete registered ToDus messages for one authenticated owner's delivery."""
     target = get_user_todus_number(user_id)
@@ -3574,13 +3572,14 @@ def delete_todus_messages_for_delivery(user_id: int, task_id: str) -> tuple[int,
                     or str(item.get("message_id", "")) not in selected_ids):
                 remaining.append(item)
                 continue
-            try:
-                client.delete_message(target, str(item["message_id"]))
+            deleted_ok, client = _delete_todus_message_with_retry(
+                client, target, str(item["message_id"]), task_id,
+            )
+            if deleted_ok:
                 deleted += 1
-            except Exception as exc:
+            else:
                 failed += 1
                 remaining.append(item)
-                log.warning("No se pudo borrar la parte ToDus task=%s (%s).", task_id, type(exc).__name__)
         _save_json(TODUS_SENT_MESSAGES_FILE, {"messages": remaining})
         return len(selected), deleted, failed == 0 and deleted == len(selected)
 
@@ -3622,14 +3621,14 @@ def delete_todus_messages_for_user(user_id: int) -> tuple[int, int, bool]:
                     or str(item.get("message_id", "")) not in selected_ids):
                 remaining.append(item)
                 continue
-            try:
-                client.delete_message(target, str(item["message_id"]))
+            deleted_ok, client = _delete_todus_message_with_retry(
+                client, target, str(item["message_id"]), "user-clear",
+            )
+            if deleted_ok:
                 deleted += 1
-            except Exception as exc:
+            else:
                 failed += 1
                 remaining.append(item)
-                log.warning("No se pudo borrar el mensaje ToDus del user=%s (%s).",
-                            user_id, type(exc).__name__)
         _save_json(TODUS_SENT_MESSAGES_FILE, {"messages": remaining})
         return len(selected), deleted, failed == 0 and deleted == len(selected)
 
@@ -3909,9 +3908,8 @@ async def enqueue_transfer(update: Update, context: ContextTypes.DEFAULT_TYPE, *
     message, user = update.effective_message, update.effective_user
     if not message or not user:
         return
-    selected_mode = delivery_mode or (getattr(context, "user_data", {}) or {}).get("download_delivery_mode")
-    if selected_mode not in {"s3", "todus"}:
-        selected_mode = None
+    # Ignora destinos antiguos guardados en sesiones del bot: S3 ya no se ofrece.
+    selected_mode = "todus"
     selected_quality = normalize_video_quality(
         video_quality if video_quality is not None else
         (getattr(context, "user_data", {}) or {}).get("download_video_quality", DEFAULT_VIDEO_QUALITY)
@@ -3948,7 +3946,7 @@ async def enqueue_transfer(update: Update, context: ContextTypes.DEFAULT_TYPE, *
 
 
 async def process_task(job: TransferTask, application: Application) -> None:
-    delivery_mode = job.delivery_mode or DELIVERY_MODE
+    delivery_mode = "todus"
     if job.cancel_requested:
         job.set_state("paused")
         await _edit_task_status(job, task_detail_text(job))
@@ -4918,8 +4916,8 @@ async def require_todus_number(
     if not TODUS_BOT_PHONE or not TODUS_BOT_PASSWORD:
         await message.reply_text(card("⚠️ ᴛᴏᴅᴜꜱ ɴᴏ ᴇꜱᴛá ᴅɪꜱᴘᴏɴɪʙʟᴇ", [
             "El modo ToDus no está configurado",
-            "en este momento. Elige nube S3",
-            "o contacta al administrador.",
+            "en este momento. Contacta al",
+            "administrador e inténtalo más tarde.",
         ]), reply_markup=download_menu_keyboard())
         return False
     if get_user_todus_number(user.id):
@@ -6129,7 +6127,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     if query.data in {"download:mode:s3", "download:mode:todus"}:
-        delivery_mode = query.data.rsplit(":", 1)[-1]
+        # Compatibilidad con botones antiguos: no volver a abrir la opción S3.
+        delivery_mode = "todus"
         context.user_data["download_delivery_mode"] = delivery_mode
         context.user_data.pop("pending_platform_download", None)
         await edit_query_message_text(
@@ -6202,7 +6201,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if query.data in {"download:telegram", "download:url"}:
         source = query.data.split(":", 1)[1]
-        delivery_mode = context.user_data.get("download_delivery_mode") or DELIVERY_MODE
+        delivery_mode = "todus"
+        context.user_data["download_delivery_mode"] = delivery_mode
         await edit_query_message_text(
             query.message,
             download_prompt_text(source, delivery_mode),
@@ -7094,7 +7094,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     except ValueError as exc:
         await message.reply_text(sc(str(exc)))
         return
-    delivery_mode = context.user_data.get("download_delivery_mode") or DELIVERY_MODE
+    delivery_mode = "todus"
     if not context.user_data.get("premium_compress_mode") and not await require_todus_number(
         update, context, delivery_mode,
     ):
@@ -7195,7 +7195,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if allowed and user.id not in allowed and not is_owner(user.id):
         await message.reply_text(sc("Bot limitado a usuarios autorizados."))
         return
-    delivery_mode = context.user_data.get("download_delivery_mode") or DELIVERY_MODE
+    delivery_mode = "todus"
     if not context.user_data.get("premium_compress_mode") and not await require_todus_number(
         update, context, delivery_mode,
     ):

@@ -75,8 +75,13 @@ def _format_selector(video_quality: str) -> str:
     return (
         f"bestvideo[height<={height}][ext=mp4]+bestaudio[ext=m4a]/"
         f"best[height<={height}][ext=mp4]/"
-        f"bestvideo[height<={height}]+bestaudio/best[height<={height}]"
+        f"bestvideo[height<={height}]+bestaudio/best[height<={height}]/best"
     )
+
+
+def _is_format_unavailable_error(error: Exception | str) -> bool:
+    message = str(error).lower()
+    return "requested format is not available" in message or "requested format not available" in message
 
 
 def _cnv_youtube_download(
@@ -341,6 +346,20 @@ def download_platform_video(
             raise RuntimeError("Descarga cancelada.") from exc
         message = str(exc).strip()
         lowered = message.lower()
+        if not audio_only and _is_format_unavailable_error(message):
+            # Instagram and some other extractors expose formats without reliable
+            # height/container metadata. Preserve the requested selector first;
+            # if it matches nothing, let yt-dlp choose the available rendition.
+            fallback_options = dict(base_options)
+            fallback_options["format"] = "best"
+            try:
+                with YoutubeDL(fallback_options) as downloader:
+                    downloader.extract_info(url, download=True)
+            except DownloadError as fallback_exc:
+                message = str(fallback_exc).strip()
+                lowered = message.lower()
+            else:
+                message = None
         restricted_markers = (
             "sign in", "not a bot", "login required", "private video",
             "members-only", "members only",
