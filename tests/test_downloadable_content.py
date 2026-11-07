@@ -2,8 +2,10 @@ from bot import (
     DOWNLOADABLE_CONTENT_CATEGORIES,
     content_listing_keyboard,
     content_menu_keyboard,
+    content_page_text,
     parse_downloadable_listing,
 )
+import bot
 
 
 def callbacks(markup):
@@ -17,6 +19,16 @@ def test_content_menu_has_requested_categories_and_other_catalog():
     assert "content:open:series" in values
     assert "content:open:otros" in values
     assert set(DOWNLOADABLE_CONTENT_CATEGORIES) == {"peliculas", "series", "otros"}
+
+
+def test_main_menu_shows_catalog_only_for_premium(monkeypatch):
+    monkeypatch.setattr(bot, "get_user_plan", lambda user_id: "premium")
+    premium_values = callbacks(bot.main_keyboard(12345))
+    assert "content:menu" in premium_values
+
+    monkeypatch.setattr(bot, "get_user_plan", lambda user_id: "free")
+    free_values = callbacks(bot.main_keyboard(12345))
+    assert "content:menu" not in free_values
 
 
 def test_listing_keeps_only_authorized_links_and_separates_directories():
@@ -44,3 +56,7 @@ def test_listing_keyboard_has_pagination_and_back_navigation():
     assert "content:page:1" in values
     assert "content:menu" in values
     assert "home" in values
+    text = content_page_text("📂 SERIES", 1, 3, 19, 8)
+    assert "2 ᴅᴇ 3" in text
+    assert "19" in text
+    assert "8" in text

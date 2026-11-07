@@ -677,7 +677,7 @@ class RequestedFeatureTests(unittest.TestCase):
         buttons = all_buttons(markup)
         callbacks = [button.callback_data for button in buttons]
         self.assertIn("downloads", callbacks)
-        self.assertIn("content:menu", callbacks)
+        self.assertNotIn("content:menu", callbacks)
         self.assertIn("app:pair", callbacks)
         self.assertIn("balance", callbacks)
         self.assertIn("service_info", callbacks)

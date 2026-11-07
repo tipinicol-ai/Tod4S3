@@ -2713,7 +2713,6 @@ def btn(text: str, **kwargs) -> InlineKeyboardButton:
 def main_keyboard(user_id: int | None = None) -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton("📥 DESCARGAS", callback_data="downloads", style="success")],
-        [InlineKeyboardButton("📂 CONTENIDO DESCARGABLE", callback_data="content:menu", style="success")],
         [InlineKeyboardButton("📱 VINCULAR APLICACIÓN", callback_data="app:pair", style="success")],
         [InlineKeyboardButton(
             f"💰 SALDO: {get_user_balance(user_id) if user_id is not None else 0}$ · REFERIDOS",
@@ -2729,7 +2728,8 @@ def main_keyboard(user_id: int | None = None) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("ℹ️ SERVICIO TODUS S3", callback_data="service_info", style="primary")],
     ]
     if user_id is not None and (is_owner(user_id) or get_user_plan(user_id) == "premium"):
-        rows.insert(1, [InlineKeyboardButton("🗜️ COMPRESOR PREMIUM", callback_data="premium:compressor", style="success")])
+        rows.insert(1, [InlineKeyboardButton("📂 CONTENIDO DESCARGABLE", callback_data="content:menu", style="success")])
+        rows.insert(2, [InlineKeyboardButton("🗜️ COMPRESOR PREMIUM", callback_data="premium:compressor", style="success")])
         rows.insert(2, [InlineKeyboardButton("🛠️ HERRAMIENTAS PREMIUM", callback_data="premium:tools", style="success")])
     if user_id is not None and is_admin(user_id):
         rows.append([InlineKeyboardButton("⚙️ PANEL DE CREADOR", callback_data="admin:open", style="primary")])
@@ -2809,6 +2809,14 @@ def content_listing_keyboard(entries: list[dict[str, str]], page: int, total_pag
         rows.append(navigation)
     rows.append([btn("📂 CATEGORÍAS", callback_data="content:menu"), btn("🏠 INICIO", callback_data="home")])
     return InlineKeyboardMarkup(rows)
+
+
+def content_page_text(title: str, page: int, total_pages: int, total_entries: int, visible_entries: int) -> str:
+    return card(title, [
+        f"Página {page + 1} de {total_pages} · {total_entries} elementos",
+        f"Mostrando {visible_entries} en esta página.",
+        "Selecciona una carpeta o archivo.",
+    ])
 
 
 async def fetch_downloadable_listing(url: str) -> list[dict[str, str]]:
@@ -6426,6 +6434,11 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await edit_query_message_text(query.message, download_menu_text(), reply_markup=download_menu_keyboard())
         return
 
+    if query.data == "content:menu" or query.data.startswith("content:"):
+        if not (is_owner(user.id) or get_user_plan(user.id) == "premium"):
+            await query.answer(sc("El catálogo descargable es exclusivo de Premium."), show_alert=True)
+            return
+
     if query.data == "content:menu":
         context.user_data.pop("downloadable_content", None)
         await query.answer()
@@ -6452,7 +6465,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             state = context.user_data["downloadable_content"]
             await edit_query_message_text(
                 query.message,
-                card(config[0], [f"Elementos encontrados: {len(entries)}", "Selecciona una carpeta o archivo."]),
+                content_page_text(config[0], 0, state["total_pages"], len(entries), len(state["page_entries"])),
                 reply_markup=content_listing_keyboard(state["page_entries"], 0, state["total_pages"]),
             )
         except Exception as exc:
@@ -6474,10 +6487,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             _content_page_state(context, entries, url, page)
             state = context.user_data["downloadable_content"]
             await query.answer()
-            await edit_query_message_text(query.message, card("📂 ᴄᴏɴᴛᴇɴɪᴅᴏ", [
-                f"Página {page + 1} de {state['total_pages']}",
-                "Selecciona una carpeta o archivo.",
-            ]), reply_markup=content_listing_keyboard(state["page_entries"], page, state["total_pages"]))
+            await edit_query_message_text(query.message, content_page_text(
+                "📂 ᴄᴏɴᴛᴇɴɪᴅᴏ", page, state["total_pages"], len(entries), len(state["page_entries"])
+            ), reply_markup=content_listing_keyboard(state["page_entries"], page, state["total_pages"]))
         except (KeyError, TypeError, ValueError):
             await query.answer(sc("La navegación venció. Abre la categoría otra vez."), show_alert=True)
         return
@@ -6498,9 +6510,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 entries = await fetch_downloadable_listing(entry["url"])
                 _content_page_state(context, entries, entry["url"], 0)
                 new_state = context.user_data["downloadable_content"]
-                await edit_query_message_text(query.message, card("📁 " + entry["label"], [
-                    f"Elementos encontrados: {len(entries)}",
-                ]), reply_markup=content_listing_keyboard(new_state["page_entries"], 0, new_state["total_pages"]))
+                await edit_query_message_text(query.message, content_page_text(
+                    "📁 " + entry["label"], 0, new_state["total_pages"], len(entries), len(new_state["page_entries"])
+                ), reply_markup=content_listing_keyboard(new_state["page_entries"], 0, new_state["total_pages"]))
             except Exception:
                 await edit_query_message_text(query.message, card("⚠️ ᴄᴀʀᴘᴇᴛᴀ ɴᴏ ᴅɪꜱᴘᴏɴɪʙʟᴇ", ["No se pudo abrir esta carpeta."]), reply_markup=content_menu_keyboard())
             return

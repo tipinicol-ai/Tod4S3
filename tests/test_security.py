@@ -102,9 +102,9 @@ class TelegramCommandTests(unittest.IsolatedAsyncioTestCase):
     def test_main_keyboard_has_balance_and_plan_button(self):
         buttons = [button for row in main_keyboard().inline_keyboard for button in row]
         labels = [button.text for button in buttons]
-        self.assertEqual(len(labels), 11)
+        self.assertEqual(len(labels), 10)
         self.assertIn("📥 DESCARGAS", labels)
-        self.assertIn("📂 CONTENIDO DESCARGABLE", labels)
+        self.assertNotIn("📂 CONTENIDO DESCARGABLE", labels)
         self.assertIn("📱 VINCULAR APLICACIÓN", labels)
         self.assertIn("💰 SALDO: 0$ · REFERIDOS", labels)
         self.assertIn("❓ AYUDA", labels)
