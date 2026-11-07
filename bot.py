@@ -2729,6 +2729,7 @@ def main_keyboard(user_id: int | None = None) -> InlineKeyboardMarkup:
 
 def premium_tools_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
+        [btn("🗜️ COMPRESOR PREMIUM", callback_data="premium:compressor")],
         [btn("🎞️ SUBTÍTULOS → SRT", callback_data="premium:tool:subtitles")],
         [btn("✂️ CORTAR VIDEO", callback_data="premium:tool:cut"),
          btn("🔗 UNIR VIDEOS", callback_data="premium:tool:join")],
