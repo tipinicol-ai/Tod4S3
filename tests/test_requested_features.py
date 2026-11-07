@@ -73,6 +73,11 @@ class RequestedFeatureTests(unittest.TestCase):
         self.assertIn('text(verifiedPremium ? "PLAN GRATUITO" : "RECOMENDADO PARA EMPEZAR"', plans)
         self.assertIn("viewingDashboard = false;", plans)
 
+        free_choice = source.split("private void chooseFreePlan", 1)[1].split("private void continueWithActivePlan", 1)[0]
+        self.assertIn("putBoolean(PREF_ACTIVE_PREMIUM, false)", free_choice)
+        self.assertIn("putBoolean(PREF_PREMIUM_VERIFIED, false)", free_choice)
+        self.assertIn('putString(PREF_ACTIVE_PLAN, "free")', free_choice)
+
     def test_android_ai_chat_is_compact_and_has_only_back_navigation(self):
         source = (Path(__file__).resolve().parents[1]
                  / "sync-app/app/src/main/java/com/tod4s3/sync/MainActivity.java").read_text()

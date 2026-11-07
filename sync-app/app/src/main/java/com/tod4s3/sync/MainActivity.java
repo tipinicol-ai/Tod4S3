@@ -1444,7 +1444,18 @@ public final class MainActivity extends Activity {
     }
 
     private void chooseFreePlan() {
-        prefs.edit().putString(PREF_SELECTED_PLAN, "free").apply();
+        // Al elegir Gratis se descarta cualquier estado Premium local que
+        // haya quedado pendiente de una instalación o intento anterior.
+        premiumActive = false;
+        premiumVerified = false;
+        activePlan = "free";
+        premiumExpiresAt = "";
+        prefs.edit().putString(PREF_SELECTED_PLAN, "free")
+                .putBoolean(PREF_ACTIVE_PREMIUM, false)
+                .putBoolean(PREF_PREMIUM_VERIFIED, false)
+                .putString(PREF_ACTIVE_PLAN, "free")
+                .remove("active_plan_expires_v1")
+                .apply();
         continueToApp();
     }
 
