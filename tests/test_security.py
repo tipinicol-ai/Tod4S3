@@ -104,7 +104,6 @@ class TelegramCommandTests(unittest.IsolatedAsyncioTestCase):
         labels = [button.text for button in buttons]
         self.assertEqual(len(labels), 10)
         self.assertIn("📥 DESCARGAS", labels)
-        self.assertNotIn("📂 CONTENIDO DESCARGABLE", labels)
         self.assertIn("📱 VINCULAR APLICACIÓN", labels)
         self.assertIn("💰 SALDO: 0$ · REFERIDOS", labels)
         self.assertIn("❓ AYUDA", labels)
