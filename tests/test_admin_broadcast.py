@@ -33,6 +33,9 @@ def test_broadcast_sends_text_optional_button_photo_and_document_to_users_and_ch
         async def send_document(self, **kwargs):
             self._record("document", kwargs)
 
+        async def send_video(self, **kwargs):
+            self._record("video", kwargs)
+
     monkeypatch.setattr(bot, "registered_user_ids", lambda: [101])
     telegram_bot = FakeBot()
 
@@ -78,6 +81,37 @@ def test_broadcast_sends_text_optional_button_photo_and_document_to_users_and_ch
     assert all(kwargs["document"] == "telegram-apk-file-id" for _, kwargs in calls)
     assert all("Anuncio con APK" in kwargs["caption"] for _, kwargs in calls)
     assert all(kwargs["parse_mode"] is None for _, kwargs in calls)
+    calls.clear()
+
+    buttons = [
+        {"label": "Web", "url": "https://example.org"},
+        {"label": "Ayuda", "url": "https://example.org/help"},
+        {"label": "Canal", "url": "https://t.me/example"},
+    ]
+    result = asyncio.run(bot.broadcast_admin_message(
+        telegram_bot,
+        "Anuncio con vídeo y botones",
+        media_type="video",
+        media_file_id="telegram-video-file-id",
+        buttons=buttons,
+    ))
+    assert result == (1, 1, 0, True)
+    assert [kind for kind, _ in calls] == ["video", "video"]
+    for _, kwargs in calls:
+        assert kwargs["video"] == "telegram-video-file-id"
+        rows = kwargs["reply_markup"].inline_keyboard
+        assert len(rows) == 3
+        assert [row[0].url for row in rows] == [item["url"] for item in buttons]
+    calls.clear()
+
+    result = asyncio.run(bot.broadcast_admin_message(
+        telegram_bot,
+        "No deben aparecer cuatro botones",
+        buttons=buttons + [{"label": "Extra", "url": "https://example.org/extra"}],
+    ))
+    assert result == (1, 1, 0, True)
+    for _, kwargs in calls:
+        assert len(kwargs["reply_markup"].inline_keyboard) == 3
     calls.clear()
 
     long_body = "x" * 1100

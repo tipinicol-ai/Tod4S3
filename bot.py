@@ -1000,16 +1000,26 @@ def broadcast_cancel_keyboard() -> InlineKeyboardMarkup:
 
 def broadcast_media_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [btn("Sin foto ni archivo", callback_data="admin:broadcast:skip_media")],
+        [btn("Sin foto, vídeo ni archivo", callback_data="admin:broadcast:skip_media")],
         [btn("Cancelar", callback_data="admin:broadcast:cancel")],
     ])
 
 
-def broadcast_button_choice_keyboard() -> InlineKeyboardMarkup:
+def broadcast_button_choice_keyboard(button_count: int = 0) -> InlineKeyboardMarkup:
+    if button_count >= 3:
+        return InlineKeyboardMarkup([
+            [btn("Continuar a vista previa", callback_data="admin:broadcast:finish_buttons")],
+            [btn("Cancelar", callback_data="admin:broadcast:cancel")],
+        ])
+    add_label = f"Añadir botón {button_count + 1}/3"
+    rows = [[btn(add_label, callback_data="admin:broadcast:add_button")]]
+    if button_count:
+        rows.append([btn("Terminar botones", callback_data="admin:broadcast:finish_buttons")])
+    else:
+        rows.append([btn("Sin botones", callback_data="admin:broadcast:no_button")])
+    rows.append([btn("Cancelar", callback_data="admin:broadcast:cancel")])
     return InlineKeyboardMarkup([
-        [btn("Añadir botón", callback_data="admin:broadcast:add_button"),
-         btn("Sin botón", callback_data="admin:broadcast:no_button")],
-        [btn("Cancelar", callback_data="admin:broadcast:cancel")],
+        *rows,
     ])
 
 
@@ -1029,20 +1039,27 @@ def broadcast_preview_text(state: dict) -> str:
     media_type = state.get("media_type")
     if media_type == "photo":
         attachment = "Foto"
+    elif media_type == "video":
+        attachment = f"Vídeo: {state.get('media_name') or 'video'}"
     elif media_type == "document":
         attachment = f"Archivo: {state.get('media_name') or 'documento'}"
     else:
         attachment = "Ninguno"
-    button_label = str(state.get("button_label", "")).strip()
-    button_url = str(state.get("button_url", "")).strip()
-    button = f"{button_label} → {button_url}" if button_label and button_url else "Ninguno"
+    buttons = state.get("buttons")
+    if not isinstance(buttons, list):
+        legacy_label = str(state.get("button_label", "")).strip()
+        legacy_url = str(state.get("button_url", "")).strip()
+        buttons = [{"label": legacy_label, "url": legacy_url}] if legacy_label and legacy_url else []
+    button_lines = [f"{index}. {item.get('label', '')} → {item.get('url', '')}"
+                    for index, item in enumerate(buttons[:3], 1)]
+    button = "\n".join(button_lines) if button_lines else "Ninguno"
     return "\n".join([
         "🔎 VISTA PREVIA DE DIFUSIÓN",
         "",
         preview_body,
         "",
         f"Adjunto: {attachment}",
-        f"Botón: {button}",
+        f"Botones ({len(buttons[:3])}/3):\n{button}",
         f"Destino adicional: {GLOBAL_BROADCAST_CHANNEL} (el bot necesita permiso para publicar)",
         "",
         "Pulsa Enviar a todos para confirmar.",
@@ -1078,6 +1095,14 @@ async def _send_broadcast_to_chat(bot_obj, chat_id, message_text, keyboard, medi
             parse_mode=None,
             reply_markup=keyboard,
         )
+    elif media_file_id and media_type == "video" and caption_fits:
+        await bot_obj.send_video(
+            chat_id=chat_id,
+            video=media_file_id,
+            caption=message_text,
+            parse_mode=None,
+            reply_markup=keyboard,
+        )
     else:
         await bot_obj.send_message(
             chat_id=chat_id,
@@ -1090,6 +1115,8 @@ async def _send_broadcast_to_chat(bot_obj, chat_id, message_text, keyboard, medi
             await bot_obj.send_photo(chat_id=chat_id, photo=media_file_id)
         elif media_file_id and media_type == "document":
             await bot_obj.send_document(chat_id=chat_id, document=media_file_id)
+        elif media_file_id and media_type == "video":
+            await bot_obj.send_video(chat_id=chat_id, video=media_file_id)
 
 
 async def broadcast_admin_message(
@@ -1100,14 +1127,27 @@ async def broadcast_admin_message(
     media_file_id: str | None = None,
     button_label: str | None = None,
     button_url: str | None = None,
+    buttons: list[dict] | None = None,
 ) -> tuple[int, int, int, bool]:
     """Envía la difusión a los usuarios conocidos y al canal configurado."""
     targets = registered_user_ids()
     sent = failed = 0
     channel_sent = False
     keyboard = None
-    if button_label and button_url:
-        keyboard = InlineKeyboardMarkup([[btn(button_label, url=button_url)]])
+    normalized_buttons = []
+    if isinstance(buttons, list):
+        for item in buttons[:3]:
+            if isinstance(item, dict):
+                label = str(item.get("label", "")).strip()
+                url = str(item.get("url", "")).strip()
+                if label and url and valid_broadcast_button_url(url):
+                    normalized_buttons.append({"label": label[:64], "url": url})
+    elif button_label and button_url:
+        normalized_buttons = [{"label": button_label, "url": button_url}]
+    if normalized_buttons:
+        keyboard = InlineKeyboardMarkup([
+            [btn(item["label"], url=item["url"])] for item in normalized_buttons
+        ])
     message_text = f"📢 Mensaje del administrador\n\n{body}"
     caption_fits = len(message_text.encode("utf-16-le")) // 2 <= 900
     for target_id in targets:
@@ -5053,27 +5093,40 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             return
         if action == "skip_media" and state.get("step") == "broadcast_media":
             state.update({"step": "broadcast_button_choice", "media_type": None,
-                          "media_file_id": None, "media_name": None})
+                          "media_file_id": None, "media_name": None, "buttons": []})
             context.user_data["admin_state"] = state
             await query.answer()
             await edit_query_message_text(
                 query.message,
-                card("🔘 ʙᴏᴛóɴ ᴅᴇ ᴅɪꜰᴜꜱɪóɴ", ["¿Quieres añadir un botón con enlace?"]),
-                reply_markup=broadcast_button_choice_keyboard(),
+                card("🔘 ʙᴏᴛᴏɴᴇꜱ ᴅᴇ ᴅɪꜰᴜꜱɪóɴ", ["Puedes añadir hasta 3 botones con enlace."]),
+                reply_markup=broadcast_button_choice_keyboard(0),
             )
             return
         if action == "add_button" and state.get("step") == "broadcast_button_choice":
             state["step"] = "broadcast_button_label"
+            state.setdefault("buttons", [])
+            state["button_number"] = min(len(state["buttons"]) + 1, 3)
             context.user_data["admin_state"] = state
             await query.answer()
             await edit_query_message_text(
                 query.message,
-                card("🔘 ᴛᴇxᴛᴏ ᴅᴇʟ ʙᴏᴛóɴ", ["Escribe ahora la etiqueta del botón (máximo 64 caracteres)."]),
+                card("🔘 ᴛᴇxᴛᴏ ᴅᴇʟ ʙᴏᴛóɴ", [f"Escribe la etiqueta del botón {state['button_number']}/3 (máximo 64 caracteres)."]),
                 reply_markup=broadcast_cancel_keyboard(),
             )
             return
         if action == "no_button" and state.get("step") == "broadcast_button_choice":
-            state.update({"step": "broadcast_confirm", "button_label": None, "button_url": None})
+            state.update({"step": "broadcast_confirm", "buttons": []})
+            context.user_data["admin_state"] = state
+            await query.answer()
+            await edit_query_message_text(
+                query.message,
+                broadcast_preview_text(state),
+                parse_mode=None,
+                reply_markup=broadcast_confirmation_keyboard(),
+            )
+            return
+        if action == "finish_buttons" and state.get("step") == "broadcast_button_choice":
+            state["step"] = "broadcast_confirm"
             context.user_data["admin_state"] = state
             await query.answer()
             await edit_query_message_text(
@@ -5088,10 +5141,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             if not body:
                 await query.answer(sc("Falta el texto de la difusión"), show_alert=True)
                 return
-            button_label = str(state.get("button_label", "")).strip() or None
-            button_url = str(state.get("button_url", "")).strip() or None
-            if bool(button_label) != bool(button_url) or (button_url and not valid_broadcast_button_url(button_url)):
-                await query.answer(sc("La configuración del botón no es válida"), show_alert=True)
+            buttons = state.get("buttons", [])
+            if not isinstance(buttons, list) or len(buttons) > 3 or any(
+                not isinstance(item, dict)
+                or not str(item.get("label", "")).strip()
+                or not valid_broadcast_button_url(str(item.get("url", "")).strip())
+                for item in buttons
+            ):
+                await query.answer(sc("La configuración de los botones no es válida"), show_alert=True)
                 return
             context.user_data.pop("admin_state", None)
             await query.answer(sc("Difusión iniciada"))
@@ -5100,8 +5157,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 body,
                 media_type=state.get("media_type"),
                 media_file_id=state.get("media_file_id"),
-                button_label=button_label,
-                button_url=button_url,
+                buttons=buttons,
             )
             await edit_query_message_text(
                 query.message,
@@ -6661,8 +6717,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             context.user_data["admin_state"] = {"step": "broadcast_media", "body": body}
             await message.reply_text(
                 card("📎 ᴀᴅᴊᴜɴᴛᴏ ᴏᴘᴄɪᴏɴᴀʟ", [
-                    "Ahora puedes enviar una foto o un documento, por ejemplo el APK.",
-                    "Si quieres texto solamente, pulsa Sin foto ni archivo.",
+                    "Ahora puedes enviar una foto, un vídeo o un documento, por ejemplo el APK.",
+                    "Si quieres texto solamente, pulsa Sin foto, vídeo ni archivo.",
                 ]),
                 reply_markup=broadcast_media_keyboard(),
             )
@@ -6670,15 +6726,15 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
         if step == "broadcast_media":
             await message.reply_text(
-                sc("Envía una foto o un documento/APK, o pulsa «Sin foto ni archivo»."),
+                sc("Envía una foto, un vídeo o un documento/APK, o pulsa «Sin foto, vídeo ni archivo»."),
                 reply_markup=broadcast_media_keyboard(),
             )
             return
 
         if step == "broadcast_button_choice":
             await message.reply_text(
-                sc("Elige si quieres añadir un botón con enlace."),
-                reply_markup=broadcast_button_choice_keyboard(),
+                sc(f"Puedes añadir hasta 3 botones. Llevas {len(admin_state.get('buttons', []))}/3."),
+                reply_markup=broadcast_button_choice_keyboard(len(admin_state.get("buttons", []))),
             )
             return
 
@@ -6704,7 +6760,23 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                     reply_markup=broadcast_cancel_keyboard(),
                 )
                 return
-            admin_state.update({"step": "broadcast_confirm", "button_url": button_url})
+            buttons = admin_state.setdefault("buttons", [])
+            if len(buttons) >= 3:
+                await message.reply_text(sc("Ya tienes el máximo de 3 botones."), reply_markup=broadcast_confirmation_keyboard())
+                admin_state["step"] = "broadcast_confirm"
+                context.user_data["admin_state"] = admin_state
+                return
+            buttons.append({"label": str(admin_state.pop("button_label", "")).strip(), "url": button_url})
+            if len(buttons) < 3:
+                admin_state["step"] = "broadcast_button_choice"
+                context.user_data["admin_state"] = admin_state
+                await message.reply_text(
+                    f"✅ Botón {len(buttons)}/3 guardado. Puedes añadir otro o terminar.",
+                    parse_mode=None,
+                    reply_markup=broadcast_button_choice_keyboard(len(buttons)),
+                )
+                return
+            admin_state["step"] = "broadcast_confirm"
             context.user_data["admin_state"] = admin_state
             await message.reply_text(
                 broadcast_preview_text(admin_state),
@@ -7154,6 +7226,12 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 media_file_id = media.file_id
                 media_name = "foto"
                 media_size = getattr(media, "file_size", None)
+            elif getattr(message, "video", None):
+                media = message.video
+                media_type = "video"
+                media_file_id = media.file_id
+                media_name = getattr(media, "file_name", None) or "video.mp4"
+                media_size = getattr(media, "file_size", None)
             elif getattr(message, "document", None):
                 media = message.document
                 media_type = "document"
@@ -7162,7 +7240,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 media_size = getattr(media, "file_size", None)
             else:
                 await message.reply_text(
-                    sc("Para el adjunto opcional, envía una foto o un documento/APK."),
+                    sc("Para el adjunto opcional, envía una foto, un vídeo o un documento/APK."),
                     reply_markup=broadcast_media_keyboard(),
                 )
                 return
@@ -7180,9 +7258,9 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             })
             context.user_data["admin_state"] = admin_state
             await message.reply_text(
-                f"✅ Adjunto guardado ({'foto' if media_type == 'photo' else 'archivo'}: {media_name}).\n¿Quieres añadir un botón con enlace?",
+                f"✅ Adjunto guardado ({'foto' if media_type == 'photo' else 'vídeo' if media_type == 'video' else 'archivo'}: {media_name}).\nPuedes añadir hasta 3 botones con enlace.",
                 parse_mode=None,
-                reply_markup=broadcast_button_choice_keyboard(),
+                reply_markup=broadcast_button_choice_keyboard(0),
             )
             return
         if isinstance(step, str) and step.startswith("broadcast_"):
