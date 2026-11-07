@@ -2825,7 +2825,13 @@ async def fetch_downloadable_listing(url: str) -> list[dict[str, str]]:
         raise ValueError("Este contenido no pertenece al catálogo autorizado.")
     timeout = aiohttp.ClientTimeout(total=30, connect=10, sock_read=20)
     connector = aiohttp.TCPConnector(resolver=PublicOnlyResolver(), limit=8, ttl_dns_cache=60)
-    async with aiohttp.ClientSession(timeout=timeout, connector=connector, headers={"User-Agent": "Tod4S3Bot/1.0"}) as session:
+    browser_headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
+        "Referer": "https://visuales.uclv.cu/",
+    }
+    async with aiohttp.ClientSession(timeout=timeout, connector=connector, headers=browser_headers) as session:
         async with session.get(url, allow_redirects=True, max_redirects=3) as response:
             if not _content_url_allowed(str(response.url)):
                 raise ValueError("El catálogo redirigió fuera del sitio autorizado.")
