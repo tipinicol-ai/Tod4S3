@@ -19,7 +19,7 @@ Los enlaces directos `.xapk` y `.apks` se transfieren como archivos completos y 
 Necesitas Docker con Docker Compose y un token creado con [@BotFather](https://t.me/BotFather).
 
 ```bash
-git clone https://github.com/niku-source/Tod4S3.git
+git clone https://github.com/tipinicol-ai/Tod4S3.git
 cd Tod4S3
 cp .env.example .env
 ```
@@ -75,6 +75,6 @@ Con `MAX_FILE_SIZE_MIB=0` no hay un límite artificial de entrada. Esto no signi
 
 ## Despliegue en Railway
 
-Crea un servicio desde `https://github.com/niku-source/Tod4S3` en la rama `main`; Railway usa `Dockerfile` y `railway.json`. En **Variables**, configura `TELEGRAM_BOT_TOKEN`, `TELEGRAM_BACKUP_CHAT_ID` y `BOT_DATA_DIR=/data`. Monta un Volume con ruta `/data`. Añade `TELEGRAM_API_ID` y `TELEGRAM_API_HASH` solo si el bot debe descargar reenvíos grandes de Telegram. Guarda los cambios y espera el redeploy.
+ Crea un servicio desde `https://github.com/tipinicol-ai/Tod4S3` en la rama `main`; Railway usa `Dockerfile` y `railway.json`. En **Variables**, configura `TELEGRAM_BOT_TOKEN`, `TELEGRAM_BACKUP_CHAT_ID` y `BOT_DATA_DIR=/data`. Monta un Volume con ruta `/data`. Añade `TELEGRAM_API_ID` y `TELEGRAM_API_HASH` solo si el bot debe descargar reenvíos grandes de Telegram. Guarda los cambios y espera el redeploy.
 
 Si aparece el aviso de directorio **NO PERSISTENTE**, el volumen no está montado en `/data` o `BOT_DATA_DIR` apunta a otra ruta; los datos locales podrían perderse al redesplegar.
