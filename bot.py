@@ -124,7 +124,7 @@ PUBLIC_CHANNEL_ID = (
 PUBLIC_SITE_URL = os.getenv("PUBLIC_SITE_URL", "").strip().rstrip("/")
 if not PUBLIC_SITE_URL:
     railway_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip().strip("/")
-    PUBLIC_SITE_URL = f"https://{railway_domain}" if railway_domain else "https://tod4s3-production.up.railway.app/#inicio"
+    PUBLIC_SITE_URL = f"https://{railway_domain}" if railway_domain else "https://tod4s3-production-9207.up.railway.app/#inicio"
 # Horas que los archivos permanecen en la nube de ToDus antes del borrado
 # automático. 0 = los archivos nunca se borran solos; solo se eliminan
 # cuando el usuario o un admin lo piden explícitamente.
@@ -3256,7 +3256,7 @@ def help_keyboard(page: int) -> InlineKeyboardMarkup:
     rows = [row]
     if page == len(HELP_PAGES) - 1:
         rows.append([
-            btn("🌐 ᴡᴇʙ ᴅᴇ ᴘʟᴀɴᴇꜱ", url="https://tod4s3-production.up.railway.app/#inicio"),
+            btn("🌐 ᴡᴇʙ ᴅᴇ ᴘʟᴀɴᴇꜱ", url="https://tod4s3-production-9207.up.railway.app/#inicio"),
             btn("💬 ᴄᴏɴᴛᴀᴄᴛᴀʀ ᴀᴅᴍɪɴ", url="https://t.me/Niku_Blade"),
         ])
     rows.append([btn("🏠 ɪɴɪᴄɪᴏ", callback_data="home")])
