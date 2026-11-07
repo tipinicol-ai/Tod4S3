@@ -121,10 +121,14 @@ PUBLIC_CHANNEL_ID = (
     or os.getenv("REQUIRED_TODUS_CHANNEL", "").strip()
     or "@darzPrbo"
 )
+_LEGACY_PUBLIC_SITE_URL = "https://tod4s3-production.up.railway.app"
+_CURRENT_PUBLIC_SITE_URL = "https://tod4s3-production-9207.up.railway.app"
 PUBLIC_SITE_URL = os.getenv("PUBLIC_SITE_URL", "").strip().rstrip("/")
 if not PUBLIC_SITE_URL:
     railway_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip().strip("/")
-    PUBLIC_SITE_URL = f"https://{railway_domain}" if railway_domain else "https://tod4s3-production-9207.up.railway.app/#inicio"
+    PUBLIC_SITE_URL = f"https://{railway_domain}" if railway_domain else f"{_CURRENT_PUBLIC_SITE_URL}/#inicio"
+if PUBLIC_SITE_URL.startswith(_LEGACY_PUBLIC_SITE_URL):
+    PUBLIC_SITE_URL = _CURRENT_PUBLIC_SITE_URL + PUBLIC_SITE_URL[len(_LEGACY_PUBLIC_SITE_URL):]
 # Horas que los archivos permanecen en la nube de ToDus antes del borrado
 # automático. 0 = los archivos nunca se borran solos; solo se eliminan
 # cuando el usuario o un admin lo piden explícitamente.
