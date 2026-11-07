@@ -120,7 +120,7 @@ class RequestedFeatureTests(unittest.TestCase):
         self.assertIn('if (hasWindowFocus() && prefs != null) checkForAppUpdate(false)', source)
         self.assertIn('connection.setRequestProperty("Cache-Control", "no-cache, no-store, max-age=0")', source)
         self.assertNotIn('putLong(PREF_LAST_UPDATE_CHECK, now)', source)
-        self.assertIn('raw.githubusercontent.com/yunierki1234-coder/Tod4S3', source)
+        self.assertIn('raw.githubusercontent.com/tipinicol-ai/Tod4S3', source)
         self.assertIn('manifest.optString("manifest_url", "")', source)
         self.assertIn('PREF_UPDATE_MANIFEST_URL', source)
         self.assertIn('putString(PREF_UPDATE_MANIFEST_URL, redirectedManifest)', source)
