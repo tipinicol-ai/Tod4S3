@@ -252,6 +252,7 @@ public final class MainActivity extends Activity {
     private long freeQuotaLimitBytes;
     private long freeQuotaRemainingBytes;
     private long freeQuotaResetInSeconds = 24 * 60 * 60;
+    private int planDaysRemaining = -1;
     private String activePlan = "free";
     private String premiumExpiresAt = "";
     private final Object downloadConcurrencyLock = new Object();
@@ -5177,6 +5178,7 @@ public final class MainActivity extends Activity {
                 boolean newPremiumVerified = profile.optBoolean("premium_verified", false);
                 String newPlan = profile.optString("plan", "free");
                 String newExpiry = profile.optString("expires", "");
+                int newDaysRemaining = profile.optInt("days_remaining", -1);
                 JSONObject quota = profile.optJSONObject("quota");
                 long newQuotaLimit = quota == null ? 0 : Math.max(0, quota.optLong("limit_bytes", 0));
                 long newQuotaUsed = quota == null ? 0 : Math.max(0, quota.optLong("used_bytes", 0));
@@ -5203,6 +5205,7 @@ public final class MainActivity extends Activity {
                     premiumVerified = newPremiumVerified;
                     activePlan = newPlan;
                     premiumExpiresAt = newExpiry;
+                    planDaysRemaining = newDaysRemaining;
                     freeQuotaLimitBytes = newQuotaLimit;
                     freeQuotaUsedBytes = newQuotaUsed;
                     freeQuotaRemainingBytes = newQuotaRemaining;
@@ -5272,10 +5275,14 @@ public final class MainActivity extends Activity {
                     : "Premium activo para tu ID · falta pegar el token del administrador";
             if (!premiumExpiresAt.isEmpty()) label += " · hasta " + premiumExpiresAt;
             else label += " · permanente";
+            label += " · consumido: " + formatBytes(freeQuotaUsedBytes);
+            if ("owner".equals(activePlan)) label += " · acceso permanente";
+            else if (planDaysRemaining >= 0) label += " · quedan " + planDaysRemaining + " días";
             return label;
         }
         if ("free".equals(activePlan) && freeQuotaLimitBytes > 0) {
-            return "Plan Gratis · " + freeQuotaPercent + "% de la cuota diaria usada · reinicio en "
+            return "Plan Gratis · consumido " + formatBytes(freeQuotaUsedBytes) + " (" + freeQuotaPercent
+                    + "%) · reinicio en "
                     + quotaCountdownLabel(freeQuotaResetInSeconds);
         }
         return token == null || token.isEmpty()
@@ -5291,7 +5298,7 @@ public final class MainActivity extends Activity {
 
     private void updateQuotaUsageCard() {
         if (quotaUsageBox == null) return;
-        if (token == null || token.isEmpty() || !"free".equals(activePlan) || freeQuotaLimitBytes <= 0) {
+        if (token == null || token.isEmpty() || freeQuotaLimitBytes <= 0) {
             quotaUsageBox.removeAllViews();
             quotaUsageBox.setVisibility(View.GONE);
             quotaProgressBar = null;
@@ -5303,7 +5310,10 @@ public final class MainActivity extends Activity {
         if (quotaProgressBar == null || quotaUsageText == null || quotaResetText == null) {
             LinearLayout quotaCard = card();
             quotaCard.setPadding(dp(14), dp(11), dp(14), dp(11));
-            TextView title = text("CONSUMO DEL PLAN ACTIVO · 1 GB / 24 H", 10, true);
+            String titleText = "free".equals(activePlan)
+                    ? "CONSUMO DEL PLAN GRATIS · 1 GB / 24 H"
+                    : "CONSUMO DEL PLAN ACTIVO · ILIMITADO";
+            TextView title = text(titleText, 10, true);
             title.setTextColor(accentColor());
             quotaCard.addView(title);
             quotaProgressBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
@@ -5320,12 +5330,21 @@ public final class MainActivity extends Activity {
             quotaUsageBox.removeAllViews();
             quotaUsageBox.addView(quotaCard);
         }
-        int percent = Math.max(0, Math.min(100, freeQuotaPercent));
+        int percent = "free".equals(activePlan) ? Math.max(0, Math.min(100, freeQuotaPercent)) : 0;
         quotaProgressBar.setProgress(percent);
-        quotaUsageText.setText(percent + "% usado · " + formatBytes(freeQuotaUsedBytes)
-                + " de " + formatBytes(freeQuotaLimitBytes) + " · quedan "
-                + formatBytes(freeQuotaRemainingBytes));
-        quotaResetText.setText("La cuota gratis se renueva en " + quotaCountdownLabel(freeQuotaResetInSeconds));
+        if ("free".equals(activePlan)) {
+            quotaUsageText.setText(percent + "% usado · " + formatBytes(freeQuotaUsedBytes)
+                    + " de " + formatBytes(freeQuotaLimitBytes) + " · quedan "
+                    + formatBytes(freeQuotaRemainingBytes));
+            quotaResetText.setText("La cuota gratis se renueva en " + quotaCountdownLabel(freeQuotaResetInSeconds));
+        } else {
+            quotaUsageText.setText("Consumido en este periodo: " + formatBytes(freeQuotaUsedBytes)
+                    + " · transferencias ilimitadas");
+            quotaResetText.setText("owner".equals(activePlan)
+                    ? "Plan Dueño · acceso permanente"
+                    : (planDaysRemaining >= 0 ? "Quedan " + planDaysRemaining + " días de Premium"
+                    : "Premium activo"));
+        }
     }
 
     private void updateFreeQuotaPanel() {

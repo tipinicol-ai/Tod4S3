@@ -1195,8 +1195,6 @@ def quota_period_days(user_id: int) -> int:
 
 
 def get_daily_usage(user_id: int) -> int:
-    if is_owner(user_id):
-        return 0
     try:
         data = _load_json(USAGE_DATA_FILE)
         user_data = data.get(str(user_id), {})
@@ -1218,8 +1216,6 @@ def get_daily_usage(user_id: int) -> int:
 
 
 def add_daily_usage(user_id: int, file_bytes: int) -> None:
-    if is_owner(user_id):
-        return
     try:
         users_data = _load_json(USERS_DATA_FILE)
         users = users_data.get("users", {})
@@ -1228,25 +1224,26 @@ def add_daily_usage(user_id: int, file_bytes: int) -> None:
         account = users.get(str(user_id), {})
         if not isinstance(account, dict):
             account = {}
-        _ensure_data_quota_fields(account)
-        if get_user_plan(user_id) == "free":
-            # Refresh the daily free bucket before consuming this transfer.
-            get_remaining_quota(user_id)
-            account = _load_json(USERS_DATA_FILE).get("users", {}).get(str(user_id), account)
+        if not is_owner(user_id):
             _ensure_data_quota_fields(account)
-        remaining = int(account.get("free_quota_remaining_bytes", 0)) + int(account.get("data_bonus_remaining_bytes", 0))
-        if file_bytes < 0 or file_bytes > remaining:
-            log.warning("No se pudo descontar cuota user=%s bytes=%s remaining=%s", user_id, file_bytes, remaining)
-            return
-        free_remaining = int(account.get("free_quota_remaining_bytes", 0))
-        consumed_free = min(free_remaining, int(file_bytes))
-        account["free_quota_remaining_bytes"] = free_remaining - consumed_free
-        account["data_bonus_remaining_bytes"] = int(account.get("data_bonus_remaining_bytes", 0)) - (int(file_bytes) - consumed_free)
-        account["data_quota_remaining_bytes"] = int(account["free_quota_remaining_bytes"]) + int(account["data_bonus_remaining_bytes"])
-        account["data_quota_used_bytes"] = int(account.get("data_quota_used_bytes", 0)) + int(file_bytes)
-        users[str(user_id)] = account
-        users_data["users"] = users
-        _save_json(USERS_DATA_FILE, users_data)
+            if get_user_plan(user_id) == "free":
+                # Refresh the daily free bucket before consuming this transfer.
+                get_remaining_quota(user_id)
+                account = _load_json(USERS_DATA_FILE).get("users", {}).get(str(user_id), account)
+                _ensure_data_quota_fields(account)
+            remaining = int(account.get("free_quota_remaining_bytes", 0)) + int(account.get("data_bonus_remaining_bytes", 0))
+            if file_bytes < 0 or file_bytes > remaining:
+                log.warning("No se pudo descontar cuota user=%s bytes=%s remaining=%s", user_id, file_bytes, remaining)
+                return
+            free_remaining = int(account.get("free_quota_remaining_bytes", 0))
+            consumed_free = min(free_remaining, int(file_bytes))
+            account["free_quota_remaining_bytes"] = free_remaining - consumed_free
+            account["data_bonus_remaining_bytes"] = int(account.get("data_bonus_remaining_bytes", 0)) - (int(file_bytes) - consumed_free)
+            account["data_quota_remaining_bytes"] = int(account["free_quota_remaining_bytes"]) + int(account["data_bonus_remaining_bytes"])
+            account["data_quota_used_bytes"] = int(account.get("data_quota_used_bytes", 0)) + int(file_bytes)
+            users[str(user_id)] = account
+            users_data["users"] = users
+            _save_json(USERS_DATA_FILE, users_data)
 
         data = _load_json(USAGE_DATA_FILE)
         today = _today_key()
@@ -7871,6 +7868,19 @@ def sync_app_profile(user_id: int) -> dict:
             "remaining_bytes": free_remaining,
             "percent_used": min(100, int(used * 100 / FREE_JOIN_QUOTA_BYTES)),
             "reset_in_seconds": reset_in_seconds,
+        }
+    else:
+        # Premium y Dueño no tienen límite, pero sí deben ver cuánto han
+        # transferido en el periodo actual. Se usa un entero grande porque la
+        # API móvil trabaja con contadores JSON finitos.
+        unlimited_limit = 10**18
+        used = max(0, int(get_daily_usage(user_id)))
+        profile["quota"] = {
+            "limit_bytes": unlimited_limit,
+            "used_bytes": min(used, unlimited_limit),
+            "remaining_bytes": unlimited_limit,
+            "percent_used": 0,
+            "reset_in_seconds": 0,
         }
     return profile
 
