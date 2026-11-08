@@ -71,14 +71,14 @@ jobs:
           PY
           )
           digest="$(sha256sum Tod4S3-Sync-latest.apk | awk '{print $1}')"
-          python3 - "$GITHUB_REPOSITORY" "$version_code" "$version_name" "$digest" "${ANDROID_UPDATE_MANIFEST_URL:-}" <<'PY'
+          python3 - "$GITHUB_REPOSITORY" "$version_code" "$version_name" "$digest" "${ANDROID_UPDATE_MANIFEST_URL:-}" "$selected" <<'PY'
           import json,sys
-          repository,code,name,digest,manifest_url=sys.argv[1:]
+          repository,code,name,digest,manifest_url,apk_file=sys.argv[1:]
           manifest={
               "version_code":int(code),
               "version_name":name,
               "manifest_url":manifest_url or f"https://raw.githubusercontent.com/{repository}/main/web/android-update.json",
-              "apk_url":f"https://raw.githubusercontent.com/{repository}/main/Tod4S3-Sync-latest.apk",
+              "apk_url":f"https://raw.githubusercontent.com/{repository}/main/{apk_file}",
               "sha256":digest,
           }
           with open("web/android-update.json","w",encoding="utf-8") as f:

@@ -123,6 +123,12 @@ public final class MainActivity extends Activity {
     private static final String PREF_LAST_UPDATE_ATTEMPT = "last_android_update_attempt_v1";
     private static final String PREF_LAST_UPDATE_CHECK_VERSION = "last_android_update_check_version_v1";
     private static final String PREF_PENDING_UPDATE_VERSION = "pending_android_update_version_v1";
+    private static final String PREF_UPDATE_DECLINE_VERSION = "android_update_decline_version_v1";
+    private static final String PREF_UPDATE_DECLINE_COUNT = "android_update_decline_count_v1";
+    private static final String PREF_UPDATE_DECLINE_UNTIL = "android_update_decline_until_v1";
+    private static final String PREF_UPDATE_DECLINE_REASON = "android_update_decline_reason_v1";
+    private static final String PREF_UPDATE_DECLINE_REQUEST_ID = "android_update_decline_request_id_v1";
+    private static final String PREF_LOCAL_UPDATE_BLOCKED = "android_update_local_blocked_v1";
     private static final long UPDATE_CHECK_INTERVAL_MS = 10L * 1000L;
     private static final long UPDATE_RETRY_INTERVAL_MS = 10L * 1000L;
     private static final int REQUEST_WRITE_STORAGE = 702;
@@ -151,7 +157,10 @@ public final class MainActivity extends Activity {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Runnable poller = new Runnable() {
         @Override public void run() {
-            if (appBanned || unbannedScreenVisible) {
+            if (localUpdateBlocked) {
+                refreshDeviceStatus();
+                if (token != null && !token.isEmpty()) refreshAccountProfile();
+            } else if (appBanned || unbannedScreenVisible) {
                 refreshAccountProfile();
             } else {
                 refreshDeliveries();
@@ -253,6 +262,10 @@ public final class MainActivity extends Activity {
     private String pendingAiSpeech = "";
     private int aiSpeechGeneration;
     private boolean aiKeyboardWasVisible;
+    private volatile boolean localUpdateBlocked;
+    private volatile boolean deviceStatusCheckInFlight;
+    private String localUpdateBlockReason = "";
+    private String appBanReason = "";
     private volatile boolean updateCheckInFlight;
     private volatile boolean updateDownloadCancelled;
     private volatile HttpURLConnection updateConnection;
@@ -306,11 +319,14 @@ public final class MainActivity extends Activity {
         premiumVerified = prefs.getBoolean(PREF_PREMIUM_VERIFIED, false);
         activePlan = prefs.getString(PREF_ACTIVE_PLAN, "free");
         premiumExpiresAt = prefs.getString("active_plan_expires_v1", "");
+        localUpdateBlocked = prefs.getBoolean(PREF_LOCAL_UPDATE_BLOCKED, false);
+        localUpdateBlockReason = prefs.getString(PREF_UPDATE_DECLINE_REASON, "");
         loadDirectLinkTasks();
         loadToDusDownloadTasks();
         loadToDusCredentials();
         android.util.Log.i(LOG_TAG, "Inicio de Tod4S3 Sync v" + appVersion() + " · Android API " + Build.VERSION.SDK_INT);
         buildUi();
+        if (localUpdateBlocked) handler.post(this::showBannedScreen);
         ensureDownloadNotificationChannel();
         handler.postDelayed(this::requestNotificationPermissionIfNeeded, 1_200L);
         handler.postDelayed(() -> checkForAppUpdate(false), 2_000L);
@@ -391,7 +407,8 @@ public final class MainActivity extends Activity {
 
     @Override protected void onResume() {
         super.onResume();
-        if (prefs != null && token != null && !token.isEmpty()) refreshAccountProfile();
+        if (prefs != null && token != null && !token.isEmpty() && !localUpdateBlocked) refreshAccountProfile();
+        if (prefs != null && localUpdateBlocked) refreshDeviceStatus();
         if (prefs != null) checkForAppUpdate(false);
         if (prefs != null && awaitingSpeedOverlayPermission) {
             awaitingSpeedOverlayPermission = false;
@@ -490,7 +507,7 @@ public final class MainActivity extends Activity {
                         .putLong(PREF_LAST_UPDATE_CHECK_VERSION, currentVersionCode()).apply();
                 if (versionCode <= currentVersionCode()) return;
                 int availableVersion = versionCode;
-                handler.post(() -> beginAppUpdateDownload(availableVersion, versionName, apkUrl, sha256));
+                handler.post(() -> offerAppUpdate(availableVersion, versionName, apkUrl, sha256));
             } catch (Exception e) {
                 android.util.Log.w(LOG_TAG, "No se pudo consultar actualización Android: " + e.getClass().getSimpleName());
             } finally {
@@ -500,6 +517,116 @@ public final class MainActivity extends Activity {
         }, "tod4s3-update-check").start();
     }
 
+    private void offerAppUpdate(int versionCode, String versionName, String apkUrl, String expectedSha256) {
+        if (isFinishing() || versionCode <= currentVersionCode() || localUpdateBlocked) return;
+        long declinedVersion = prefs.getLong(PREF_UPDATE_DECLINE_VERSION, -1L);
+        long deferUntil = prefs.getLong(PREF_UPDATE_DECLINE_UNTIL, 0L);
+        if (declinedVersion == versionCode && deferUntil > System.currentTimeMillis()) return;
+        new AlertDialog.Builder(this)
+                .setTitle("Actualización disponible · v" + versionName)
+                .setMessage("¿Quieres instalar esta actualización ahora? Si rechazas explícitamente esta misma versión 3 veces, se bloqueará el acceso solo en este teléfono. Cerrar este aviso o pulsar atrás no cuenta como rechazo.")
+                .setPositiveButton("Actualizar ahora", (dialog, which) ->
+                        beginAppUpdateDownload(versionCode, versionName, apkUrl, expectedSha256))
+                .setNegativeButton("Rechazar actualización", (dialog, which) ->
+                        declineAppUpdate(versionCode, versionName, apkUrl, expectedSha256))
+                .show();
+    }
+    private void declineAppUpdate(int versionCode, String versionName, String apkUrl, String expectedSha256) {
+        String requestKey = PREF_UPDATE_DECLINE_REQUEST_ID + "_" + versionCode;
+        String requestId = prefs.getString(requestKey, "");
+        if (requestId.isEmpty()) requestId = UUID.randomUUID().toString();
+        prefs.edit().putString(requestKey, requestId).apply();
+        final String stableRequestId = requestId;
+        final String currentToken = token == null ? "" : token;
+        new Thread(() -> {
+            try {
+                JSONObject payload = new JSONObject().put("device_id", deviceId())
+                        .put("version_code", versionCode).put("version_name", versionName)
+                        .put("request_id", stableRequestId);
+                JSONObject result = request("POST", "/api/app/update-decline", payload.toString(), currentToken);
+                String countKey = PREF_UPDATE_DECLINE_COUNT + "_" + versionCode;
+                int localCount = prefs.getInt(countKey, 0);
+                int count = Math.max(1, result.optInt("count", localCount + 1));
+                String reason = result.optString("reason", "").trim();
+                prefs.edit().putLong(PREF_UPDATE_DECLINE_VERSION, versionCode)
+                        .putInt(countKey, count).remove(requestKey).apply();
+                if (count >= 3) {
+                    if (reason.isEmpty()) reason = "Se rechazó explícitamente tres veces la actualización v" + versionName + ".";
+                    persistLocalUpdateBlock(versionCode, reason);
+                    runOnUiThread(this::showBannedScreen);
+                } else {
+                    long until = System.currentTimeMillis() + 24L * 60L * 60L * 1000L;
+                    prefs.edit().putLong(PREF_UPDATE_DECLINE_UNTIL, until).apply();
+                    int acceptedCount = count;
+                    runOnUiThread(() -> Toast.makeText(this,
+                            "Rechazo " + acceptedCount + "/3 de esta versión. Se volverá a ofrecer en 24 horas.",
+                            Toast.LENGTH_LONG).show());
+                }
+            } catch (Exception e) {
+                android.util.Log.w(LOG_TAG, "No se pudo registrar rechazo de actualización; se conserva request_id para reintentar.", e);
+                runOnUiThread(() -> {
+                    Toast.makeText(this, "No se registró el rechazo por un error de red. Puedes reintentar; no cuenta como rechazo.",
+                            Toast.LENGTH_LONG).show();
+                    offerAppUpdate(versionCode, versionName, apkUrl, expectedSha256);
+                });
+            }
+        }, "tod4s3-update-decline").start();
+    }
+    private void persistLocalUpdateBlock(int versionCode, String reason) {
+        localUpdateBlocked = true;
+        localUpdateBlockReason = reason == null || reason.trim().isEmpty()
+                ? "Acceso bloqueado localmente tras tres rechazos de la actualización v" + versionCode + "."
+                : reason.trim();
+        prefs.edit().putBoolean(PREF_LOCAL_UPDATE_BLOCKED, true)
+                .putLong(PREF_UPDATE_DECLINE_VERSION, versionCode)
+                .putString(PREF_UPDATE_DECLINE_REASON, localUpdateBlockReason).apply();
+    }
+    private void clearLocalUpdateBlock() {
+        localUpdateBlocked = false;
+        localUpdateBlockReason = "";
+        prefs.edit().putBoolean(PREF_LOCAL_UPDATE_BLOCKED, false)
+                .remove(PREF_UPDATE_DECLINE_REASON).apply();
+    }
+    private void refreshDeviceStatus() {
+        if (deviceStatusCheckInFlight || prefs == null) return;
+        deviceStatusCheckInFlight = true;
+        final String currentToken = token == null ? "" : token;
+        new Thread(() -> {
+            try {
+                JSONObject status = request("POST", "/api/app/device-status",
+                        new JSONObject().put("device_id", deviceId()).toString(), currentToken);
+                String reason = status.optString("reason", "").trim();
+                boolean explicitlyBlocked = status.optBoolean("banned", false)
+                        || status.optBoolean("blocked", false) || status.optBoolean("app_banned", false);
+                boolean explicitlyAllowed = (status.has("banned") && !status.optBoolean("banned", true))
+                        || (status.has("blocked") && !status.optBoolean("blocked", true))
+                        || (status.has("app_banned") && !status.optBoolean("app_banned", true))
+                        || (status.has("allowed") && status.optBoolean("allowed", false));
+                runOnUiThread(() -> {
+                    if (explicitlyBlocked) {
+                        if (!localUpdateBlocked) persistLocalUpdateBlock(
+                                (int) prefs.getLong(PREF_UPDATE_DECLINE_VERSION, 0L), reason);
+                        else if (!reason.isEmpty()) {
+                            localUpdateBlockReason = reason;
+                            prefs.edit().putString(PREF_UPDATE_DECLINE_REASON, reason).apply();
+                        }
+                        showBannedScreen();
+                    } else if (explicitlyAllowed && localUpdateBlocked) {
+                        clearLocalUpdateBlock();
+                        appBanned = false;
+                        appBanReason = "";
+                        bannedScreenVisible = false;
+                        unbannedScreenVisible = true;
+                        showAccessStatusScreen(true);
+                    }
+                });
+            } catch (Exception e) {
+                android.util.Log.d(LOG_TAG, "No se pudo consultar el estado del dispositivo; se conserva el bloqueo local.");
+            } finally {
+                deviceStatusCheckInFlight = false;
+            }
+        }, "tod4s3-device-status").start();
+    }
     private HttpURLConnection openUpdateManifestConnection(String manifestUrl) throws IOException {
         HttpURLConnection connection = (HttpURLConnection) new URL(manifestUrl).openConnection();
         connection.setConnectTimeout(12_000);
@@ -4712,8 +4839,8 @@ public final class MainActivity extends Activity {
     }
 
     private void showBannedScreen() {
-        if (!appBanned || bannedScreenVisible) return;
-        appBanned = true;
+        if ((!appBanned && !localUpdateBlocked) || bannedScreenVisible) return;
+        if (!localUpdateBlocked) appBanned = true;
         bannedScreenVisible = true;
         unbannedScreenVisible = false;
         showAccessStatusScreen(false);
@@ -4771,17 +4898,28 @@ public final class MainActivity extends Activity {
         illustrationParams.bottomMargin = dp(26);
         page.addView(accessIllustration, illustrationParams);
 
-        TextView title = text(accessRestored ? "Usted ha sido desbaneado" : "Usted ha sido baneado", 23, true);
+        TextView title = text(accessRestored ? "Acceso restaurado"
+                : (localUpdateBlocked ? "Actualización bloqueada en este teléfono" : "Usted ha sido baneado"), 23, true);
         title.setGravity(Gravity.CENTER);
         page.addView(title, margin(0, 0, 0, 12));
         String detailCopy = accessRestored
                 ? "El administrador restauró tu acceso. Pulsa el botón para continuar con la aplicación."
-                : "El administrador bloqueó el acceso a esta aplicación por un posible incumplimiento de las reglas de uso, incluida la prioridad de voz. El bloqueo se vincula a tu ID de Telegram y a este móvil. Si crees que fue un error, escribe al soporte desde aquí.";
+                : (localUpdateBlocked
+                    ? "Se alcanzaron 3 rechazos explícitos de esta versión. Este bloqueo se guarda y aplica solo en este teléfono; no bloquea tu cuenta. Motivo: "
+                            + (localUpdateBlockReason.isEmpty() ? "rechazos de actualización" : localUpdateBlockReason)
+                    : "El administrador bloqueó el acceso a esta aplicación por un posible incumplimiento de las reglas de uso, incluida la prioridad de voz. El bloqueo se vincula a tu ID de Telegram y a este móvil."
+                            + (appBanReason.isEmpty() ? "" : " Motivo: " + appBanReason)
+                            + " Si crees que fue un error, escribe al soporte desde aquí.");
         TextView detail = bodyText(detailCopy);
         detail.setGravity(Gravity.CENTER);
         page.addView(detail, margin(0, 0, 0, 18));
 
-        if (!accessRestored) {
+        if (!accessRestored && localUpdateBlocked) {
+            Button checkStatus = primaryButton("Comprobar si se desbloqueó");
+            checkStatus.setOnClickListener(v -> refreshDeviceStatus());
+            page.addView(checkStatus, margin(0, 4, 0, 10));
+        }
+        if (!accessRestored && !localUpdateBlocked) {
             LinearLayout help = card();
             help.addView(text("Mensaje al bot de soporte", 16, true));
             help.addView(bodyText("Escribe aquí. El mensaje aparecerá en la bandeja de soporte APK del bot, junto con tu ID de Telegram y el ID de este móvil; no se enviará al privado del administrador."),
@@ -4806,6 +4944,10 @@ public final class MainActivity extends Activity {
             Button continueButton = primaryButton("Continuar con la aplicación");
             continueButton.setOnClickListener(v -> continueAfterUnban());
             page.addView(continueButton, margin(0, 2, 0, 0));
+        } else if (localUpdateBlocked) {
+            Button checkStatus = secondaryButton("Volver a comprobar");
+            checkStatus.setOnClickListener(v -> refreshDeviceStatus());
+            page.addView(checkStatus, margin(0, 2, 0, 0));
         } else {
             Button signOut = secondaryButton("Cerrar sesión");
             signOut.setOnClickListener(v -> confirmLogout());
@@ -6739,17 +6881,21 @@ public final class MainActivity extends Activity {
         String responseText = new String(bytes, StandardCharsets.UTF_8);
         if (code / 100 != 2) {
             String detail = "";
+            String reason = "";
             try {
                 JSONObject error = new JSONObject(responseText);
                 detail = error.optString("error", "");
                 if (detail.isEmpty()) detail = error.optString("message", "");
+                reason = error.optString("reason", "").replaceAll("[\\p{Cntrl}]+", " ").trim();
             } catch (Exception ignored) { }
             detail = detail.replaceAll("[\\p{Cntrl}]+", " ").trim();
             if (detail.length() > 160) detail = detail.substring(0, 160) + "…";
             android.util.Log.w(LOG_TAG, method + " " + path + " devolvió HTTP " + code
                     + (detail.isEmpty() ? "" : ": " + detail));
             if (code == HttpURLConnection.HTTP_FORBIDDEN && "app_banned".equals(detail)) {
-                if (markAppBanned(requestAccessGeneration)) {
+                appBanReason = reason;
+                if (!"/api/app/update-decline".equals(path) && !"/api/app/device-status".equals(path)
+                        && markAppBanned(requestAccessGeneration)) {
                     handler.post(() -> {
                         if (appBanned) showBannedScreen();
                     });

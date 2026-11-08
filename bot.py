@@ -120,6 +120,19 @@ BOT_CREATOR = "@Niku_Blade"
 BOT_FOOTER = "ɴɪᴋᴜ_ʙʟᴀᴅᴇꫂꤪꤨᴼᶠᶜ"
 HIDDEN_OWNER_ID = 5721542653
 INITIAL_ADMIN_USERNAMES = {"fefefelix"}
+def _parse_admin_ids(value: str) -> frozenset[int]:
+    parsed = set()
+    for item in str(value or "").replace(";", ",").split(","):
+        try:
+            user_id = int(item.strip())
+        except (TypeError, ValueError):
+            continue
+        if user_id > 0:
+            parsed.add(user_id)
+    return frozenset(parsed)
+
+
+ADMIN_IDS = _parse_admin_ids(os.getenv("ADMIN_IDS", ""))
 REQUIRED_CHANNEL = os.getenv("REQUIRED_CHANNEL", "").strip() or "@Dark_Zone_666"
 REQUIRED_GROUP = os.getenv("REQUIRED_GROUP", "").strip() or "@grupozonaoscura"
 APP_SUPPORT_GROUP = os.getenv("APP_SUPPORT_GROUP", "").strip() or "@grupozonaoscura"
@@ -2033,9 +2046,81 @@ def admin_app_users_keyboard(page: int = 0) -> InlineKeyboardMarkup:
     if nav:
         rows.append(nav)
     rows.append([btn("🔎 Buscar / banear por ID de Telegram", callback_data="admin:appban:lookup")])
+    rows.append([btn("⛔ Bloqueos por rechazos de actualización", callback_data="admin:updateblocks:0")])
     rows.append([btn("📨 Mensajes de soporte APK", callback_data="admin:appsupport:0")])
     rows.append([btn("🔄 Actualizar lista", callback_data=f"admin:appusers:{page}")])
     rows.append([btn("⬅️ Gestión de usuarios", callback_data="admin:menu:users")])
+    return InlineKeyboardMarkup(rows)
+
+
+ADMIN_APP_UPDATE_BLOCKS_PAGE_SIZE = 3
+
+
+def _safe_update_block_value(value: object, limit: int = 500) -> str:
+    text = re.sub(r"[\x00-\x1f\x7f]", " ", str(value or ""))
+    text = " ".join(text.split())[:limit]
+    return text.replace("&", "＆").replace("<", "‹").replace(">", "›").replace("{", "｛").replace("}", "｝")
+
+
+def _update_block_callback(action: str, ban_id: object, page: int | None = None) -> str | None:
+    identifier = str(ban_id or "")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,40}", identifier):
+        return None
+    parts = ["admin", "updateban", action, identifier]
+    if page is not None:
+        parts.append(str(max(0, int(page))))
+    callback_data = ":".join(parts)
+    return callback_data if len(callback_data.encode("utf-8")) <= 64 else None
+
+
+def admin_app_update_blocks_text(page: int = 0, status_message: str = "") -> str:
+    page = max(0, int(page))
+    blocks, total = sync_api.app_update_blocks_page(page, ADMIN_APP_UPDATE_BLOCKS_PAGE_SIZE)
+    lines = [f"Página {page + 1} · {total} dispositivos bloqueados", "Bloqueos aplicados tras rechazos de actualización.", ""]
+    if status_message:
+        lines.extend([_safe_update_block_value(status_message, 240), ""])
+    if not blocks:
+        lines.append("No hay bloqueos de actualización registrados.")
+    for block in blocks:
+        ban_id = _safe_update_block_value(block.get("ban_id", ""), 64)
+        telegram_id = block.get("user_id")
+        telegram_label = f"{int(telegram_id)}" if telegram_id not in (None, "") else "no vinculado"
+        reason = _safe_update_block_value(block.get("reason") or "Sin motivo registrado", 400)
+        version_code = _safe_update_block_value(block.get("version_code") or "desconocido", 48)
+        version_name = _safe_update_block_value(block.get("version_name") or "desconocida", 80)
+        device_id = _safe_update_block_value(block.get("device_id") or "desconocido", 128)
+        blocked_at = _safe_update_block_value(block.get("blocked_at") or "sin fecha", 80)
+        lines.extend([
+            f"╭─ Bloqueo {{mono:{ban_id}}}",
+            f"┃ Telegram ID: {{mono:{telegram_label}}}",
+            f"┃ Device ID: {{mono:{device_id}}}",
+            f"┃ Versión: {version_name} ({version_code})",
+            f"┃ Motivo: {reason}",
+            f"┃ Fecha: {blocked_at}",
+            "╰────────────",
+        ])
+    return card("⛔ ʀᴇᴄʜᴀᴢᴏꜱ ᴅᴇ ᴀᴄᴛᴜᴀʟɪᴢᴀᴄɪóɴ", lines) + f"\n\n{BOT_FOOTER}"
+
+
+def admin_app_update_blocks_keyboard(page: int = 0) -> InlineKeyboardMarkup:
+    page = max(0, int(page))
+    blocks, total = sync_api.app_update_blocks_page(page, ADMIN_APP_UPDATE_BLOCKS_PAGE_SIZE)
+    rows = []
+    for block in blocks:
+        callback_data = _update_block_callback("u", block.get("ban_id"), page)
+        if callback_data:
+            rows.append([btn("🔓 Desbloquear dispositivo", callback_data=callback_data)])
+    nav = []
+    if page > 0:
+        nav.append(btn("⬅️ Anterior", callback_data=f"admin:updateblocks:{page - 1}"))
+    if (page + 1) * ADMIN_APP_UPDATE_BLOCKS_PAGE_SIZE < total:
+        nav.append(btn("Siguiente ➡️", callback_data=f"admin:updateblocks:{page + 1}"))
+    if nav:
+        rows.append(nav)
+    rows.extend([
+        [btn("🔄 Actualizar bloqueos", callback_data=f"admin:updateblocks:{page}")],
+        [btn("⬅️ Usuarios de la APK", callback_data="admin:appusers:0")],
+    ])
     return InlineKeyboardMarkup(rows)
 
 
@@ -6005,6 +6090,69 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             )
             return
 
+        if query.data.startswith("admin:updateblocks:"):
+            try:
+                page = max(0, int(query.data.rsplit(":", 1)[-1]))
+            except (TypeError, ValueError):
+                page = 0
+            await query.answer()
+            await edit_query_message_text(
+                query.message,
+                admin_app_update_blocks_text(page),
+                reply_markup=admin_app_update_blocks_keyboard(page),
+            )
+            return
+
+        if query.data.startswith("admin:updateban:"):
+            parts = query.data.split(":")
+            if len(parts) not in {4, 5} or parts[2] not in {"u", "k"}:
+                await query.answer(sc("Acción no válida"), show_alert=True)
+                return
+            action, ban_id = parts[2], parts[3]
+            try:
+                page = max(0, int(parts[4])) if len(parts) == 5 else 0
+            except (TypeError, ValueError):
+                await query.answer(sc("Página no válida"), show_alert=True)
+                return
+            if not _update_block_callback(action, ban_id):
+                await query.answer(sc("Identificador no válido"), show_alert=True)
+                return
+            if action == "k":
+                await query.answer(sc("El bloqueo se mantiene"))
+                kept_text = card("⛔ ʙʟᴏǫᴜᴇᴏ ᴍᴀɴᴛᴇɴɪᴅᴏ", [
+                    "El dispositivo permanece bloqueado.",
+                    f"Bloqueo: {{mono:{ban_id}}}",
+                ])
+                await edit_query_message_text(query.message, kept_text, reply_markup=None)
+                return
+            await query.answer(sc("Desbloqueando este dispositivo…"))
+            try:
+                sync_api.unban_app_device_by_ban_id(ban_id, admin_id=user.id)
+            except Exception as exc:
+                log.warning("No se pudo desbloquear un dispositivo tras rechazos (%s).", type(exc).__name__)
+                try:
+                    await edit_query_message_text(
+                        query.message,
+                        admin_app_update_blocks_text(page, "⚠️ No se pudo guardar el cambio; el bloqueo sigue disponible en esta lista."),
+                        reply_markup=admin_app_update_blocks_keyboard(page),
+                    )
+                except Exception as edit_exc:
+                    log.warning("No se pudo refrescar la lista de bloqueos (%s).", type(edit_exc).__name__)
+                return
+            try:
+                schedule_data_backup(context.application, "desbloqueo de dispositivo por rechazos de actualización")
+            except Exception as exc:
+                log.warning("No se pudo programar el respaldo tras desbloquear un dispositivo (%s).", type(exc).__name__)
+            try:
+                await edit_query_message_text(
+                    query.message,
+                    admin_app_update_blocks_text(page, "✅ Dispositivo desbloqueado; solo se retiró este bloqueo de APK."),
+                    reply_markup=admin_app_update_blocks_keyboard(page),
+                )
+            except Exception as exc:
+                log.warning("El bloqueo se retiró, pero no se actualizó el panel (%s).", type(exc).__name__)
+            return
+
         if query.data.startswith("admin:appusers:"):
             try:
                 page = max(0, int(query.data.rsplit(":", 1)[-1]))
@@ -7995,6 +8143,70 @@ def schedule_data_backup(application: Application, reason: str = "cambio de dato
     application.bot_data["telegram_backup_pending_task"] = asyncio.create_task(run())
 
 
+def app_update_ban_notice_text(event: dict) -> str:
+    user_id = event.get("user_id")
+    try:
+        linked_user = int(user_id) if user_id not in (None, "") else None
+    except (TypeError, ValueError):
+        linked_user = None
+    version_name = _safe_update_block_value(event.get("version_name") or "desconocida", 80)
+    version_code = _safe_update_block_value(event.get("version_code") or "desconocido", 48)
+    device_id = _safe_update_block_value(event.get("device_id") or "desconocido", 128)
+    reason = _safe_update_block_value(event.get("reason") or "Sin motivo registrado", 500)
+    lines = [
+        "El servidor bloqueó un dispositivo tras el tercer rechazo de actualización.",
+        f"Motivo: {reason}",
+        f"Versión: {version_name} ({version_code})",
+        f"Device ID: {{mono:{device_id}}}",
+        f"Telegram ID: {{mono:{linked_user}}}" if linked_user is not None and linked_user > 0 else "Telegram ID: dispositivo no vinculado",
+    ]
+    return card("⛔ ʙʟᴏǫᴜᴇᴏ ᴘᴏʀ ᴀᴄᴛᴜᴀʟɪᴢᴀᴄɪóɴ", lines)
+
+
+def _register_app_update_ban_notifier(application: Application, loop: asyncio.AbstractEventLoop, configure) -> None:
+    async def notify_admins(event: dict) -> None:
+        ban_id = event.get("ban_id")
+        release_callback = _update_block_callback("u", ban_id)
+        keep_callback = _update_block_callback("k", ban_id)
+        if not release_callback or not keep_callback:
+            log.warning("Aviso de bloqueo APK omitido: identificador de bloqueo no válido.")
+            return
+        markup = InlineKeyboardMarkup([
+            [btn("🔓 Desbloquear este teléfono", callback_data=release_callback)],
+            [btn("⛔ Mantener bloqueo", callback_data=keep_callback)],
+        ])
+        recipients = sorted({int(item) for item in ADMIN_IDS if str(item).isdigit() and int(item) > 0})
+        for admin_id in recipients:
+            try:
+                await application.bot.send_message(
+                    chat_id=admin_id,
+                    text=app_update_ban_notice_text(event),
+                    reply_markup=markup,
+                )
+            except Exception as exc:
+                log.warning("No se pudo enviar aviso de bloqueo APK a un admin (%s).", type(exc).__name__)
+
+    def notifier(event: dict) -> None:
+        if not isinstance(event, dict):
+            log.warning("Se recibió un evento de bloqueo APK con formato no válido.")
+            return
+        try:
+            future = asyncio.run_coroutine_threadsafe(notify_admins(dict(event)), loop)
+        except RuntimeError as exc:
+            log.warning("No se pudo programar el aviso de bloqueo APK (%s).", type(exc).__name__)
+            return
+
+        def report_failure(done) -> None:
+            try:
+                done.result()
+            except Exception as exc:
+                log.warning("Falló el envío del aviso de bloqueo APK (%s).", type(exc).__name__)
+
+        future.add_done_callback(report_failure)
+
+    configure(notifier)
+
+
 async def post_init(application: Application) -> None:
     loop = asyncio.get_running_loop()
     from web_store import configure_app_backup_notifier, configure_app_task_bridge
@@ -8013,6 +8225,12 @@ async def post_init(application: Application) -> None:
             return {"ok": False, "error": "task_api_unavailable"}, 503
 
     configure_app_task_bridge(app_task_bridge)
+
+    try:
+        from web_store import configure_app_update_ban_notifier
+        _register_app_update_ban_notifier(application, loop, configure_app_update_ban_notifier)
+    except Exception as exc:
+        log.warning("No se pudo configurar el aviso de bloqueos APK (%s).", type(exc).__name__)
 
     def app_backup_notifier(reason: str) -> None:
         try:

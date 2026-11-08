@@ -31,6 +31,7 @@ _PROFILE_CHECKER: Callable[[int], dict] | None = None
 _PROFILE_PHOTO_CHECKER: Callable[[int], bytes | None] | None = None
 _APP_TASK_BRIDGE: Callable[[str, int, dict], tuple[dict, int]] | None = None
 _APP_BACKUP_NOTIFIER: Callable[[str], None] | None = None
+_APP_UPDATE_BAN_NOTIFIER: Callable[[dict], None] | None = None
 _APP_TASK_BRIDGE_LOCK = Lock()
 _AI_RATE_LOCK = Lock()
 _AI_REQUESTS_BY_USER: dict[int, list[float]] = {}
@@ -224,6 +225,47 @@ def configure_app_backup_notifier(notifier: Callable[[str], None] | None) -> Non
     _APP_BACKUP_NOTIFIER = notifier
 
 
+def configure_app_update_ban_notifier(callback: Callable[[dict], None] | None) -> None:
+    """Register a callback invoked once when an update-decline device ban is created."""
+    global _APP_UPDATE_BAN_NOTIFIER
+    _APP_UPDATE_BAN_NOTIFIER = callback
+
+
+_ANDROID_DEVICE_ID_RE = re.compile(
+    r"^(?:[0-9a-fA-F]{64}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$"
+)
+
+
+def _published_android_release() -> dict | None:
+    try:
+        manifest = json.loads((WEB_ROOT / "android-update.json").read_text(encoding="utf-8"))
+        if (not isinstance(manifest, dict) or isinstance(manifest.get("version_code"), bool)
+                or not isinstance(manifest.get("version_code"), int)
+                or not isinstance(manifest.get("version_name"), str)):
+            return None
+        return manifest
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def _authorize_optional_device(handler: "StoreHandler", device_id: str):
+    """Validate optional bearer auth and bind supplied device IDs to the token identity."""
+    if not isinstance(device_id, str) or not _ANDROID_DEVICE_ID_RE.fullmatch(device_id):
+        return None, {"ok": False, "error": "invalid_device_id"}, 400
+    authorization = handler.headers.get("Authorization")
+    if authorization is None:
+        return {"user_id": None, "device_id": device_id}, None, 200
+    if not authorization.lower().startswith("bearer "):
+        return None, {"ok": False, "error": "unauthorized"}, 401
+    token = authorization[7:].strip()
+    identity = sync_api.app_identity_for_token(token) if token else None
+    if identity is None:
+        return None, {"ok": False, "error": "unauthorized"}, 401
+    if str(identity.get("device_id", "")) != device_id:
+        return None, {"ok": False, "error": "device_mismatch"}, 403
+    return identity, None, 200
+
+
 def _dispatch_app_task(token: str, action: str, payload: dict) -> tuple[dict, int]:
     identity, error, status = _authorize_app_token(token)
     if error:
@@ -276,7 +318,8 @@ def _authorize_app_token(token: str) -> tuple[dict | None, dict | None, int]:
         identity = {"user_id": int(user_id), "device_id": ""}
     ban = sync_api.app_access_ban(int(identity["user_id"]), str(identity.get("device_id", "")))
     if ban:
-        return identity, {"ok": False, "error": "app_banned"}, 403
+        return identity, {"ok": False, "error": "app_banned",
+                          "reason": str(ban.get("reason", "access_banned"))}, 403
     return identity, None, 200
 
 
@@ -548,6 +591,7 @@ class StoreHandler(SimpleHTTPRequestHandler):
             "/api/app/pair", "/api/app/revoke", "/api/app/deliveries/delete",
             "/api/app/download", "/api/app/tasks/cancel", "/api/app/cloud/clear",
             "/api/app/premium/claim", "/api/app/support", "/api/app/ai/chat",
+            "/api/app/update-decline", "/api/app/device-status",
         }:
             self._json_response({"ok": False, "error": "not_found"}, 404)
             return
@@ -565,13 +609,17 @@ class StoreHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/app/pair":
             code = body.get("code", "")
             device_id = body.get("device_id", "")
-            if sync_api.pairing_code_ban(code, device_id):
-                self._json_response({"ok": False, "error": "app_banned"}, 403)
+            pairing_ban = sync_api.pairing_code_ban(code, device_id)
+            if pairing_ban:
+                self._json_response({"ok": False, "error": "app_banned",
+                                     "reason": str(pairing_ban.get("reason", "access_banned"))}, 403)
                 return
             token = consume_pairing_code(code, device_id)
             if not token:
-                if sync_api.pairing_code_ban(code, device_id):
-                    self._json_response({"ok": False, "error": "app_banned"}, 403)
+                pairing_ban = sync_api.pairing_code_ban(code, device_id)
+                if pairing_ban:
+                    self._json_response({"ok": False, "error": "app_banned",
+                                         "reason": str(pairing_ban.get("reason", "access_banned"))}, 403)
                 else:
                     self._json_response({"ok": False, "error": "invalid_or_expired_code"}, 401)
             else:
@@ -579,6 +627,54 @@ class StoreHandler(SimpleHTTPRequestHandler):
             return
         token = self.headers.get("Authorization", "")
         token = token[7:].strip() if token.lower().startswith("bearer ") else ""
+        if parsed.path in {"/api/app/update-decline", "/api/app/device-status"}:
+            device_id = body.get("device_id")
+            identity, auth_error, auth_status = _authorize_optional_device(self, device_id)
+            if auth_error:
+                self._json_response(auth_error, auth_status)
+                return
+            existing_ban = sync_api.app_access_ban(identity.get("user_id"), device_id)
+            if parsed.path == "/api/app/device-status":
+                self._json_response({"ok": True, "banned": bool(existing_ban),
+                                     **({"reason": str(existing_ban.get("reason", "access_banned"))}
+                                        if existing_ban else {})})
+                return
+            version_code = body.get("version_code")
+            version_name = body.get("version_name")
+            request_id = body.get("request_id")
+            if (isinstance(version_code, bool) or not isinstance(version_code, int) or version_code <= 0
+                    or not isinstance(version_name, str) or not version_name.strip()
+                    or len(version_name) > 80 or not isinstance(request_id, str)
+                    or not request_id.strip() or len(request_id) > 200):
+                self._json_response({"ok": False, "error": "invalid_update_rejection"}, 400)
+                return
+            release = _published_android_release()
+            if release is None:
+                self._json_response({"ok": False, "error": "update_manifest_unavailable"}, 503)
+                return
+            if (version_code != release["version_code"] or version_name.strip() != release["version_name"]):
+                self._json_response({"ok": False, "error": "version_not_published"}, 409)
+                return
+            if existing_ban and existing_ban.get("scope") != "device":
+                self._json_response({"ok": True, "count": 0, "threshold": 3, "blocked": True,
+                                     "reason": str(existing_ban.get("reason", "access_banned"))})
+                return
+            try:
+                result = sync_api.record_app_update_rejection(
+                    identity.get("user_id"), device_id, version_code, version_name.strip(), request_id.strip(),
+                )
+            except (TypeError, ValueError):
+                self._json_response({"ok": False, "error": "invalid_update_rejection"}, 400)
+                return
+            event = result.get("event")
+            notifier = _APP_UPDATE_BAN_NOTIFIER
+            if isinstance(event, dict) and notifier is not None:
+                try:
+                    notifier(event)
+                except Exception:
+                    pass
+            self._json_response({"ok": True, **result})
+            return
         if parsed.path == "/api/app/ai/chat":
             payload, status = _dispatch_ai_chat(token, body)
             self._json_response(payload, status)

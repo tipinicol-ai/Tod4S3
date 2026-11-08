@@ -23,7 +23,8 @@ _TOKEN_TTL = 365 * 24 * 60 * 60  # caduca tras un año sin actividad, no desde e
 def _default_state() -> dict[str, Any]:
     return {"pairings": {}, "tokens": {}, "deliveries": {}, "premium_activations": {},
             "app_bans": {"users": {}, "devices": {}}, "app_ban_history": [],
-            "app_support_messages": []}
+            "app_support_messages": [], "app_update_rejections": {"counters": {}, "requests": {}},
+            "app_update_bans": []}
 
 
 def _read() -> dict[str, Any]:
@@ -451,29 +452,30 @@ def remove_delivery_for_user(user_id: int, task_id: str,
     return False
 
 
-def _app_access_ban_in_state(state: dict[str, Any], user_id: int,
+def _app_access_ban_in_state(state: dict[str, Any], user_id: int | None,
                              device_id: str = "") -> dict[str, Any] | None:
     bans = state.get("app_bans", {})
     if not isinstance(bans, dict):
         return None
     user_bans = bans.get("users", {})
     device_bans = bans.get("devices", {})
-    entry = user_bans.get(str(int(user_id))) if isinstance(user_bans, dict) else None
+    entry = user_bans.get(str(int(user_id))) if user_id is not None and isinstance(user_bans, dict) else None
     if isinstance(entry, dict):
-        return {"scope": "telegram", "banned_at": int(entry.get("banned_at", 0) or 0)}
+        return {"scope": "telegram", "banned_at": int(entry.get("banned_at", 0) or 0),
+                "reason": str(entry.get("reason", "telegram_ban"))}
     device_id = str(device_id or "").strip()[:128]
     entry = device_bans.get(device_id) if device_id and isinstance(device_bans, dict) else None
     if isinstance(entry, dict):
-        owners = entry.get("user_ids", [])
-        if not owners or str(int(user_id)) in {str(owner) for owner in owners} or device_id:
-            return {"scope": "device", "banned_at": int(entry.get("banned_at", 0) or 0)}
+        return {"scope": "device", "banned_at": int(entry.get("banned_at", 0) or 0),
+                "reason": str(entry.get("reason", "device_banned")),
+                "ban_id": str(entry.get("ban_id", ""))}
     return None
 
 
-def app_access_ban(user_id: int, device_id: str = "") -> dict[str, Any] | None:
+def app_access_ban(user_id: int | None, device_id: str = "") -> dict[str, Any] | None:
     """Return a non-secret ban marker if either Telegram ID or device is blocked."""
     with _LOCK:
-        return _app_access_ban_in_state(_read(), int(user_id), device_id)
+        return _app_access_ban_in_state(_read(), int(user_id) if user_id is not None else None, device_id)
 
 
 def is_app_user_banned(user_id: int, device_id: str = "") -> bool:
@@ -598,6 +600,173 @@ def unban_app_user(user_id: int, admin_id: int = 0) -> dict[str, Any]:
             state["app_ban_history"] = history[-5000:]
             _write(state)
         return {"user_id": user_id, "changed": changed, "device_ids": sorted(affected)}
+
+
+def record_app_update_rejection(user_id: int | None, device_id: str, version_code: int,
+                                version_name: str, request_id: str) -> dict[str, Any]:
+    """Count a distinct decline for a device/release; create only a device ban on decline three."""
+    device_id = str(device_id or "").strip()
+    version_name = str(version_name or "").strip()[:80]
+    request_id = str(request_id or "").strip()[:200]
+    version_code = int(version_code)
+    user_id = int(user_id) if user_id is not None else None
+    if not device_id or not version_name or not request_id or version_code <= 0:
+        raise ValueError("invalid_update_rejection")
+    if user_id is not None and user_id <= 0:
+        user_id = None
+    counter_key = hashlib.sha256(f"{device_id}\0{version_code}".encode("utf-8")).hexdigest()
+    request_key = hashlib.sha256(f"{counter_key}\0{request_id}".encode("utf-8")).hexdigest()
+    with _LOCK:
+        state = _read()
+        tracking = state.get("app_update_rejections", {})
+        if not isinstance(tracking, dict):
+            tracking = {}
+        counters = tracking.get("counters", {})
+        requests = tracking.get("requests", {})
+        counters = counters if isinstance(counters, dict) else {}
+        requests = requests if isinstance(requests, dict) else {}
+        duplicate = requests.get(request_key)
+        if isinstance(duplicate, dict):
+            return {key: value for key, value in duplicate.items() if key != "_counter_key"} | {"event": None}
+
+        device_bans = state.get("app_bans", {}).get("devices", {})
+        active_ban = device_bans.get(device_id) if isinstance(device_bans, dict) else None
+        if isinstance(active_ban, dict):
+            result = {"count": int(counters.get(counter_key, {}).get("count", 0)),
+                      "threshold": 3, "blocked": True,
+                      "reason": str(active_ban.get("reason", "device_banned")), "event": None}
+            requests[request_key] = {key: value for key, value in result.items() if key != "event"}
+            requests[request_key]["_counter_key"] = counter_key
+            tracking.update({"counters": counters, "requests": requests})
+            state["app_update_rejections"] = tracking
+            _write(state)
+            return result
+
+        counter = counters.get(counter_key)
+        if not isinstance(counter, dict):
+            counter = {"device_id": device_id, "version_code": version_code,
+                       "version_name": version_name, "count": 0}
+        count = max(0, int(counter.get("count", 0))) + 1
+        counter.update({"device_id": device_id, "version_code": version_code,
+                        "version_name": version_name, "count": count})
+        counters[counter_key] = counter
+        event = None
+        blocked = False
+        reason = (f"Este teléfono rechazó tres veces la actualización v{version_name} "
+                  f"(código {version_code})." if count >= 3 else None)
+        if count >= 3:
+            blocked = True
+            now = int(time.time())
+            ban_id = secrets.token_hex(12).upper()
+            owners = {str(user_id)} if user_id is not None else set()
+            # Preserve account associations already known for this device without banning them globally.
+            tokens = state.get("tokens", {})
+            if isinstance(tokens, dict):
+                for record in tokens.values():
+                    if isinstance(record, dict) and str(record.get("device_id", "")) == device_id:
+                        try:
+                            owner = int(record.get("user_id", 0))
+                        except (TypeError, ValueError):
+                            continue
+                        if owner > 0:
+                            owners.add(str(owner))
+            entry = {"ban_id": ban_id, "user_ids": sorted(owners), "banned_at": now,
+                     "reason": reason, "version_code": version_code, "version_name": version_name}
+            device_bans = dict(device_bans) if isinstance(device_bans, dict) else {}
+            device_bans[device_id] = entry
+            bans = state.get("app_bans", {})
+            bans = dict(bans) if isinstance(bans, dict) else {"users": {}, "devices": {}}
+            bans["devices"] = device_bans
+            bans.setdefault("users", {})
+            state["app_bans"] = bans
+            event = {"ban_id": ban_id, "user_id": user_id, "device_id": device_id,
+                     "version_code": version_code, "version_name": version_name, "reason": reason}
+            ban_rows = state.get("app_update_bans", [])
+            ban_rows = ban_rows if isinstance(ban_rows, list) else []
+            ban_rows.append({**event, "blocked_at": now, "active": True})
+            state["app_update_bans"] = ban_rows[-5000:]
+            history = state.get("app_ban_history", [])
+            history = history if isinstance(history, list) else []
+            history.append({"action": "app_update_ban", **event, "at": now})
+            state["app_ban_history"] = history[-5000:]
+
+        result = {"count": count, "threshold": 3, "blocked": blocked,
+                  "reason": reason, "event": event}
+        requests[request_key] = {key: value for key, value in result.items() if key != "event"}
+        requests[request_key]["_counter_key"] = counter_key
+        # Bound idempotency bookkeeping while preserving recent retries.
+        if len(requests) > 20_000:
+            requests = dict(list(requests.items())[-15_000:])
+        tracking.update({"counters": counters, "requests": requests})
+        state["app_update_rejections"] = tracking
+        _write(state)
+        return result
+
+
+def app_update_blocks_page(page: int = 0, page_size: int = 20) -> tuple[list[dict[str, Any]], int]:
+    """Page update-triggered device bans, most recent first, without token data."""
+    page = max(0, int(page))
+    page_size = max(1, min(100, int(page_size)))
+    with _LOCK:
+        rows = _read().get("app_update_bans", [])
+        rows = [copy.deepcopy(row) for row in rows if isinstance(row, dict)
+                and row.get("active", True)] if isinstance(rows, list) else []
+        rows.sort(key=lambda row: int(row.get("blocked_at", 0) or 0), reverse=True)
+        total = len(rows)
+        return rows[page * page_size:(page + 1) * page_size], total
+
+
+def unban_app_device_by_ban_id(ban_id: str, admin_id: int = 0) -> dict[str, Any]:
+    """Release exactly the device ban identified by its immutable ban_id."""
+    ban_id = str(ban_id or "").strip()
+    admin_id = int(admin_id or 0)
+    if not ban_id:
+        raise ValueError("invalid_ban_id")
+    with _LOCK:
+        state = _read()
+        rows = state.get("app_update_bans", [])
+        rows = rows if isinstance(rows, list) else []
+        target = next((row for row in rows if isinstance(row, dict)
+                       and str(row.get("ban_id", "")) == ban_id and row.get("active", True)), None)
+        if target is None:
+            return {"ban_id": ban_id, "changed": False}
+        device_id = str(target.get("device_id", ""))
+        bans = state.get("app_bans", {})
+        bans = bans if isinstance(bans, dict) else {}
+        devices = bans.get("devices", {})
+        devices = devices if isinstance(devices, dict) else {}
+        current = devices.get(device_id)
+        changed = isinstance(current, dict) and str(current.get("ban_id", "")) == ban_id
+        if changed:
+            devices.pop(device_id, None)
+            bans["devices"] = devices
+            state["app_bans"] = bans
+        now = int(time.time())
+        target["active"] = False
+        target["unbanned_at"] = now
+        target["unbanned_by"] = admin_id
+        tracking = state.get("app_update_rejections", {})
+        tracking = tracking if isinstance(tracking, dict) else {}
+        counters = tracking.get("counters", {})
+        requests = tracking.get("requests", {})
+        counters = counters if isinstance(counters, dict) else {}
+        requests = requests if isinstance(requests, dict) else {}
+        counter_key = hashlib.sha256(
+            f"{device_id}\0{int(target.get('version_code', 0) or 0)}".encode("utf-8")
+        ).hexdigest()
+        counters.pop(counter_key, None)
+        requests = {key: value for key, value in requests.items()
+                    if not isinstance(value, dict) or value.get("_counter_key") != counter_key}
+        tracking.update({"counters": counters, "requests": requests})
+        state["app_update_rejections"] = tracking
+        history = state.get("app_ban_history", [])
+        history = history if isinstance(history, list) else []
+        history.append({"action": "app_update_unban", "ban_id": ban_id, "user_id": target.get("user_id"),
+                        "device_id": device_id, "admin_id": admin_id, "at": now})
+        state["app_ban_history"] = history[-5000:]
+        state["app_update_bans"] = rows
+        _write(state)
+        return {"ban_id": ban_id, "changed": bool(changed), "device_id": device_id}
 
 
 def app_users_page(page: int = 0, page_size: int = 3) -> tuple[list[dict[str, Any]], int]:

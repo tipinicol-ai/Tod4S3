@@ -112,3 +112,66 @@ def test_banned_user_can_authenticate_support_with_unconsumed_pairing_code(monke
         "user_id": 81200,
         "device_id": device_id,
     }
+
+
+
+def test_update_declines_block_only_device_on_third_distinct_request(monkeypatch, tmp_path):
+    monkeypatch.setattr(sync_api, "STATE_FILE", tmp_path / "sync_app.json")
+    device_id = "a" * 64
+    first_token = sync_api.consume_pairing_code(sync_api.create_pairing_code(71001), device_id)
+    second_token = sync_api.consume_pairing_code(sync_api.create_pairing_code(71002), device_id)
+    assert first_token and second_token
+
+    first = sync_api.record_app_update_rejection(71001, device_id, 79, "1.5.34", "decline-1")
+    second = sync_api.record_app_update_rejection(71002, device_id, 79, "1.5.34", "decline-2")
+    third = sync_api.record_app_update_rejection(71001, device_id, 79, "1.5.34", "decline-3")
+    assert [first["count"], second["count"], third["count"]] == [1, 2, 3]
+    assert [first["blocked"], second["blocked"], third["blocked"]] == [False, False, True]
+    assert third["event"] == {
+        "ban_id": third["event"]["ban_id"], "user_id": 71001, "device_id": device_id,
+        "version_code": 79, "version_name": "1.5.34",
+        "reason": "Este teléfono rechazó tres veces la actualización v1.5.34 (código 79).",
+    }
+    assert sync_api.app_access_ban(71001, device_id)["scope"] == "device"
+    assert sync_api.app_access_ban(71002, device_id)["scope"] == "device"
+    assert sync_api.app_access_ban(71001, "b" * 64) is None
+    saved = sync_api._read()
+    assert saved["app_bans"]["users"] == {}
+    assert saved["app_bans"]["devices"][device_id]["user_ids"] == ["71001", "71002"]
+
+
+def test_update_decline_request_id_is_idempotent_and_release_version_starts_at_one(monkeypatch, tmp_path):
+    monkeypatch.setattr(sync_api, "STATE_FILE", tmp_path / "sync_app.json")
+    device_id = "c" * 64
+    first = sync_api.record_app_update_rejection(None, device_id, 79, "1.5.34", "same-request")
+    duplicate = sync_api.record_app_update_rejection(None, device_id, 79, "1.5.34", "same-request")
+    second = sync_api.record_app_update_rejection(None, device_id, 79, "1.5.34", "second-request")
+    next_release = sync_api.record_app_update_rejection(None, device_id, 80, "1.5.35", "new-release")
+    assert first["count"] == duplicate["count"] == 1
+    assert duplicate["event"] is None
+    assert second["count"] == 2
+    assert next_release["count"] == 1
+    assert next_release["blocked"] is False
+
+
+def test_update_device_unban_uses_ban_id_and_is_listed(monkeypatch, tmp_path):
+    monkeypatch.setattr(sync_api, "STATE_FILE", tmp_path / "sync_app.json")
+    device_id = "d" * 64
+    for number in range(3):
+        result = sync_api.record_app_update_rejection(82001, device_id, 79, "1.5.34", f"request-{number}")
+    ban_id = result["event"]["ban_id"]
+    rows, total = sync_api.app_update_blocks_page(0, 10)
+    assert total == 1
+    assert rows[0]["ban_id"] == ban_id
+    assert rows[0]["blocked_at"]
+    assert sync_api.unban_app_device_by_ban_id("not-the-ban") == {
+        "ban_id": "not-the-ban", "changed": False,
+    }
+    assert sync_api.unban_app_device_by_ban_id(ban_id, admin_id=900)["changed"] is True
+    assert sync_api.app_access_ban(None, device_id) is None
+    rows, total = sync_api.app_update_blocks_page(0, 10)
+    assert total == 0
+    reset = sync_api.record_app_update_rejection(None, device_id, 79, "1.5.34", "after-admin-unban")
+    assert reset["count"] == 1
+    assert reset["blocked"] is False
+    assert sync_api.unban_app_device_by_ban_id(ban_id)["changed"] is False
