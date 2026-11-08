@@ -135,6 +135,18 @@ public final class MainActivity extends Activity {
     private static final int REQUEST_SPEED_OVERLAY_PERMISSION = 710;
     private static final String USSD_BALANCE_CODE = "*222*328#";
     private static final String DOWNLOAD_NOTIFICATION_CHANNEL = "downloads_complete_v1";
+    private static final String[] AI_FAQ_LABELS = {
+            "No se actualiza", "No se instala", "Fallan descargas",
+            "La IA no responde", "No llega el código", "La app va lenta"
+    };
+    private static final String[] AI_FAQ_PROMPTS = {
+            "Tod4S3 Sync no me muestra una actualización nueva. ¿Cómo puedo comprobarla de forma segura sin desinstalar ni perder mis datos?",
+            "La actualización se descargó pero Android no permite instalarla. Guíame paso a paso sin pedirme que desinstale la app.",
+            "No puedo completar una descarga en Tod4S3 Sync. Ayúdame a revisar conexión, espacio y permisos con pasos seguros.",
+            "AiTod4S3 no responde o aparece un error. ¿Qué puedo comprobar en mi sesión, Premium y conexión?",
+            "No me llega el código de registro de ToDus. ¿Qué puedo comprobar sin compartir el código contigo?",
+            "Tod4S3 Sync va lenta o se cierra. Ayúdame a diagnosticarlo con pasos seguros que no borren mis datos."
+    };
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Runnable poller = new Runnable() {
@@ -553,8 +565,12 @@ public final class MainActivity extends Activity {
         LinearLayout heading = new LinearLayout(this);
         heading.setGravity(Gravity.CENTER_VERTICAL);
         FrameLayout updateIconFrame = new FrameLayout(this);
-        updateIconFrame.setBackground(roundRect(accentColor(), 16, 0));
-        updateDownloadIcon = text("↻", 27, true);
+        GradientDrawable updateIconBackground = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
+                new int[]{accentColor(), Color.rgb(72, 115, 235), Color.rgb(48, 182, 210)});
+        updateIconBackground.setShape(GradientDrawable.OVAL);
+        updateIconFrame.setBackground(updateIconBackground);
+        updateIconFrame.setElevation(dp(8));
+        updateDownloadIcon = text("↓", 28, true);
         updateDownloadIcon.setTextColor(Color.WHITE);
         updateDownloadIcon.setGravity(Gravity.CENTER);
         updateIconFrame.addView(updateDownloadIcon, new FrameLayout.LayoutParams(-1, -1));
@@ -571,7 +587,7 @@ public final class MainActivity extends Activity {
         heading.addView(headingText, new LinearLayout.LayoutParams(0, -2, 1f));
         content.addView(heading);
 
-        TextView intro = bodyText("Descargando la actualización directamente desde GitHub.");
+        TextView intro = bodyText("Descargando la actualización para que disfrutes la versión más reciente.");
         content.addView(intro, margin(0, 15, 0, 15));
 
         LinearLayout progressHeader = new LinearLayout(this);
@@ -591,7 +607,7 @@ public final class MainActivity extends Activity {
         updateDownloadProgress.setIndeterminateTintList(ColorStateList.valueOf(accentColor()));
         updateDownloadProgress.setProgressBackgroundTintList(ColorStateList.valueOf(borderColor()));
         content.addView(updateDownloadProgress, new LinearLayout.LayoutParams(-1, dp(7)));
-        updateDownloadProgressText = bodyText("Conectando al canal seguro…");
+        updateDownloadProgressText = bodyText("Preparando la descarga segura…");
         content.addView(updateDownloadProgressText, margin(0, 9, 0, 0));
 
         View divider = new View(this);
@@ -630,10 +646,11 @@ public final class MainActivity extends Activity {
         }
         content.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(240)
                 .setInterpolator(new DecelerateInterpolator()).start();
-        updateDownloadIconAnimator = ObjectAnimator.ofFloat(updateDownloadIcon, View.ROTATION, 0f, 360f);
-        updateDownloadIconAnimator.setDuration(1_400L);
-        updateDownloadIconAnimator.setInterpolator(new android.view.animation.LinearInterpolator());
+        updateDownloadIconAnimator = ObjectAnimator.ofFloat(updateDownloadIcon, View.TRANSLATION_Y, -dp(3), dp(3));
+        updateDownloadIconAnimator.setDuration(850L);
+        updateDownloadIconAnimator.setRepeatMode(ObjectAnimator.REVERSE);
         updateDownloadIconAnimator.setRepeatCount(ObjectAnimator.INFINITE);
+        updateDownloadIconAnimator.setInterpolator(new DecelerateInterpolator());
         updateDownloadIconAnimator.start();
         new Thread(() -> downloadAppUpdate(versionCode, versionName, apkUrl, expectedSha256, destination),
                 "tod4s3-update-download").start();
@@ -3700,8 +3717,10 @@ public final class MainActivity extends Activity {
         header.addView(chatOptions, optionsParams);
         chatOptions.setOnClickListener(v -> new AlertDialog.Builder(this)
                 .setTitle("Opciones del chat")
-                .setItems(new String[]{"Limpiar conversación"}, (dialog, which) -> {
-                    if (aiChatRequestInFlight) {
+                .setItems(new String[]{"Preguntas frecuentes", "Limpiar conversación"}, (dialog, which) -> {
+                    if (which == 0) {
+                        showAiFaqDialog();
+                    } else if (aiChatRequestInFlight) {
                         Toast.makeText(this, "Espera a que termine la respuesta antes de limpiar.", Toast.LENGTH_SHORT).show();
                     } else {
                         confirmClearAiChat();
@@ -3877,10 +3896,10 @@ public final class MainActivity extends Activity {
         if (aiConversationBox == null || aiConversationScroll == null) return;
         aiConversationBox.removeAllViews();
         if (aiChatMessages.isEmpty()) {
-            aiConversationBox.setGravity(Gravity.CENTER);
+            aiConversationBox.setGravity(Gravity.TOP | Gravity.CENTER_HORIZONTAL);
             LinearLayout welcome = new LinearLayout(this);
             welcome.setOrientation(LinearLayout.VERTICAL);
-            welcome.setGravity(Gravity.CENTER);
+            welcome.setGravity(Gravity.CENTER_HORIZONTAL);
             welcome.setPadding(dp(14), dp(12), dp(14), dp(12));
             FrameLayout helpOrb = new FrameLayout(this);
             GradientDrawable orbBackground = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
@@ -3920,13 +3939,21 @@ public final class MainActivity extends Activity {
                     14, isDarkTheme() ? Color.rgb(74, 63, 120) : Color.rgb(218, 212, 255)));
             helpBadge.setOnClickListener(v -> showAiHelp());
             welcome.addView(helpBadge, margin(0, 9, 0, 0));
-            TextView welcomeSubtitle = bodyText("Respuestas claras, útiles y directas.\nPregúntame lo que quieras.");
+            TextView welcomeSubtitle = bodyText("También puedo ayudarte con actualizaciones,\ndescargas, registro y errores de la aplicación.");
             welcomeSubtitle.setGravity(Gravity.CENTER);
             welcomeSubtitle.setTextSize(13);
             welcomeSubtitle.setLineSpacing(dp(3), 1f);
             welcomeSubtitle.setTextColor(secondaryTextColor());
             welcome.addView(welcomeSubtitle, margin(0, 10, 0, 0));
-            aiConversationBox.addView(welcome, new LinearLayout.LayoutParams(-1, -1));
+            TextView faqHeading = text("PREGUNTAS FRECUENTES", 9, true);
+            faqHeading.setGravity(Gravity.CENTER);
+            faqHeading.setLetterSpacing(0.1f);
+            faqHeading.setTextColor(isDarkTheme() ? Color.rgb(190, 178, 255) : Color.rgb(92, 82, 190));
+            welcome.addView(faqHeading, margin(0, 16, 0, 0));
+            addAiFaqRow(welcome, 0, 1);
+            addAiFaqRow(welcome, 2, 3);
+            addAiFaqRow(welcome, 4, 5);
+            aiConversationBox.addView(welcome, new LinearLayout.LayoutParams(-1, -2));
         } else {
             aiConversationBox.setGravity(Gravity.TOP | Gravity.CENTER_HORIZONTAL);
         }
@@ -3975,15 +4002,71 @@ public final class MainActivity extends Activity {
             row.addView(bubble, bubbleParams);
             aiConversationBox.addView(row, new LinearLayout.LayoutParams(-1, -2));
         }
-        aiConversationScroll.post(() -> aiConversationScroll.scrollTo(0,
-                Math.max(0, aiConversationBox.getHeight() - aiConversationScroll.getHeight())));
+        if (!aiChatMessages.isEmpty()) {
+            aiConversationScroll.post(() -> aiConversationScroll.scrollTo(0,
+                    Math.max(0, aiConversationBox.getHeight() - aiConversationScroll.getHeight())));
+        } else {
+            aiConversationScroll.post(() -> aiConversationScroll.scrollTo(0, 0));
+        }
+    }
+
+    private void addAiFaqRow(LinearLayout parent, int firstIndex, int secondIndex) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        TextView first = aiFaqChip(firstIndex);
+        LinearLayout.LayoutParams firstParams = new LinearLayout.LayoutParams(0, dp(44), 1f);
+        firstParams.setMargins(0, 0, dp(6), 0);
+        row.addView(first, firstParams);
+        row.addView(aiFaqChip(secondIndex), new LinearLayout.LayoutParams(0, dp(44), 1f));
+        parent.addView(row, margin(0, 7, 0, 0));
+    }
+
+    private TextView aiFaqChip(int index) {
+        TextView chip = text(AI_FAQ_LABELS[index], 11, true);
+        chip.setGravity(Gravity.CENTER);
+        chip.setMaxLines(2);
+        chip.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        chip.setPadding(dp(7), dp(5), dp(7), dp(5));
+        chip.setBackground(roundRect(isDarkTheme() ? Color.rgb(25, 32, 51) : Color.rgb(245, 247, 255),
+                14, isDarkTheme() ? Color.rgb(72, 76, 116) : Color.rgb(216, 221, 241)));
+        chip.setContentDescription("Preguntar a AiTod4S3: " + AI_FAQ_LABELS[index]);
+        chip.setOnClickListener(v -> sendAiQuickQuestion(AI_FAQ_PROMPTS[index]));
+        return chip;
+    }
+
+    private void showAiFaqDialog() {
+        new AlertDialog.Builder(this)
+                .setTitle("Preguntas frecuentes")
+                .setItems(AI_FAQ_LABELS, (dialog, which) -> {
+                    if (which >= 0 && which < AI_FAQ_PROMPTS.length) {
+                        sendAiQuickQuestion(AI_FAQ_PROMPTS[which]);
+                    }
+                })
+                .setNegativeButton("Cerrar", null)
+                .show();
+    }
+
+    private void sendAiQuickQuestion(String question) {
+        if (aiChatRequestInFlight) {
+            Toast.makeText(this, "Espera a que AiTod4S3 termine la respuesta.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (aiComposer == null) return;
+        if (!aiComposer.getText().toString().trim().isEmpty()) {
+            Toast.makeText(this, "Envía o borra tu borrador antes de elegir una pregunta rápida.",
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        aiComposer.setText(question);
+        aiComposer.setSelection(aiComposer.getText().length());
+        sendAiMessage();
     }
 
     private void showAiHelp() {
         new AlertDialog.Builder(this)
                 .setTitle("Help Me  ·  AiTod4S3")
-                .setMessage("Haz una pregunta general y te responderé de forma clara y directa.\n\n"
-                        + "Ejemplos:\n• Explícame un concepto técnico.\n• Resume las causas y consecuencias de un tema.\n• Resuelve este cálculo y muestra la fórmula.\n• Ayúdame a comparar dos opciones.")
+                .setMessage("Pregúntame sobre temas generales o sobre Tod4S3 Sync. También puedes tocar una pregunta frecuente para recibir pasos de solución sobre actualizaciones, descargas, registro o errores de la app.")
                 .setPositiveButton("Entendido", null)
                 .show();
     }

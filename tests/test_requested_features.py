@@ -89,6 +89,24 @@ class RequestedFeatureTests(unittest.TestCase):
         self.assertNotIn("addHomeTabs(page, false, true)", chat)
         self.assertNotIn("Ver planes y ofertas", chat)
 
+    def test_android_ai_displays_support_faqs_and_sends_the_selected_prompt(self):
+        source = (Path(__file__).resolve().parents[1]
+                 / "sync-app/app/src/main/java/com/tod4s3/sync/MainActivity.java").read_text()
+        chat = source.split("private void showAiChat", 1)[1].split("private void setAiActivityState", 1)[0]
+        render = source.split("private void renderAiConversation", 1)[1].split("private void addAiFaqRow", 1)[0]
+        self.assertIn('"Preguntas frecuentes", "Limpiar conversación"', chat)
+        self.assertIn("showAiFaqDialog()", chat)
+        self.assertIn("if (!aiChatMessages.isEmpty())", render)
+        self.assertIn('addAiFaqRow(welcome, 0, 1)', render)
+        self.assertIn('addAiFaqRow(welcome, 2, 3)', render)
+        self.assertIn('addAiFaqRow(welcome, 4, 5)', render)
+        for label in ("No se actualiza", "No se instala", "Fallan descargas",
+                      "La IA no responde", "No llega el código", "La app va lenta"):
+            self.assertIn(label, source)
+        quick_send = source.split("private void sendAiQuickQuestion", 1)[1].split("private void showAiHelp", 1)[0]
+        self.assertIn("sendAiMessage()", quick_send)
+        self.assertIn('"/api/app/ai/chat"', source)
+
     def test_android_ai_keyboard_resizes_and_preserves_scroll_after_ime_closes(self):
         root = Path(__file__).resolve().parents[1]
         source = (root / "sync-app/app/src/main/java/com/tod4s3/sync/MainActivity.java").read_text()
@@ -134,9 +152,15 @@ class RequestedFeatureTests(unittest.TestCase):
         self.assertIn('text("ACTUALIZACIÓN DISPONIBLE", 11, true)', source)
         self.assertIn('content.setBackground(roundRect(surfaceColor(), 22, borderColor()))', source)
         self.assertIn('updateDownloadIconAnimator.setRepeatCount(ObjectAnimator.INFINITE)', source)
+        update_dialog = source.split("private void beginAppUpdateDownload", 1)[1].split("private void downloadAppUpdate", 1)[0]
+        self.assertIn("Descargando la actualización para que disfrutes la versión más reciente.", update_dialog)
+        self.assertNotIn("GitHub", update_dialog)
+        self.assertNotIn("Keyhost", update_dialog)
+        self.assertIn("View.TRANSLATION_Y", update_dialog)
         self.assertIn('ObjectAnimator.ofInt(updateDownloadProgress, "progress"', source)
         self.assertIn('updateDownloadPercentText.setText(percent + "%")', source)
         self.assertIn('"Cancelar descarga"', source)
+        self.assertIn('"Preparando la descarga segura…"', source)
         self.assertIn('MessageDigest.getInstance("SHA-256")', source)
         self.assertIn("isCompatibleUpdateApk(temporary)", source)
         self.assertIn("PackageInstaller.SessionParams.MODE_FULL_INSTALL", source)
