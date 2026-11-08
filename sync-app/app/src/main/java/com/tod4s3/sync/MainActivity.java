@@ -165,6 +165,7 @@ public final class MainActivity extends Activity {
     private TextView todusSessionStatusText;
     private String todusSessionStatusMessage = "No hay una sesión ToDus guardada.";
     private TextView planStatus;
+    private LinearLayout dashboardPlanCard;
     private TextView dashboardPlanStatusText;
     private LinearLayout freeQuotaPanel;
     private ProgressBar freeQuotaPanelProgress;
@@ -173,6 +174,7 @@ public final class MainActivity extends Activity {
     private LinearLayout deliveriesBox;
     private LinearLayout dashboardItemsBox;
     private TextView dashboardStatusText;
+    private TextView activeDownloadBadge;
     private LinearLayout quotaUsageBox;
     private ProgressBar quotaProgressBar;
     private TextView quotaUsageText;
@@ -1075,6 +1077,7 @@ public final class MainActivity extends Activity {
         dashboardItemsBox = null;
         deliveriesBox = null;
         quotaUsageBox = null;
+        dashboardPlanCard = null;
         dashboardPlanStatusText = null;
         freeQuotaPanel = null;
         freeQuotaPanelProgress = null;
@@ -1109,6 +1112,8 @@ public final class MainActivity extends Activity {
             active.addView(badge);
             active.addView(text("AiTod4S3 y tus funciones Premium están disponibles", 17, true), margin(0, 7, 0, 0));
             active.addView(bodyText("Consumo de datos ilimitado · este plan no tiene un porcentaje máximo."), margin(0, 5, 0, 0));
+            active.addView(bodyText("Datos transferidos en el periodo: " + formatBytes(freeQuotaUsedBytes)
+                    + " · sin límite de consumo."), margin(0, 5, 0, 0));
             if (!premiumExpiresAt.isEmpty()) {
                 active.addView(bodyText("Vigencia: " + premiumExpiresAt), margin(0, 5, 0, 0));
             } else {
@@ -1174,14 +1179,23 @@ public final class MainActivity extends Activity {
 
     private LinearLayout planOffer(String name, String price, String detail, String purchasePlan) {
         LinearLayout offer = card();
-        offer.setPadding(dp(14), dp(12), dp(14), dp(12));
-        offer.setBackground(roundRect(isDarkTheme() ? Color.rgb(23, 31, 44) : Color.rgb(255, 251, 240), 18, Color.rgb(143, 111, 48)));
+        offer.setPadding(dp(16), dp(15), dp(16), dp(15));
+        int tierColor = name.contains("15 días") ? Color.rgb(106, 149, 226)
+                : name.contains("20 días") ? Color.rgb(242, 198, 106) : Color.rgb(82, 202, 177);
+        int offerStart = isDarkTheme() ? Color.rgb(25, 30, 44) : Color.rgb(255, 255, 255);
+        int offerEnd = isDarkTheme() ? Color.rgb(31, 34, 48) : Color.rgb(245, 247, 251);
+        GradientDrawable offerBackground = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
+                new int[]{offerStart, offerEnd});
+        offerBackground.setCornerRadius(dp(20));
+        offerBackground.setStroke(dp(1), isDarkTheme() ? Color.rgb(54, 59, 77) : Color.rgb(224, 227, 235));
+        offer.setBackground(offerBackground);
+        offer.setElevation(dp(3));
         LinearLayout offerHeader = new LinearLayout(this);
         offerHeader.setGravity(Gravity.CENTER_VERTICAL);
         TextView nameLabel = text(name, 16, true);
-        nameLabel.setTextColor(isDarkTheme() ? Color.rgb(255, 221, 141) : Color.rgb(128, 82, 10));
+        nameLabel.setTextColor(tierColor);
         TextView priceLabel = text(price, 16, true);
-        priceLabel.setTextColor(isDarkTheme() ? Color.rgb(242, 198, 106) : Color.rgb(137, 88, 12));
+        priceLabel.setTextColor(tierColor);
         offerHeader.addView(nameLabel, new LinearLayout.LayoutParams(0, -2, 1f));
         offerHeader.addView(priceLabel);
         offer.addView(offerHeader);
@@ -1190,20 +1204,17 @@ public final class MainActivity extends Activity {
         offer.addView(detailLabel, margin(0, 4, 0, 8));
         LinearLayout actions = new LinearLayout(this);
         actions.setOrientation(LinearLayout.HORIZONTAL);
-        actions.setGravity(Gravity.CENTER_VERTICAL);
+        actions.setOrientation(LinearLayout.VERTICAL);
         Button buyPlan = goldButton("Comprar premium");
-        buyPlan.setTextSize(12);
-        buyPlan.setMinHeight(dp(44));
+        buyPlan.setTextSize(14);
+        buyPlan.setMinHeight(dp(48));
         buyPlan.setOnClickListener(v -> openPremiumRequest(purchasePlan));
-        LinearLayout.LayoutParams buyParams = new LinearLayout.LayoutParams(0, dp(44), 1f);
-        buyParams.setMargins(0, 0, dp(7), 0);
-        actions.addView(buyPlan, buyParams);
+        actions.addView(buyPlan, new LinearLayout.LayoutParams(-1, dp(48)));
         Button alreadyPremium = secondaryButton("Ya soy premium");
-        alreadyPremium.setTextSize(12);
+        alreadyPremium.setTextSize(13);
         alreadyPremium.setMinHeight(dp(44));
         alreadyPremium.setOnClickListener(v -> promptPremiumActivationToken());
-        alreadyPremium.setMinHeight(dp(44));
-        actions.addView(alreadyPremium, new LinearLayout.LayoutParams(0, dp(44), 1f));
+        actions.addView(alreadyPremium, margin(0, 7, 0, 0));
         offer.addView(actions);
         return offer;
     }
@@ -1594,9 +1605,9 @@ public final class MainActivity extends Activity {
         if (alreadyOnDashboard) {
             deliveriesBox = null;
             todusSessionStatusText = null;
-            if (currentPage.getChildCount() > 1) {
-                currentPage.removeViewAt(1);
-                currentPage.addView(dashboardTabs(), 1, margin(0, 12, 0, 0));
+            if (currentPage.getChildCount() > 2) {
+                currentPage.removeViewAt(2);
+                currentPage.addView(dashboardTabs(), 2, margin(0, 12, 0, 0));
             }
             if (currentPage.getChildCount() > 0) {
                 currentPage.removeViewAt(0);
@@ -1618,6 +1629,8 @@ public final class MainActivity extends Activity {
         page.setOrientation(LinearLayout.VERTICAL);
         page.setPadding(dp(14), dp(12), dp(14), dp(24));
         page.addView(dashboardToolbar(), margin(0, 0, 0, 0));
+        dashboardPlanCard = buildDashboardPlanCard();
+        page.addView(dashboardPlanCard, margin(0, 10, 0, 0));
         page.addView(dashboardTabs(), margin(0, 12, 0, 0));
         View tabDivider = new View(this);
         tabDivider.setBackgroundColor(borderColor());
@@ -1626,21 +1639,7 @@ public final class MainActivity extends Activity {
         status.setTextSize(12);
         dashboardStatusText = status;
         page.addView(status, margin(2, 12, 2, 0));
-        dashboardPlanStatusText = bodyText(accountPlanShortLabel() + "  ·  Ver planes");
-        dashboardPlanStatusText.setTextSize(11);
-        dashboardPlanStatusText.setTextColor(accentColor());
-        dashboardPlanStatusText.setPadding(dp(11), dp(8), dp(11), dp(8));
-        dashboardPlanStatusText.setBackground(roundRect(raisedSurfaceColor(), 14, borderColor()));
-        dashboardPlanStatusText.setContentDescription("Ver planes y ofertas");
-        dashboardPlanStatusText.setOnClickListener(v -> showPlansStep(true));
-        page.addView(dashboardPlanStatusText, margin(2, 5, 2, 0));
-        quotaUsageBox = new LinearLayout(this);
-        quotaUsageBox.setOrientation(LinearLayout.VERTICAL);
-        page.addView(quotaUsageBox, margin(0, 9, 0, 0));
-        quotaProgressBar = null;
-        quotaUsageText = null;
-        quotaResetText = null;
-        updateQuotaUsageCard();
+        updateDashboardPlanCard();
         dashboardItemsBox = new LinearLayout(this);
         dashboardItemsBox.setOrientation(LinearLayout.VERTICAL);
         page.addView(dashboardItemsBox, margin(0, 12, 0, 0));
@@ -1654,6 +1653,61 @@ public final class MainActivity extends Activity {
                 refreshAccountProfile();
             }, animated ? 260L : 0L);
         }
+    }
+
+    private LinearLayout buildDashboardPlanCard() {
+        LinearLayout summary = new LinearLayout(this);
+        summary.setOrientation(LinearLayout.VERTICAL);
+        summary.setPadding(dp(15), dp(12), dp(15), dp(12));
+        int start = premiumActive ? (isDarkTheme() ? Color.rgb(49, 40, 27) : Color.rgb(255, 248, 227))
+                : (isDarkTheme() ? Color.rgb(22, 36, 50) : Color.rgb(235, 245, 250));
+        int end = premiumActive ? (isDarkTheme() ? Color.rgb(29, 29, 40) : Color.rgb(255, 255, 255))
+                : (isDarkTheme() ? Color.rgb(20, 27, 39) : Color.rgb(255, 255, 255));
+        GradientDrawable background = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
+                new int[]{start, end});
+        background.setCornerRadius(dp(20));
+        background.setStroke(dp(1), premiumActive ? Color.rgb(143, 111, 48) : borderColor());
+        summary.setBackground(background);
+        summary.setElevation(dp(3));
+        LinearLayout header = new LinearLayout(this);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout labels = new LinearLayout(this);
+        labels.setOrientation(LinearLayout.VERTICAL);
+        TextView eyebrow = text("TU PLAN ACTIVO", 9, true);
+        eyebrow.setLetterSpacing(0.08f);
+        eyebrow.setTextColor(premiumActive ? Color.rgb(242, 198, 106) : accentColor());
+        labels.addView(eyebrow);
+        dashboardPlanStatusText = text(accountPlanShortLabel(), 16, true);
+        dashboardPlanStatusText.setSingleLine(true);
+        dashboardPlanStatusText.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        labels.addView(dashboardPlanStatusText, margin(0, 2, 0, 0));
+        header.addView(labels, new LinearLayout.LayoutParams(0, -2, 1f));
+        TextView arrow = text("›", 25, true);
+        arrow.setTextColor(premiumActive ? Color.rgb(242, 198, 106) : accentColor());
+        header.addView(arrow, new LinearLayout.LayoutParams(dp(24), -2));
+        summary.addView(header);
+        quotaUsageBox = new LinearLayout(this);
+        quotaUsageBox.setOrientation(LinearLayout.VERTICAL);
+        summary.addView(quotaUsageBox, margin(0, 9, 0, 0));
+        summary.setContentDescription("Plan activo y consumo de datos. Toca para ver planes y ofertas.");
+        summary.setOnClickListener(v -> showPlansStep(true));
+        return summary;
+    }
+
+    private void updateDashboardPlanCard() {
+        if (dashboardPlanStatusText != null) dashboardPlanStatusText.setText(accountPlanShortLabel());
+        if (dashboardPlanCard != null) {
+            int start = premiumActive ? (isDarkTheme() ? Color.rgb(49, 40, 27) : Color.rgb(255, 248, 227))
+                    : (isDarkTheme() ? Color.rgb(22, 36, 50) : Color.rgb(235, 245, 250));
+            int end = premiumActive ? (isDarkTheme() ? Color.rgb(29, 29, 40) : Color.rgb(255, 255, 255))
+                    : (isDarkTheme() ? Color.rgb(20, 27, 39) : Color.rgb(255, 255, 255));
+            GradientDrawable background = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
+                    new int[]{start, end});
+            background.setCornerRadius(dp(20));
+            background.setStroke(dp(1), premiumActive ? Color.rgb(143, 111, 48) : borderColor());
+            dashboardPlanCard.setBackground(background);
+        }
+        updateQuotaUsageCard();
     }
 
     private LinearLayout dashboardToolbar() {
@@ -1722,10 +1776,46 @@ public final class MainActivity extends Activity {
         icon.setImageResource(iconResource);
         icon.setColorFilter(selected ? onAccentColor() : accentColor());
         item.addView(icon, new LinearLayout.LayoutParams(dp(24), dp(24)));
+        if ("Descargas activas".equals(description)) {
+            activeDownloadBadge = text("", 10, true);
+            activeDownloadBadge.setGravity(Gravity.CENTER);
+            activeDownloadBadge.setTextColor(Color.WHITE);
+            activeDownloadBadge.setPadding(dp(6), 0, dp(6), 0);
+            activeDownloadBadge.setBackground(roundRect(Color.rgb(213, 31, 42), 12, 0));
+            LinearLayout.LayoutParams badgeLayout = new LinearLayout.LayoutParams(-2, dp(20));
+            badgeLayout.setMargins(dp(5), 0, 0, 0);
+            item.addView(activeDownloadBadge, badgeLayout);
+            updateDashboardTabsBadge();
+        }
         item.setOnClickListener(v -> action.run());
         LinearLayout.LayoutParams itemLayout = new LinearLayout.LayoutParams(0, dp(50), weight);
         itemLayout.setMargins(dp(4), dp(1), dp(4), dp(3));
         parent.addView(item, itemLayout);
+    }
+
+    private void updateDashboardTabsBadge() {
+        if (activeDownloadBadge == null) return;
+        int count = 0;
+        synchronized (toDusDownloadLock) {
+            for (ToDusDownloadTask task : toDusDownloadTasks.values()) {
+                if (!task.state.equals("done")) count++;
+            }
+        }
+        synchronized (directLinkDownloadLock) {
+            for (DirectLinkTask task : directLinkTasks.values()) {
+                if (!task.state.equals("done")) count++;
+            }
+        }
+        for (int i = 0; i < latestAppTaskRows.length(); i++) {
+            JSONObject row = latestAppTaskRows.optJSONObject(i);
+            if (row == null) continue;
+            String state = row.optString("state", "queued");
+            if (state.equals("queued") || state.equals("downloading")
+                    || state.equals("uploading") || state.equals("cancelling")) count++;
+        }
+        activeDownloadBadge.setText(count > 99 ? "99+" : Integer.toString(count));
+        activeDownloadBadge.setVisibility(count > 0 ? View.VISIBLE : View.GONE);
+        activeDownloadBadge.setContentDescription(count + (count == 1 ? " descarga activa" : " descargas activas"));
     }
 
     private void showDashboardFab() {
@@ -1923,6 +2013,7 @@ public final class MainActivity extends Activity {
 
     private void renderDashboardItems() {
         if (!viewingDashboard || dashboardItemsBox == null) return;
+        updateDashboardTabsBadge();
         dashboardItemsBox.removeAllViews();
         int shown = 0;
         boolean toDusTab = "all".equals(dashboardFilter);
@@ -1977,7 +2068,7 @@ public final class MainActivity extends Activity {
     }
 
     private int renderToDusDownloadTasks() {
-        if ("completed".equals(dashboardFilter)) return 0;
+        if ("all".equals(dashboardFilter) || "completed".equals(dashboardFilter)) return 0;
         ArrayList<ToDusDownloadTask> tasks;
         synchronized (toDusDownloadLock) {
             tasks = new ArrayList<>(toDusDownloadTasks.values());
@@ -4221,7 +4312,9 @@ public final class MainActivity extends Activity {
         product.setTextColor(accentColor());
         identity.addView(product, margin(0, 2, 0, 0));
         brandHeader.addView(identity, new LinearLayout.LayoutParams(0, -2, 1f));
-        if (token != null && !token.isEmpty()) brandHeader.addView(accountMenuButton());
+        if (token != null && !token.isEmpty() && (activeStep == 0 || relinkingBotAccount)) {
+            brandHeader.addView(accountMenuButton());
+        }
         page.addView(brandHeader, margin(0, 0, 0, 20));
         if (activeStep > 0) addProgress(page, activeStep);
         page.addView(text(title, 24, true), margin(0, 18, 0, 5));
@@ -4357,6 +4450,7 @@ public final class MainActivity extends Activity {
         deliveriesBox = null;
         dashboardItemsBox = null;
         dashboardStatusText = null;
+        dashboardPlanCard = null;
         dashboardPlanStatusText = null;
         planStatus = null;
         syncStatus = null;
@@ -5227,10 +5321,7 @@ public final class MainActivity extends Activity {
                             .putString(PREF_ACTIVE_PLAN, activePlan)
                             .putString("active_plan_expires_v1", premiumExpiresAt).apply();
                     if (planStatus != null) planStatus.setText(accountPlanStatusText());
-                    if (dashboardPlanStatusText != null) {
-                        dashboardPlanStatusText.setText(accountPlanShortLabel() + "  ·  Ver planes");
-                    }
-                    updateQuotaUsageCard();
+                    updateDashboardPlanCard();
                     updateFreeQuotaPanel();
                     if (accessRestored) {
                         showUnbannedScreen();
@@ -5285,16 +5376,11 @@ public final class MainActivity extends Activity {
                     : "Premium activo para tu ID · falta pegar el token del administrador";
             if (!premiumExpiresAt.isEmpty()) label += " · hasta " + premiumExpiresAt;
             else label += " · permanente";
-            label += " · consumido: " + formatBytes(freeQuotaUsedBytes);
             if ("owner".equals(activePlan)) label += " · acceso permanente";
             else if (planDaysRemaining >= 0) label += " · quedan " + planDaysRemaining + " días";
             return label;
         }
-        if ("free".equals(activePlan) && freeQuotaLimitBytes > 0) {
-            return "Plan Gratis · consumido " + formatBytes(freeQuotaUsedBytes) + " (" + freeQuotaPercent
-                    + "%) · reinicio en "
-                    + quotaCountdownLabel(freeQuotaResetInSeconds);
-        }
+        if ("free".equals(activePlan) && freeQuotaLimitBytes > 0) return "Plan Gratis · 1 GB cada 24 horas";
         return token == null || token.isEmpty()
                 ? "Vincula tu cuenta para sincronizar el plan activado por el bot."
                 : "Plan actual: Gratis · se actualizará automáticamente si activan Premium.";
@@ -5308,48 +5394,50 @@ public final class MainActivity extends Activity {
 
     private void updateQuotaUsageCard() {
         if (quotaUsageBox == null) return;
-        if (token == null || token.isEmpty() || freeQuotaLimitBytes <= 0) {
+        boolean freePlan = "free".equals(activePlan);
+        if (token == null || token.isEmpty() || (freePlan && freeQuotaLimitBytes <= 0)) {
             quotaUsageBox.removeAllViews();
             quotaUsageBox.setVisibility(View.GONE);
+            quotaUsageBox.setTag(null);
             quotaProgressBar = null;
             quotaUsageText = null;
             quotaResetText = null;
             return;
         }
         quotaUsageBox.setVisibility(View.VISIBLE);
-        if (quotaProgressBar == null || quotaUsageText == null || quotaResetText == null) {
-            LinearLayout quotaCard = card();
-            quotaCard.setPadding(dp(14), dp(11), dp(14), dp(11));
-            String titleText = "free".equals(activePlan)
-                    ? "CONSUMO DEL PLAN GRATIS · 1 GB / 24 H"
-                    : "CONSUMO DEL PLAN ACTIVO · ILIMITADO";
+        Boolean currentMode = (Boolean) quotaUsageBox.getTag();
+        if (currentMode == null || currentMode != freePlan || quotaUsageText == null || quotaResetText == null) {
+            quotaUsageBox.removeAllViews();
+            quotaUsageBox.setTag(freePlan);
+            quotaProgressBar = null;
+            String titleText = freePlan ? "CONSUMO DE DATOS · 1 GB / 24 H" : "DATOS USADOS · PREMIUM ILIMITADO";
             TextView title = text(titleText, 10, true);
-            title.setTextColor(accentColor());
-            quotaCard.addView(title);
-            quotaProgressBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
-            quotaProgressBar.setMax(100);
-            quotaProgressBar.setProgressTintList(ColorStateList.valueOf(accentColor()));
-            quotaProgressBar.setProgressBackgroundTintList(ColorStateList.valueOf(borderColor()));
-            quotaCard.addView(quotaProgressBar, margin(0, 8, 0, 0));
+            title.setTextColor(premiumActive ? Color.rgb(242, 198, 106) : accentColor());
+            quotaUsageBox.addView(title);
+            if (freePlan) {
+                quotaProgressBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+                quotaProgressBar.setMax(100);
+                quotaProgressBar.setProgressTintList(ColorStateList.valueOf(accentColor()));
+                quotaProgressBar.setProgressBackgroundTintList(ColorStateList.valueOf(borderColor()));
+                quotaUsageBox.addView(quotaProgressBar, margin(0, 7, 0, 0));
+            }
             quotaUsageText = bodyText("");
             quotaUsageText.setTextSize(12);
-            quotaCard.addView(quotaUsageText, margin(0, 5, 0, 0));
+            quotaUsageBox.addView(quotaUsageText, margin(0, 5, 0, 0));
             quotaResetText = bodyText("");
             quotaResetText.setTextSize(11);
-            quotaCard.addView(quotaResetText, margin(0, 3, 0, 0));
-            quotaUsageBox.removeAllViews();
-            quotaUsageBox.addView(quotaCard);
+            quotaUsageBox.addView(quotaResetText, margin(0, 3, 0, 0));
         }
-        int percent = "free".equals(activePlan) ? Math.max(0, Math.min(100, freeQuotaPercent)) : 0;
-        quotaProgressBar.setProgress(percent);
-        if ("free".equals(activePlan)) {
+        if (freePlan) {
+            int percent = Math.max(0, Math.min(100, freeQuotaPercent));
+            if (quotaProgressBar != null) quotaProgressBar.setProgress(percent);
             quotaUsageText.setText(percent + "% usado · " + formatBytes(freeQuotaUsedBytes)
                     + " de " + formatBytes(freeQuotaLimitBytes) + " · quedan "
                     + formatBytes(freeQuotaRemainingBytes));
             quotaResetText.setText("La cuota gratis se renueva en " + quotaCountdownLabel(freeQuotaResetInSeconds));
         } else {
-            quotaUsageText.setText("Consumido en este periodo: " + formatBytes(freeQuotaUsedBytes)
-                    + " · transferencias ilimitadas");
+            quotaUsageText.setText("Transferido en este periodo: " + formatBytes(freeQuotaUsedBytes)
+                    + " · descargas sin límite");
             quotaResetText.setText("owner".equals(activePlan)
                     ? "Plan Dueño · acceso permanente"
                     : (planDaysRemaining >= 0 ? "Quedan " + planDaysRemaining + " días de Premium"
@@ -5704,7 +5792,7 @@ public final class MainActivity extends Activity {
             }
         }
         if (task.state.equals("downloading") || task.state.equals("saving") || task.state.equals("pausing")) return;
-        startToDusDownload(task);
+        if (startToDusDownload(task)) showDashboard("active", true);
     }
 
     private boolean startToDusDownload(ToDusDownloadTask task) {

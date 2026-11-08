@@ -69,7 +69,7 @@ class RequestedFeatureTests(unittest.TestCase):
         plans = source.split("private void showPlansStep", 1)[1].split("private LinearLayout planOffer", 1)[0]
         self.assertIn("← Volver a mis archivos", plans)
         self.assertIn("planStatus = statusText(accountPlanStatusText())", plans)
-        self.assertIn('dashboardPlanStatusText = bodyText(accountPlanShortLabel() + "  ·  Ver planes")', source)
+        self.assertIn('dashboardPlanStatusText = text(accountPlanShortLabel(), 16, true)', source)
         self.assertIn('text(verifiedPremium ? "PLAN GRATUITO" : "RECOMENDADO PARA EMPEZAR"', plans)
         self.assertIn("viewingDashboard = false;", plans)
 
@@ -322,9 +322,40 @@ class RequestedFeatureTests(unittest.TestCase):
         self.assertIn('"¿Dudas sobre streams?  @fefefelix"', plans)
         self.assertIn('"https://t.me/fefefelix"', plans)
         self.assertIn('"CONSUMO DE DATOS DEL PLAN ACTIVO"', source)
+        self.assertIn('"DATOS USADOS · PREMIUM ILIMITADO"', source)
         self.assertIn('"Consumo de datos ilimitado · este plan no tiene un porcentaje máximo."', plans)
         self.assertIn("dp(20), dp(22), dp(20), dp(26)", page)
         self.assertIn("subtitleText.setTextSize(13)", page)
+
+    def test_android_hides_account_menu_during_first_todus_registration(self):
+        source = (Path(__file__).resolve().parents[1]
+                  / "sync-app/app/src/main/java/com/tod4s3/sync/MainActivity.java").read_text()
+        page = source.split("private LinearLayout createStepPage", 1)[1].split("private FrameLayout accountMenuButton", 1)[0]
+        self.assertIn("(activeStep == 0 || relinkingBotAccount)", page)
+        self.assertIn("brandHeader.addView(accountMenuButton())", page)
+
+    def test_android_active_downloads_open_their_tab_show_a_badge_and_notify(self):
+        root = Path(__file__).resolve().parents[1]
+        source = (root / "sync-app/app/src/main/java/com/tod4s3/sync/MainActivity.java").read_text()
+        service = (root / "sync-app/app/src/main/java/com/tod4s3/sync/DownloadKeepAliveService.java").read_text()
+        dashboard = source.split("private void renderDashboardItems", 1)[1].split("private int renderToDusDownloadTasks", 1)[0]
+        to_dus_start = source.split("private void startToDusDelivery", 1)[1].split("private boolean startToDusDownload", 1)[0]
+        self.assertIn('showDashboard("active", true)', to_dus_start)
+        self.assertIn('"Descargas activas".equals(description)', source)
+        self.assertIn("updateDashboardTabsBadge()", dashboard)
+        self.assertIn('"all".equals(dashboardFilter) || "completed".equals(dashboardFilter)', source)
+        self.assertIn('builder.setSmallIcon(R.drawable.ic_active_download)', service)
+        self.assertIn('setContentTitle(count == 1 ? "Descarga en curso"', service)
+
+    def test_android_dashboard_places_quota_inside_the_active_plan_card(self):
+        source = (Path(__file__).resolve().parents[1]
+                  / "sync-app/app/src/main/java/com/tod4s3/sync/MainActivity.java").read_text()
+        dashboard = source.split("private void showDashboard", 1)[1].split("private LinearLayout buildDashboardPlanCard", 1)[0]
+        summary = source.split("private LinearLayout buildDashboardPlanCard", 1)[1].split("private LinearLayout dashboardToolbar", 1)[0]
+        self.assertLess(dashboard.index("page.addView(dashboardPlanCard"), dashboard.index("page.addView(dashboardTabs()"))
+        self.assertIn("summary.addView(quotaUsageBox", summary)
+        self.assertIn('"CONSUMO DE DATOS · 1 GB / 24 H"', source)
+        self.assertIn('"DATOS USADOS · PREMIUM ILIMITADO"', source)
 
     def test_android_drawer_can_relink_bot_without_resetting_todus(self):
         source = (Path(__file__).resolve().parents[1]

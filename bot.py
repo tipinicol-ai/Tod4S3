@@ -1186,6 +1186,56 @@ def get_plan_info(plan_key: str) -> dict:
     return PLANS.get(plan_key, PLANS["free"])
 
 
+def _active_plan_summary_lines(user_id: int) -> list[str]:
+    """Resumen compacto del plan y su consumo, sin alterar los límites del backend."""
+    plan = get_plan_info(get_user_plan(user_id))
+    label = f"{plan['badge']} {plan['display']}"
+    if is_owner(user_id):
+        used = get_daily_usage(user_id)
+        return [
+            "Plan activo: 🜲",
+            "Plan Creador · ∞ GB",
+            "Uso en 24 h: sin límite",
+            f"Transferido: {used / GIB:.2f} GB",
+        ]
+
+    used = get_daily_usage(user_id)
+    remaining = get_remaining_quota(user_id)
+    lines = [f"Plan activo: {label}"]
+    expires_at, days_left = get_plan_expiry_info(user_id)
+    if expires_at:
+        lines.extend([f"Vigencia hasta: {expires_at}", f"Días restantes: {days_left}"])
+
+    if plan["rank"] == 0:
+        users = _load_json(USERS_DATA_FILE).get("users", {})
+        account = users.get(str(user_id), {}) if isinstance(users, dict) else {}
+        try:
+            free_remaining = max(0, min(FREE_JOIN_QUOTA_BYTES,
+                                        int(account.get("free_quota_remaining_bytes", FREE_JOIN_QUOTA_BYTES))))
+        except (AttributeError, TypeError, ValueError):
+            free_remaining = FREE_JOIN_QUOTA_BYTES
+        bonus = max(0, remaining - free_remaining)
+        lines.extend([
+            "Consumo gratis (24 h):",
+            f"{(FREE_JOIN_QUOTA_BYTES - free_remaining) / GIB:.2f} / 1.00 GB",
+            f"Disponible total: {data_quota_label(remaining)}",
+            f"Paquetes sin vencer: {data_quota_label(bonus)}",
+        ])
+    elif plan["daily_bytes"] == float("inf"):
+        lines.extend([
+            "Uso en 24 h: sin límite",
+            f"Transferido: {used / GIB:.2f} GB",
+            f"Disponible: {data_quota_label(remaining)}",
+        ])
+    else:
+        limit_gb = float(plan["daily_bytes"]) / GIB
+        lines.extend([
+            f"Uso en 24 h: {used / GIB:.2f} / {limit_gb:.2f} GB",
+            f"Disponible: {data_quota_label(remaining)}",
+        ])
+    return lines
+
+
 def _today_key() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
@@ -2758,35 +2808,42 @@ def action_menu_keyboard() -> InlineKeyboardMarkup:
 
 
 def plans_text(user_id: int, bot_username: str | None = None) -> str:
-    """Muestra el saldo, la cuota disponible, los paquetes y el enlace personal."""
+    """Muestra primero el plan y consumo, después saldo, paquetes y enlace."""
     balance = get_user_balance(user_id)
     link = referral_link(user_id, bot_username)
     if is_owner(user_id):
         lines = [
-            f"💰 Saldo de referidos: {balance}$",
-            "📦 Datos disponibles: ∞ GB",
+            *_active_plan_summary_lines(user_id),
             "",
-            "Tu cuenta Creador conserva",
-            "los datos ilimitados; no",
-            "necesita comprar paquetes.",
+            f"💰 Saldo de referidos: {balance}$",
+            "Tu cuenta Creador conserva los datos ilimitados; no necesita comprar paquetes.",
             "👥 Cada referido válido te da 5$.",
             "",
             f"🔗 Tu enlace copiable:\n{{mono:{link}}}",
         ]
     else:
         lines = [
+            *_active_plan_summary_lines(user_id),
+            "",
             f"💰 Saldo de referidos: {balance}$",
-            f"📦 Datos disponibles: {data_quota_label(get_remaining_quota(user_id))}",
             "",
             "🎁 Recibes 1 GB gratis",
             "y 5$ de bienvenida.",
             "El 1 GB gratuito se renueva cada 24 h.",
             "👥 Cada referido válido te da 5$.",
-            "Los paquetes no vencen; se descuentan",
-            "al completar transferencias.",
+            "Los paquetes no vencen y se descuentan al completar transferencias.",
             "",
             "📋 Compra con saldo de referidos:",
             *[f"• {item['name']} — {item['price']}$" for item in DATA_PACKAGES.values()],
+            "",
+            "Premium en la aplicación:",
+            "Descargas sin límite",
+            "Acceso a AiTod4S3",
+            "15 días · 250 CUP",
+            "20 días · 300 CUP",
+            "30 días · 500 CUP",
+            "Activación Premium con el administrador.",
+            "Paquetes con saldo de referidos.",
             "",
             f"🔗 Tu enlace copiable:\n{{mono:{link}}}",
         ]
@@ -2851,12 +2908,12 @@ def download_menu_keyboard() -> InlineKeyboardMarkup:
 
 def download_menu_text() -> str:
     return card("📥 ᴄᴇɴᴛʀᴏ ᴅᴇ ᴅᴇꜱᴄᴀʀɢᴀꜱ", [
-        "Elige qué quieres enviar:",
-        "un archivo de Telegram o un enlace.",
-        "Todo se entregará por ToDus.",
+        "Envía un archivo guardado en Telegram o pega un enlace público.",
         "",
-        "Registra tu número cubano",
-        "para recibirlos en tu cuenta.",
+        "Elige el origen en los botones de abajo; no hace falta descargar antes los vídeos públicos compatibles.",
+        "La entrega se realiza por ToDus.",
+        "",
+        "Vincula tu cuenta ToDus en la aplicación para recibir los archivos.",
     ])
 
 
@@ -4606,48 +4663,49 @@ async def my_quota_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 
 def welcome_text(user_id: int, user_name: str, username: str | None = None) -> str:
-    short_name = (user_name or "Usuario").split()[0][:14]
-    username_label = f"@{username}" if username else "sin @usuario"
+    raw_name = user_name or "Usuario"
+    safe_short_name = html.escape(sc(raw_name.split()[0][:14]), quote=False)
+    safe_name = html.escape(sc(raw_name[:80]), quote=False)
+    safe_username = html.escape(sc(f"@{username}" if username else "sin @usuario"), quote=False)
+    short_name_marker = "/s0"
+    name_marker = "/n0"
+    username_marker = "/u0"
     identity_lines = [
-        f"👤 Nombre: {user_name or 'Usuario'}",
-        f"🔗 Usuario: {username_label}",
+        f"👤 Nombre: {name_marker}",
+        f"🔗 Usuario: {username_marker}",
         f"🆔 ID: {{mono:{user_id}}}",
         "",
     ]
     if is_owner(user_id):
         lines = [
-            f"👋 Hola, {short_name}",
+            f"👋 Hola, {short_name_marker}",
+            "",
+            *_active_plan_summary_lines(user_id),
             "",
             *identity_lines,
-            f"🏷 Plan: 🜲 Plan Creador",
-            f"📦 Disponible: ∞ GB",
-            "",
             "📥 Envía archivo o enlace público.",
             "👑 Creador · ∞ GB",
         ]
-        return card_with_credit(BOT_NAME, lines, preserve_title=True)
-    plan = get_plan_info(get_user_plan(user_id))
-    remaining = get_remaining_quota(user_id)
-    plan_label = "Gratis" if plan["rank"] == 0 else f"{plan['badge']} {plan['display']}"
+        return (card_with_credit(BOT_NAME, lines, preserve_title=True)
+                .replace(short_name_marker, safe_short_name)
+                .replace(name_marker, safe_name)
+                .replace(username_marker, safe_username))
     lines = [
-        f"👋 Hola, {short_name}",
+        f"👋 Hola, {short_name_marker}",
+        "",
+        *_active_plan_summary_lines(user_id),
         "",
         *identity_lines,
-        f"🏷 Plan: {plan_label}",
         f"💰 Saldo: {get_user_balance(user_id)}$",
-        f"📦 Disponible: {data_quota_label(remaining)}",
-        "♾️ Sin vencimiento",
     ]
-    if plan["rank"] > 0:
-        _, rem_days = get_plan_expiry_info(user_id)
-        if rem_days is not None:
-            lines.append(f"⏳ Días restantes: {rem_days}")
     lines += [
         "",
-        "📥 Envía un archivo o enlace",
-        "   público para subirlo.",
+        "📥 Envía un archivo o enlace público para subirlo.",
     ]
-    return card_with_credit(BOT_NAME, lines, preserve_title=True)
+    return (card_with_credit(BOT_NAME, lines, preserve_title=True)
+            .replace(short_name_marker, safe_short_name)
+            .replace(name_marker, safe_name)
+            .replace(username_marker, safe_username))
 
 
 async def send_welcome_message(message, user_id: int, user_name: str, username: str | None,
