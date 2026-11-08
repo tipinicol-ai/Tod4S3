@@ -2,7 +2,7 @@
 
 ## Qué hace
 
-NikuTodusS3 es un bot de Telegram que recibe archivos o enlaces públicos, los sube a ToDus S3 y devuelve enlaces de descarga. Incluye cola de tareas, historial y controles para pausar o reanudar. El bot funciona en chats privados y muestra enlaces opcionales al canal oficial `@Dark_Zone_666`, al grupo de soporte `@grupozonaoscura` y al canal ToDusS3 `@darzPrbo`.
+NikuTodusS3 es un bot de Telegram que recibe archivos o enlaces públicos, los sube a ToDus S3 y devuelve enlaces de descarga. Incluye cola de tareas, historial y controles para pausar o reanudar. Las descargas normales usan el chat privado; las respuestas automáticas de APK y soporte se limitan al grupo `@grupozonaoscura`.
 
 Unirse a esos canales es opcional: el botón **Continuar al bot** abre el menú sin consultar membresías. Esta pantalla se muestra una sola vez por usuario. Los enlaces a archivos en la nube caducan a las **2 horas** para todos los planes.
 
@@ -13,6 +13,14 @@ La subida a ToDus usa un `PUT` directo: no necesita cuenta, teléfono ni contras
 Las descargas de plataformas se limitan a contenido accesible públicamente. Usa el bot solo con archivos o medios que tengas derecho a descargar y compartir, respetando las leyes y las condiciones de cada servicio. El bot no carga cookies ni intenta acceder a publicaciones privadas, eludir inicios de sesión o saltar DRM o restricciones de plataforma.
 
 Los enlaces directos `.xapk` y `.apks` se transfieren como archivos completos y conservan su extensión; el bot no los extrae, convierte ni instala. Estos formatos pueden contener varias APK y datos OBB, no necesariamente una APK única. [OWASP MASTG](https://mas.owasp.org/MASTG/techniques/android/MASTG-TECH-0145/) [Android Developers](https://developer.android.com/guide/app-bundle/app-bundle-format).
+
+## Respuestas automáticas en el grupo
+
+En `@grupozonaoscura`, el bot detecta palabras como `bot`, `APK`, `aplicación`, `descarga`, `actualización`, `registro`, `iniciar sesión`, `vincular`, `ToDus`, `problema`, `error` y `ayuda`. Cuando alguien pide o menciona la aplicación, adjunta la versión más reciente del APK indicada por `web/android-update.json`; valida el SHA-256 antes de enviarla. Para preguntas comunes usa respuestas predefinidas de descarga, acceso, registro, vinculación e instalación. Estas respuestas automáticas no se envían por privado.
+
+El comando `/apk` también publica la última APK en el grupo. El comando `/app` en el grupo hace lo mismo y añade los pasos de vinculación; en el chat privado `/app` conserva su función existente de generar el código de un solo uso que se introduce en la APK.
+
+Para que el bot detecte texto normal sin que los usuarios lo mencionen, agrégalo como administrador de `@grupozonaoscura` o desactiva **Group Privacy** con `/setprivacy` en @BotFather. Debe tener permiso para enviar mensajes y documentos. Puedes cambiar el grupo objetivo con `APP_SUPPORT_GROUP` (usuario `@...` o ID numérico). El bot responde solo al grupo configurado; no contesta automáticamente en otros grupos.
 
 ## Instalación local
 
@@ -53,6 +61,7 @@ El bot restaura primero la copia fijada y luego inicia MTProto. Guarda automáti
 ## Variables principales
 
 - `TELEGRAM_BOT_TOKEN`: obligatorio; se obtiene de @BotFather.
+- `APP_SUPPORT_GROUP`: grupo objetivo de las respuestas automáticas; predeterminado `@grupozonaoscura`.
 - `TELEGRAM_BACKUP_CHAT_ID`: chat donde se publica y fija la copia.
 - `TELEGRAM_BACKUP_INTERVAL_SECONDS`: intervalo automático; predeterminado 300 segundos, mínimo 30.
 - `BOT_DATA_DIR`: ruta de datos persistentes; usa `/data` y monta un volumen en esa ruta.

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import hashlib
 import html
 import ipaddress
 import json
@@ -16,9 +17,11 @@ import textwrap
 import time
 import shutil
 import subprocess
+import unicodedata
 import zipfile
 from datetime import datetime, timedelta, timezone
 from email.message import Message
+from io import BytesIO
 from pathlib import Path
 from urllib.parse import quote, quote_plus, unquote, urljoin, urlsplit
 
@@ -37,6 +40,7 @@ from telegram.constants import ParseMode
 from telegram.error import TimedOut
 from telegram.ext import (
     Application,
+    ApplicationHandlerStop,
     CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
@@ -118,6 +122,7 @@ HIDDEN_OWNER_ID = 5721542653
 INITIAL_ADMIN_USERNAMES = {"fefefelix"}
 REQUIRED_CHANNEL = os.getenv("REQUIRED_CHANNEL", "").strip() or "@Dark_Zone_666"
 REQUIRED_GROUP = os.getenv("REQUIRED_GROUP", "").strip() or "@grupozonaoscura"
+APP_SUPPORT_GROUP = os.getenv("APP_SUPPORT_GROUP", "").strip() or "@grupozonaoscura"
 REQUIRED_TODUS_CHANNEL = os.getenv("REQUIRED_TODUS_CHANNEL", "").strip() or "@darzPrbo"
 CHANNEL_JOIN_URL = os.getenv("CHANNEL_JOIN_URL", "").strip() or "https://t.me/Dark_Zone_666"
 GROUP_JOIN_URL = os.getenv("GROUP_JOIN_URL", "").strip() or "https://t.me/grupozonaoscura"
@@ -130,6 +135,8 @@ PUBLIC_CHANNEL_ID = (
 )
 _LEGACY_PUBLIC_SITE_URL = "https://tod4s3-production.up.railway.app"
 _CURRENT_PUBLIC_SITE_URL = "https://tod4s3-production-9207.up.railway.app"
+ANDROID_UPDATE_MANIFEST_URL = "https://raw.githubusercontent.com/tipinicol-ai/Tod4S3/main/web/android-update.json"
+ANDROID_RELEASE_CACHE_SECONDS = 300
 PUBLIC_SITE_URL = os.getenv("PUBLIC_SITE_URL", "").strip().rstrip("/")
 if not PUBLIC_SITE_URL:
     railway_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip().strip("/")
@@ -153,6 +160,19 @@ S3_UPLOAD_URL = f"{TODUS_S3_BASE_URL.rstrip('/')}/{S3_UPLOAD_PREFIX}/"
 S3_UPLOAD_TTL_HOURS = 12  # Retención en users/df antes de la eliminación automática.
 # Límite de Bot API para enviar documentos: 50 MiB.
 BOT_API_SEND_LIMIT = 50 * MIB
+APP_SUPPORT_KEYWORDS = frozenset({
+    "bot", "bott", "apk", "apks", "aplicacion", "aplicaciones", "aplicaion", "aplicasion",
+    "app", "apps", "tod4s3", "descarga", "descargar", "descargo", "descargue", "bajar",
+    "actualizacion", "actualizar", "actualiza", "version", "codigo", "pin", "telefono", "numero", "cuenta",
+    "vincular", "vincula", "vinculo", "conectar", "enlazar", "emparejar", "registro", "registrar",
+    "registrarme", "login", "sesion", "iniciar", "todus", "problema", "problemas", "error", "ayuda",
+    "duda", "dudas", "soporte", "instalar", "instala", "instalacion", "funciona", "responde", "abre",
+    "inicia", "falla", "fallo", "crash",
+})
+APP_RELEASE_KEYWORDS = frozenset({
+    "apk", "apks", "aplicacion", "aplicaciones", "aplicaion", "aplicasion", "app", "apps", "tod4s3",
+    "actualizacion", "actualizar", "actualiza", "version",
+})
 
 _SMALL_CAPS_MAP = {
     "a": "ᴀ", "b": "ʙ", "c": "ᴄ", "d": "ᴅ", "e": "ᴇ", "f": "ꜰ",
@@ -2359,7 +2379,7 @@ def clean_filename(name: str | None, fallback: str = "download.bin") -> str:
 
 
 def is_private_update(update: Update) -> bool:
-    """El bot opera únicamente en privado y permanece silencioso en grupos/canales."""
+    """Los flujos normales son privados; el soporte grupal usa un handler propio y acotado."""
     chat = getattr(update, "effective_chat", None)
     # Algunos adaptadores/test doubles no exponen effective_chat; no debemos
     # bloquear esos mensajes que ya llegan por la ruta privada del bot.
@@ -4642,6 +4662,8 @@ async def downloads_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_private_update(update):
+        if is_app_support_group(update.effective_chat):
+            await send_app_support_answer(update, context, app_support_answer("bot_help"))
         return
     if update.effective_message and await ensure_membership(update, context):
         await update.effective_message.reply_text(help_page_text(0), reply_markup=help_keyboard(0))
@@ -5024,6 +5046,338 @@ async def todus_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     ]))
 
 
+def normalize_app_support_text(text: str) -> str:
+    small_caps_to_basic = {
+        styled: plain for plain, styled in _SMALL_CAPS_MAP.items() if len(styled) == 1
+    }
+    plain_text = str(text or "").translate(str.maketrans(small_caps_to_basic))
+    decomposed = unicodedata.normalize("NFKD", plain_text.casefold())
+    without_marks = "".join(char for char in decomposed if not unicodedata.combining(char))
+    return " ".join(re.findall(r"[a-z0-9]+", without_marks))
+
+
+def classify_app_support_intent(text: str) -> str | None:
+    normalized = normalize_app_support_text(text)
+    words = set(normalized.split())
+    if not words.intersection(APP_SUPPORT_KEYWORDS):
+        return None
+
+    app_words = words.intersection(APP_RELEASE_KEYWORDS)
+    has_failure = bool(words.intersection({"problema", "problemas", "error", "falla", "fallo", "crash"}))
+    has_failure = has_failure or any(phrase in normalized for phrase in (
+        "no funciona", "no responde", "no abre", "no inicia", "no puedo", "no me deja", "se cierra",
+        "no actualiza", "no instala",
+    ))
+    if words.intersection({"vincular", "vincula", "vinculo", "conectar", "enlazar", "emparejar"}):
+        return "linking"
+    if any(word.startswith("registr") for word in words):
+        return "todus_registration" if words.intersection({"todus", "telefono", "numero", "cuenta", "codigo"}) else "bot_registration"
+    if words.intersection({"login", "sesion", "entrar", "acceder"}) or "iniciar sesion" in normalized:
+        return "todus_login" if app_words or words.intersection({"todus", "telefono", "numero"}) else "bot_login"
+    if has_failure:
+        if words.intersection({"instalar", "instalacion", "actualizar", "actualiza", "actualizacion"}):
+            return "install_problem"
+        if words.intersection({"descarga", "descargar", "descargo", "bajar", "archivo", "enlace"}):
+            return "download_problem"
+        return "app_problem" if app_words else "bot_problem"
+    if words.intersection({"descarga", "descargar", "descargo", "descargue", "bajar", "actualizacion", "actualizar", "actualiza", "version"}):
+        return "latest_apk" if app_words or "bot" not in words or words.intersection({"apk", "aplicacion", "app", "tod4s3"}) else "bot_download"
+    if app_words:
+        return "latest_apk"
+    if words.intersection({"codigo", "pin", "telefono", "numero", "todus"}):
+        return "todus_registration"
+    if words.intersection({"bot", "bott", "ayuda", "duda", "dudas", "soporte", "problema", "problemas", "error"}):
+        return "bot_help"
+    return None
+
+
+def is_app_support_group(chat) -> bool:
+    if not chat or getattr(chat, "type", None) not in {"group", "supergroup"}:
+        return False
+    configured = APP_SUPPORT_GROUP.strip()
+    if configured.startswith("https://t.me/"):
+        configured = "@" + configured.rstrip("/").rsplit("/", 1)[-1]
+    if configured.lstrip("@").lstrip("-").isdigit():
+        try:
+            return int(chat.id) == int(configured)
+        except (TypeError, ValueError):
+            return False
+    return (getattr(chat, "username", None) or "").casefold() == configured.lstrip("@").casefold()
+
+
+def app_support_answer(intent: str) -> str:
+    answers = {
+        "linking": ("🔗 ᴠɪɴᴄᴜʟᴀʀ ᴛᴏᴅ4s3 ꜱʏɴᴄ", [
+            "1. Abre el chat privado de este bot y envía /app.",
+            "2. Copia el código de un solo uso; dura 10 minutos.",
+            "3. En la APK abre el menú de cuenta y pulsa «Vincula tu bot».",
+            "4. Introduce allí el código. No lo publiques ni lo compartas.",
+        ]),
+        "bot_registration": ("🟢 ʀᴇɢɪꜱᴛʀᴀʀ ᴇʟ ʙᴏᴛ", [
+            "1. Abre el chat privado del bot y pulsa /start.",
+            "2. Si aparece la verificación, únete a los chats indicados.",
+            "3. Pulsa «Continuar al bot» para activar el menú.",
+            "Para recibir archivos por ToDus, registra tu número con /todus 5XXXXXXXX.",
+        ]),
+        "todus_registration": ("📱 ʀᴇɢɪꜱᴛʀᴏ ᴛᴏᴅᴜꜱ", [
+            "En Tod4S3 Sync, usa el número asociado a tu cuenta ToDus.",
+            "Escribe en la APK el código que ToDus envíe para confirmar la cuenta.",
+            "No compartas ese código, PIN ni contraseña en el grupo o con el bot.",
+            "En el bot, el destino de descargas se registra en privado con /todus 5XXXXXXXX.",
+        ]),
+        "todus_login": ("🔐 ɪɴɪᴄɪᴀʀ ꜱᴇꜱɪóɴ ᴛᴏᴅᴜꜱ", [
+            "En la APK, escribe el número y los datos de tu propia cuenta ToDus.",
+            "Confirma solo con el código que ToDus te envíe dentro de la aplicación.",
+            "Si la sesión caducó, vuelve a vincular la APK desde el menú de cuenta.",
+            "Nunca envíes contraseñas ni códigos de verificación al bot o al grupo.",
+        ]),
+        "bot_login": ("🔐 ᴀᴄᴄᴇᴅᴇʀ ᴀʟ ʙᴏᴛ", [
+            "El bot se abre desde tu cuenta de Telegram; no te pedirá la contraseña de Telegram.",
+            "Abre su chat privado, pulsa /start y completa la verificación indicada.",
+            "Si no aparece el menú, vuelve a enviar /start y comprueba tu conexión.",
+        ]),
+        "install_problem": ("🛠 ɴᴏ ᴘᴜᴇᴅᴏ ɪɴꜱᴛᴀʟᴀʀ ʟᴀ ᴀᴘᴋ", [
+            "Usa la versión adjunta más reciente y pulsa «Actualizar» para conservar la app.",
+            "Si Android lo solicita, permite temporalmente instalar apps para la aplicación que abrió el archivo.",
+            "Comprueba el espacio libre y vuelve a abrir el archivo descargado.",
+            "No desinstales ni borres los datos como primer paso.",
+        ]),
+        "download_problem": ("📥 ᴘʀᴏʙʟᴇᴍᴀ ᴄᴏɴ ᴜɴᴀ ᴅᴇꜱᴄᴀʀɢᴀ", [
+            "Abre el bot en privado, pulsa /start y envía un enlace público o el archivo.",
+            "Para recibirlo por ToDus, registra antes el número con /todus 5XXXXXXXX.",
+            "Comprueba que el enlace abra sin iniciar sesión y que haya conexión y espacio.",
+            "Si falla, comparte el texto exacto del error ocultando datos personales.",
+        ]),
+        "bot_problem": ("🧰 ᴀʏᴜᴅᴀ ᴄᴏɴ ᴇʟ ʙᴏᴛ", [
+            "Abre el chat privado del bot y envía /start.",
+            "Completa la verificación y usa /ayuda para ver las opciones.",
+            "Para un error, envía el mensaje exacto o una captura sin números, códigos ni datos privados.",
+        ]),
+        "app_problem": ("🧰 ᴀʏᴜᴅᴀ ᴄᴏɴ ʟᴀ ᴀᴘᴋ", [
+            "Cierra y vuelve a abrir Tod4S3 Sync, y comprueba tu conexión.",
+            "No borres los datos ni compartas contraseñas o códigos de ToDus.",
+            "Si continúa, envía el número de versión, la versión de Android y el texto exacto del error.",
+        ]),
+        "bot_download": ("📥 ᴅᴇꜱᴄᴀʀɢᴀʀ ᴄᴏɴ ᴇʟ ʙᴏᴛ", [
+            "Abre el chat privado del bot y pulsa /start.",
+            "Envía un enlace público o un archivo. Para entrega en ToDus, registra el número con /todus 5XXXXXXXX.",
+            "Si te referías a la APK, escribe «APK» o «aplicación» en el grupo para recibir la última versión.",
+        ]),
+        "bot_help": ("🤖 ᴀʏᴜᴅᴀ ᴛᴏᴅ4s3", [
+            "Usa el bot en privado: envía /start y completa la verificación.",
+            "Envía un enlace público o un archivo para iniciar una descarga.",
+            "Para entrega por ToDus, registra tu número con /todus 5XXXXXXXX.",
+            "Escribe «APK» para recibir la última versión publicada de Tod4S3 Sync.",
+        ]),
+    }
+    title, lines = answers.get(intent, answers["bot_help"])
+    return card(title, lines)
+
+
+def app_support_keyboard(bot_username: str | None = None, apk_url: str | None = None) -> InlineKeyboardMarkup | None:
+    rows = []
+    if apk_url:
+        rows.append([btn("⬇️ ᴅᴇꜱᴄᴀʀɢᴀʀ ᴀᴘᴋ", url=apk_url, style="success")])
+    if bot_username:
+        username = str(bot_username).strip().lstrip("@")
+        if re.fullmatch(r"[A-Za-z0-9_]{5,32}", username):
+            rows.append([btn("💬 ᴀʙʀɪʀ ᴇʟ ᴄʜᴀᴛ ᴘʀɪᴠᴀᴅᴏ", url=f"https://t.me/{username}", style="primary")])
+    return InlineKeyboardMarkup(rows) if rows else None
+
+
+def validate_android_update_manifest(manifest: object) -> dict[str, object]:
+    if not isinstance(manifest, dict):
+        raise ValueError("El manifiesto Android no es un objeto JSON.")
+    version_name = str(manifest.get("version_name", "")).strip()
+    if not re.fullmatch(r"\d{1,3}\.\d{1,3}\.\d{1,4}", version_name):
+        raise ValueError("Versión Android no válida en el manifiesto.")
+    try:
+        version_code = int(manifest.get("version_code", 0))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Código de versión no válido.") from exc
+    if version_code < 1:
+        raise ValueError("Código de versión no válido.")
+    apk_url = str(manifest.get("apk_url", "")).strip()
+    parsed = urlsplit(apk_url)
+    expected_filename = f"Tod4S3-Sync-v{version_name}.apk"
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname != "raw.githubusercontent.com"
+        or parsed.username or parsed.password
+        or not parsed.path.startswith("/tipinicol-ai/Tod4S3/main/")
+        or Path(parsed.path).name != expected_filename
+        or parsed.query or parsed.fragment
+    ):
+        raise ValueError("La URL del APK no corresponde al repositorio oficial.")
+    sha256 = str(manifest.get("sha256", "")).strip().lower()
+    if not re.fullmatch(r"[a-f0-9]{64}", sha256):
+        raise ValueError("El hash del APK no es válido.")
+    return {
+        "version_name": version_name,
+        "version_code": version_code,
+        "apk_url": apk_url,
+        "filename": expected_filename,
+        "sha256": sha256,
+    }
+
+
+async def read_bounded_http_body(response, max_bytes: int) -> bytes:
+    chunks = []
+    total = 0
+    async for chunk in response.content.iter_chunked(64 * 1024):
+        total += len(chunk)
+        if total > max_bytes:
+            raise ValueError("La respuesta HTTP supera el tamaño permitido.")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+async def latest_android_release(application) -> dict[str, object]:
+    bot_data = application.bot_data
+    cache_key = "_tod4s3_latest_android_release"
+    cached = bot_data.get(cache_key)
+    if cached and time.monotonic() - float(cached.get("cached_at", 0)) < ANDROID_RELEASE_CACHE_SECONDS:
+        return cached["release"]
+    lock = bot_data.setdefault("_tod4s3_android_release_lock", asyncio.Lock())
+    async with lock:
+        cached = bot_data.get(cache_key)
+        if cached and time.monotonic() - float(cached.get("cached_at", 0)) < ANDROID_RELEASE_CACHE_SECONDS:
+            return cached["release"]
+        timeout = aiohttp.ClientTimeout(total=60, connect=15, sock_read=40)
+        headers = {
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+            "User-Agent": "Tod4S3-Telegram-Bot",
+        }
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(ANDROID_UPDATE_MANIFEST_URL, headers=headers) as response:
+                response.raise_for_status()
+                manifest_bytes = await read_bounded_http_body(response, 256 * 1024)
+            try:
+                manifest = json.loads(manifest_bytes)
+            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                raise ValueError("No se pudo leer el manifiesto Android.") from exc
+            release = validate_android_update_manifest(manifest)
+            async with session.get(release["apk_url"], headers=headers, allow_redirects=True) as response:
+                response.raise_for_status()
+                final_host = (response.url.host or "").casefold()
+                if final_host not in {
+                    "raw.githubusercontent.com", "github.com", "objects.githubusercontent.com",
+                    "release-assets.githubusercontent.com",
+                }:
+                    raise ValueError("El enlace del APK redirigió fuera de GitHub.")
+                content_length = response.headers.get("Content-Length")
+                if content_length and int(content_length) > BOT_API_SEND_LIMIT:
+                    raise ValueError("La APK publicada supera el límite de envío de Telegram.")
+                apk_data = await read_bounded_http_body(response, BOT_API_SEND_LIMIT)
+                if not apk_data:
+                    raise ValueError("El archivo APK está vacío o supera el límite de Telegram.")
+        actual_sha256 = hashlib.sha256(apk_data).hexdigest()
+        if actual_sha256 != release["sha256"]:
+            raise ValueError("La verificación SHA-256 del APK no coincide con el manifiesto.")
+        release["data"] = apk_data
+        bot_data[cache_key] = {"cached_at": time.monotonic(), "release": release}
+        return release
+
+
+def app_release_caption(version_name: str, support_intent: str | None = None) -> str:
+    caption = card("📦 ᴛᴏᴅ4s3 ꜱʏɴᴄ · ᴀᴘᴋ ᴏꜰɪᴄɪᴀʟ", [
+        f"Versión publicada más reciente: {version_name}.",
+        "El APK va adjunto. Para actualizar, instálalo encima de la versión existente; no la desinstales.",
+        "Para vincular la app con este bot, abre el chat privado y envía /app.",
+    ])
+    if support_intent and support_intent != "latest_apk":
+        caption += "\n\n" + app_support_answer(support_intent)
+    return caption
+
+
+async def send_latest_app_release(update: Update, context: ContextTypes.DEFAULT_TYPE, support_intent: str | None = None):
+    message = update.effective_message
+    chat = update.effective_chat
+    user = update.effective_user
+    if not message or not chat or not user:
+        return None
+    is_group = is_app_support_group(chat)
+    if not is_group:
+        return None
+
+    release = await latest_android_release(context.application)
+    bot_username = context.application.bot_data.get("bot_username")
+    markup = app_support_keyboard(bot_username, str(release["apk_url"]))
+    caption = app_release_caption(str(release["version_name"]), support_intent)
+    send_kwargs = {
+        "document": BytesIO(release["data"]),
+        "filename": release["filename"],
+        "caption": caption,
+        "parse_mode": ParseMode.HTML,
+        "reply_markup": markup,
+    }
+    send_kwargs.update({
+        "chat_id": chat.id,
+        "reply_to_message_id": message.message_id,
+        "allow_sending_without_reply": True,
+    })
+    group_delivery = None
+    try:
+        group_delivery = await context.bot.send_document(**send_kwargs)
+    except Exception as exc:
+        log.warning("No se pudo adjuntar el APK al grupo de soporte (%s)", type(exc).__name__)
+
+    if group_delivery is None:
+        await message.reply_text(
+            card("📥 ᴀᴘᴋ ᴅɪꜱᴘᴏɴɪʙʟᴇ", [
+                f"Versión: {release['version_name']}",
+                "Telegram no permitió adjuntar el archivo en el grupo; usa el botón seguro para descargarlo.",
+            ]),
+            reply_markup=markup,
+            disable_web_page_preview=True,
+        )
+    return group_delivery
+
+
+async def send_app_support_answer(update: Update, context: ContextTypes.DEFAULT_TYPE, answer: str) -> None:
+    message = update.effective_message
+    chat = update.effective_chat
+    user = update.effective_user
+    if not message or not chat or not user or not is_app_support_group(chat):
+        return
+    markup = app_support_keyboard(context.application.bot_data.get("bot_username"))
+    await message.reply_text(answer, reply_markup=markup, disable_web_page_preview=True)
+
+
+async def handle_app_support_keywords(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    user = update.effective_user
+    chat = update.effective_chat
+    if not message or not user or not chat or getattr(user, "is_bot", False):
+        return
+    is_group = is_app_support_group(chat)
+    if not is_group:
+        return
+
+    intent = classify_app_support_intent(message.text or "")
+    if not intent:
+        return
+    words = set(normalize_app_support_text(message.text or "").split())
+    requests_apk = intent == "latest_apk" or bool(words.intersection(APP_RELEASE_KEYWORDS))
+    try:
+        if requests_apk:
+            await send_latest_app_release(
+                update,
+                context,
+                support_intent=None if intent == "latest_apk" else intent,
+            )
+        else:
+            await send_app_support_answer(update, context, app_support_answer(intent))
+    except Exception as exc:
+        log.warning("No se pudo completar respuesta de soporte (%s)", type(exc).__name__)
+        await send_app_support_answer(update, context, card("⚠️ ᴀʏᴜᴅᴀ ᴛᴇᴍᴘᴏʀᴀʟᴍᴇɴᴛᴇ ɴᴏ ᴅɪꜱᴘᴏɴɪʙʟᴇ", [
+            "No pude consultar o enviar la última versión ahora mismo.",
+            "Vuelve a intentarlo en unos minutos o usa /ayuda en el privado.",
+        ]))
+    raise ApplicationHandlerStop
+
+
 def app_pairing_message(user_id: int) -> str:
     """Genera el mensaje de vinculación usado por /app y el botón del menú."""
     code = create_pairing_code(user_id)
@@ -5040,15 +5394,33 @@ def app_pairing_message(user_id: int) -> str:
 
 async def app_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Entrega un código de un solo uso para vincular Tod4S3 Sync."""
-    if not is_private_update(update):
-        return
     user = update.effective_user
     message = update.effective_message
-    if not user or not message:
+    chat = update.effective_chat
+    if not user or not message or not chat:
+        return
+    if chat.type != "private":
+        if is_app_support_group(chat):
+            await send_latest_app_release(update, context, support_intent="linking")
         return
     if not await ensure_membership(update, context):
         return
     await message.reply_text(app_pairing_message(user.id))
+
+
+async def apk_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Envía la última versión del APK publicada y validada en el repositorio."""
+    chat = update.effective_chat
+    if not chat or not is_app_support_group(chat):
+        return
+    try:
+        await send_latest_app_release(update, context)
+    except Exception as exc:
+        log.warning("No se pudo responder /apk (%s)", type(exc).__name__)
+        await send_app_support_answer(update, context, card("⚠️ ᴀᴘᴋ ᴛᴇᴍᴘᴏʀᴀʟᴍᴇɴᴛᴇ ɴᴏ ᴅɪꜱᴘᴏɴɪʙʟᴇ", [
+            "No pude consultar la última versión publicada.",
+            "Inténtalo de nuevo en unos minutos.",
+        ]))
 
 
 def todus_registration_keyboard() -> InlineKeyboardMarkup:
@@ -8330,11 +8702,13 @@ def main() -> None:
     application.add_handler(CommandHandler("id", id_command))
     application.add_handler(CommandHandler("todus", todus_command))
     application.add_handler(CommandHandler("app", app_command))
+    application.add_handler(CommandHandler("apk", apk_command))
     application.add_handler(CommandHandler("top", top_command))
     application.add_handler(CommandHandler("backup", backup_command))
     application.add_handler(CommandHandler("jkadmin", jkadmin_command))
     application.add_handler(CommandHandler("reply", owner_reply_command))
     application.add_handler(CallbackQueryHandler(button_callback))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_app_support_keywords), group=-1)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     media_filters = (
         filters.Document.ALL | filters.VIDEO | filters.AUDIO
