@@ -81,13 +81,18 @@ def test_bounded_http_reader_collects_all_chunks_and_enforces_limit():
         asyncio.run(bot.read_bounded_http_body(too_large, 7))
 
 
-def test_release_caption_includes_version_update_and_linking_steps():
-    caption = bot.app_release_caption("1.5.34", "linking")
-    normalized = bot.normalize_app_support_text(caption)
+def test_release_caption_is_short_styled_and_contains_no_links_or_support_steps():
+    caption = bot.app_release_caption("1.5.34")
     assert "1.5.34" in caption
-    assert "no la desinstales" in normalized
-    assert "/app" in caption
-    assert "10 minutos" in normalized
+    assert "📲 NUEVA ACTUALIZACIÓN DISPONIBLE" in caption
+    assert "Tod4S3 Sync · v1.5.34" in caption
+    assert "Pulsa el APK adjunto para descargarlo" in caption
+    assert "no desinstales la app" in caption
+    assert len(caption) < 250
+    assert "github" not in caption.casefold()
+    assert "http://" not in caption.casefold()
+    assert "https://" not in caption.casefold()
+    assert "/app" not in caption
 
 
 def test_support_replies_warn_users_not_to_share_login_codes():
@@ -137,9 +142,55 @@ def test_group_release_is_sent_only_to_the_group(monkeypatch):
     assert len(calls) == 1
     assert calls[0]["chat_id"] == -100100
     assert calls[0]["reply_to_message_id"] == 55
+    assert "reply_markup" not in calls[0]
     caption = calls[0]["caption"]
     assert "1.5.34" in caption
-    assert "10 minutos" in bot.normalize_app_support_text(caption)
+    assert "github" not in caption.casefold()
+    assert "https://" not in caption.casefold()
+
+
+def test_failed_apk_attachment_replies_without_markup_or_github_link(monkeypatch):
+    monkeypatch.setattr(bot, "APP_SUPPORT_GROUP", "@grupozonaoscura")
+    release_bytes = b"fake apk bytes"
+    release = {
+        "version_code": 79,
+        "version_name": "1.5.34",
+        "apk_url": "https://raw.githubusercontent.com/tipinicol-ai/Tod4S3/main/Tod4S3-Sync-v1.5.34.apk",
+        "filename": "Tod4S3-Sync-v1.5.34.apk",
+        "sha256": hashlib.sha256(release_bytes).hexdigest(),
+        "data": release_bytes,
+    }
+
+    async def fake_latest_android_release(_application):
+        return release
+
+    monkeypatch.setattr(bot, "latest_android_release", fake_latest_android_release)
+    replies = []
+
+    async def failed_send_document(**_kwargs):
+        raise RuntimeError("Telegram upload failed")
+
+    async def fake_reply_text(text, **kwargs):
+        replies.append((text, kwargs))
+
+    context = SimpleNamespace(
+        bot=SimpleNamespace(send_document=failed_send_document),
+        application=SimpleNamespace(bot_data={"bot_username": "toduss3_bot"}),
+    )
+    update = SimpleNamespace(
+        effective_chat=SimpleNamespace(id=-100100, type="supergroup", username="grupozonaoscura"),
+        effective_user=SimpleNamespace(id=735, is_bot=False),
+        effective_message=SimpleNamespace(message_id=55, reply_text=fake_reply_text),
+    )
+
+    assert asyncio.run(bot.send_latest_app_release(update, context, support_intent="linking")) is None
+
+    assert len(replies) == 1
+    fallback, kwargs = replies[0]
+    assert "vuelve a intentarlo mas tarde" in bot.normalize_app_support_text(fallback)
+    assert "github" not in fallback.casefold()
+    assert "https://" not in fallback.casefold()
+    assert "reply_markup" not in kwargs
 
 
 def test_release_request_in_private_does_not_send_anything(monkeypatch):

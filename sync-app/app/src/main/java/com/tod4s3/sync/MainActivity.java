@@ -273,8 +273,7 @@ public final class MainActivity extends Activity {
     private ProgressBar updateDownloadProgress;
     private TextView updateDownloadProgressText;
     private TextView updateDownloadPercentText;
-    private TextView updateDownloadIcon;
-    private ObjectAnimator updateDownloadIconAnimator;
+    private UpdateDownloadCircle updateDownloadCircle;
     private ObjectAnimator updateDownloadProgressAnimator;
     private long lastUpdateProgressAnimationAt;
     private File downloadedUpdateFile;
@@ -691,17 +690,10 @@ public final class MainActivity extends Activity {
 
         LinearLayout heading = new LinearLayout(this);
         heading.setGravity(Gravity.CENTER_VERTICAL);
-        FrameLayout updateIconFrame = new FrameLayout(this);
-        GradientDrawable updateIconBackground = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
-                new int[]{accentColor(), Color.rgb(72, 115, 235), Color.rgb(48, 182, 210)});
-        updateIconBackground.setShape(GradientDrawable.OVAL);
-        updateIconFrame.setBackground(updateIconBackground);
-        updateIconFrame.setElevation(dp(8));
-        updateDownloadIcon = text("↓", 28, true);
-        updateDownloadIcon.setTextColor(Color.WHITE);
-        updateDownloadIcon.setGravity(Gravity.CENTER);
-        updateIconFrame.addView(updateDownloadIcon, new FrameLayout.LayoutParams(-1, -1));
-        heading.addView(updateIconFrame, new LinearLayout.LayoutParams(dp(50), dp(50)));
+        updateDownloadCircle = new UpdateDownloadCircle();
+        updateDownloadCircle.setElevation(dp(8));
+        updateDownloadCircle.setIndeterminate(true);
+        heading.addView(updateDownloadCircle, new LinearLayout.LayoutParams(dp(50), dp(50)));
 
         LinearLayout headingText = new LinearLayout(this);
         headingText.setOrientation(LinearLayout.VERTICAL);
@@ -773,12 +765,6 @@ public final class MainActivity extends Activity {
         }
         content.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(240)
                 .setInterpolator(new DecelerateInterpolator()).start();
-        updateDownloadIconAnimator = ObjectAnimator.ofFloat(updateDownloadIcon, View.TRANSLATION_Y, -dp(3), dp(3));
-        updateDownloadIconAnimator.setDuration(850L);
-        updateDownloadIconAnimator.setRepeatMode(ObjectAnimator.REVERSE);
-        updateDownloadIconAnimator.setRepeatCount(ObjectAnimator.INFINITE);
-        updateDownloadIconAnimator.setInterpolator(new DecelerateInterpolator());
-        updateDownloadIconAnimator.start();
         new Thread(() -> downloadAppUpdate(versionCode, versionName, apkUrl, expectedSha256, destination),
                 "tod4s3-update-download").start();
     }
@@ -872,6 +858,7 @@ public final class MainActivity extends Activity {
                 updateDownloadProgressAnimator.setDuration(220L);
                 updateDownloadProgressAnimator.setInterpolator(new DecelerateInterpolator());
                 updateDownloadProgressAnimator.start();
+                if (updateDownloadCircle != null) updateDownloadCircle.animateProgressTo(percent);
                 lastUpdateProgressAnimationAt = now;
             }
             updateDownloadPercentText.setText(percent + "%");
@@ -880,6 +867,7 @@ public final class MainActivity extends Activity {
                     + " MB de " + String.format(java.util.Locale.US, "%.1f", total / 1048576.0) + " MB");
         } else {
             updateDownloadProgress.setIndeterminate(true);
+            if (updateDownloadCircle != null) updateDownloadCircle.setIndeterminate(true);
             updateDownloadPercentText.setText("…");
             updateDownloadProgressText.setText("Descargados "
                     + String.format(java.util.Locale.US, "%.1f", downloaded / 1048576.0)
@@ -889,16 +877,140 @@ public final class MainActivity extends Activity {
 
     private void dismissUpdateDownloadDialog() {
         if (updateDownloadDialog != null && updateDownloadDialog.isShowing()) updateDownloadDialog.dismiss();
-        if (updateDownloadIconAnimator != null) updateDownloadIconAnimator.cancel();
+        if (updateDownloadCircle != null) updateDownloadCircle.release();
         if (updateDownloadProgressAnimator != null) updateDownloadProgressAnimator.cancel();
         updateDownloadDialog = null;
         updateDownloadProgress = null;
         updateDownloadProgressText = null;
         updateDownloadPercentText = null;
-        updateDownloadIcon = null;
-        updateDownloadIconAnimator = null;
+        updateDownloadCircle = null;
         updateDownloadProgressAnimator = null;
         lastUpdateProgressAnimationAt = 0L;
+    }
+
+    private final class UpdateDownloadCircle extends View {
+        private final android.graphics.Paint paint = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+        private final android.graphics.Path circlePath = new android.graphics.Path();
+        private final android.graphics.RectF circleBounds = new android.graphics.RectF();
+        private float progress;
+        private float rotation;
+        private boolean indeterminate;
+        private boolean released;
+        private ObjectAnimator progressAnimator;
+        private ObjectAnimator rotationAnimator;
+
+        UpdateDownloadCircle() {
+            super(MainActivity.this);
+            setContentDescription("Preparando la descarga de la actualización");
+        }
+
+        void setIndeterminate(boolean value) {
+            if (released || indeterminate == value) return;
+            indeterminate = value;
+            if (value) {
+                if (progressAnimator != null) progressAnimator.cancel();
+                progressAnimator = null;
+                progress = 0f;
+                if (rotationAnimator == null) {
+                    rotationAnimator = ObjectAnimator.ofFloat(this, "rotationProgress", 0f, 360f);
+                    rotationAnimator.setDuration(1250L);
+                    rotationAnimator.setRepeatCount(ObjectAnimator.INFINITE);
+                    rotationAnimator.setInterpolator(new android.view.animation.LinearInterpolator());
+                    rotationAnimator.start();
+                }
+                setContentDescription("Preparando la descarga de la actualización");
+            } else {
+                if (rotationAnimator != null) rotationAnimator.cancel();
+                rotationAnimator = null;
+            }
+            invalidate();
+        }
+
+        void animateProgressTo(int percent) {
+            if (released) return;
+            setIndeterminate(false);
+            float target = Math.max(0, Math.min(100, percent));
+            if (progressAnimator != null) progressAnimator.cancel();
+            progressAnimator = ObjectAnimator.ofFloat(this, "progress", progress, target);
+            progressAnimator.setDuration(220L);
+            progressAnimator.setInterpolator(new DecelerateInterpolator());
+            progressAnimator.start();
+            setContentDescription("Descarga de actualización: " + Math.round(target) + "%");
+        }
+
+        public void setProgress(float value) {
+            progress = Math.max(0f, Math.min(100f, value));
+            invalidate();
+        }
+
+        public float getProgress() {
+            return progress;
+        }
+
+        public void setRotationProgress(float value) {
+            rotation = value;
+            invalidate();
+        }
+
+        public float getRotationProgress() {
+            return rotation;
+        }
+
+        @Override protected void onDraw(android.graphics.Canvas canvas) {
+            super.onDraw(canvas);
+            float stroke = dp(3);
+            float radius = Math.min(getWidth(), getHeight()) / 2f - stroke;
+            if (radius <= 0f) return;
+            float cx = getWidth() / 2f;
+            float cy = getHeight() / 2f;
+            circleBounds.set(cx - radius, cy - radius, cx + radius, cy + radius);
+
+            paint.setStyle(android.graphics.Paint.Style.FILL);
+            paint.setShader(null);
+            paint.setColor(Color.argb(34, Color.red(accentColor()), Color.green(accentColor()), Color.blue(accentColor())));
+            canvas.drawCircle(cx, cy, radius, paint);
+
+            if (!indeterminate && progress > 0f) {
+                circlePath.reset();
+                circlePath.addCircle(cx, cy, radius, android.graphics.Path.Direction.CW);
+                int color = accentColor();
+                paint.setShader(new android.graphics.LinearGradient(cx, cy + radius, cx, cy - radius,
+                        new int[]{Color.argb(145, Color.red(color), Color.green(color), Color.blue(color)),
+                                Color.argb(72, 48, 182, 210)}, null, android.graphics.Shader.TileMode.CLAMP));
+                int save = canvas.save();
+                canvas.clipPath(circlePath);
+                float fillTop = cy + radius - (2f * radius * progress / 100f);
+                canvas.drawRect(cx - radius, fillTop, cx + radius, cy + radius, paint);
+                canvas.restoreToCount(save);
+                paint.setShader(null);
+            }
+
+            paint.setStyle(android.graphics.Paint.Style.STROKE);
+            paint.setStrokeWidth(stroke);
+            paint.setStrokeCap(android.graphics.Paint.Cap.ROUND);
+            paint.setColor(Color.argb(72, 255, 255, 255));
+            canvas.drawArc(circleBounds, -90f, 360f, false, paint);
+            paint.setColor(accentColor());
+            if (indeterminate) {
+                canvas.drawArc(circleBounds, rotation - 90f, 92f, false, paint);
+            } else if (progress > 0f) {
+                canvas.drawArc(circleBounds, -90f, 360f * progress / 100f, false, paint);
+            }
+            paint.setStyle(android.graphics.Paint.Style.FILL);
+        }
+
+        void release() {
+            released = true;
+            if (progressAnimator != null) progressAnimator.cancel();
+            if (rotationAnimator != null) rotationAnimator.cancel();
+            progressAnimator = null;
+            rotationAnimator = null;
+        }
+
+        @Override protected void onDetachedFromWindow() {
+            release();
+            super.onDetachedFromWindow();
+        }
     }
 
     private String sha256File(File file) {

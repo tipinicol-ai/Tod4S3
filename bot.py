@@ -5365,15 +5365,12 @@ async def latest_android_release(application) -> dict[str, object]:
         return release
 
 
-def app_release_caption(version_name: str, support_intent: str | None = None) -> str:
-    caption = card("📦 ᴛᴏᴅ4s3 ꜱʏɴᴄ · ᴀᴘᴋ ᴏꜰɪᴄɪᴀʟ", [
-        f"Versión publicada más reciente: {version_name}.",
-        "El APK va adjunto. Para actualizar, instálalo encima de la versión existente; no la desinstales.",
-        "Para vincular la app con este bot, abre el chat privado y envía /app.",
-    ])
-    if support_intent and support_intent != "latest_apk":
-        caption += "\n\n" + app_support_answer(support_intent)
-    return caption
+def app_release_caption(version_name: str) -> str:
+    return (
+        "📲 NUEVA ACTUALIZACIÓN DISPONIBLE\n"
+        f"Tod4S3 Sync · v{version_name}\n"
+        "Pulsa el APK adjunto para descargarlo. Actualiza encima de tu versión actual; no desinstales la app."
+    )
 
 
 async def send_latest_app_release(update: Update, context: ContextTypes.DEFAULT_TYPE, support_intent: str | None = None):
@@ -5386,16 +5383,22 @@ async def send_latest_app_release(update: Update, context: ContextTypes.DEFAULT_
     if not is_group:
         return None
 
-    release = await latest_android_release(context.application)
-    bot_username = context.application.bot_data.get("bot_username")
-    markup = app_support_keyboard(bot_username, str(release["apk_url"]))
-    caption = app_release_caption(str(release["version_name"]), support_intent)
+    try:
+        release = await latest_android_release(context.application)
+    except Exception as exc:
+        log.warning("No se pudo consultar la última versión para el grupo de soporte (%s)", type(exc).__name__)
+        await message.reply_text(
+            "⚠️ La actualización no está disponible en este momento.\nVuelve a intentarlo más tarde.",
+            disable_web_page_preview=True,
+        )
+        return None
+
+    caption = app_release_caption(str(release["version_name"]))
     send_kwargs = {
         "document": BytesIO(release["data"]),
         "filename": release["filename"],
         "caption": caption,
         "parse_mode": ParseMode.HTML,
-        "reply_markup": markup,
     }
     send_kwargs.update({
         "chat_id": chat.id,
@@ -5410,11 +5413,7 @@ async def send_latest_app_release(update: Update, context: ContextTypes.DEFAULT_
 
     if group_delivery is None:
         await message.reply_text(
-            card("📥 ᴀᴘᴋ ᴅɪꜱᴘᴏɴɪʙʟᴇ", [
-                f"Versión: {release['version_name']}",
-                "Telegram no permitió adjuntar el archivo en el grupo; usa el botón seguro para descargarlo.",
-            ]),
-            reply_markup=markup,
+            "⚠️ No se pudo adjuntar la actualización en este momento.\nVuelve a intentarlo más tarde.",
             disable_web_page_preview=True,
         )
     return group_delivery
