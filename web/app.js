@@ -1,10 +1,14 @@
-const TELEGRAM_HANDLE = 'Niku_Blade';
-const SECONDARY_TELEGRAM_HANDLE = 'fefefelix';
 const modal = document.querySelector('#requestModal');
 const form = document.querySelector('#requestForm');
 const selectedPlan = document.querySelector('#selectedPlan');
 const closeButton = document.querySelector('.modal-close');
-const contactFelix = document.querySelector('#contactFelix');
+const requestFields = document.querySelector('#requestFields');
+const modalTitle = document.querySelector('#modalTitle');
+const modalLede = document.querySelector('#modalLede');
+const submitLabel = document.querySelector('.request-submit .request-label');
+const adminRadios = [...document.querySelectorAll('input[name="admin"]')];
+let genericContactMode = false;
+let modalOpener = null;
 
 function visitorId() {
   try {
@@ -45,25 +49,60 @@ async function refreshSiteStats() {
 refreshSiteStats();
 window.setInterval(refreshSiteStats, 10000);
 
-function openRequest(plan) {
-  if (!modal || !selectedPlan) return;
-  selectedPlan.value = plan;
+function setContactMode(isGeneric) {
+  genericContactMode = isGeneric;
+  if (requestFields) {
+    requestFields.hidden = isGeneric;
+    requestFields.querySelectorAll('input, select').forEach((control) => {
+      control.disabled = isGeneric;
+    });
+  }
+  if (modalTitle) modalTitle.textContent = isGeneric ? 'Contacta con el equipo.' : 'Adquirir un plan.';
+  if (modalLede) {
+    modalLede.textContent = isGeneric
+      ? 'Elige un administrador para abrir Telegram y consultar sobre los planes Premium.'
+      : 'Completa tus datos, elige un administrador y continúa en Telegram. Puedes pagar por Transfermóvil o saldo móvil; después, envía la captura del comprobante para activar tu plan.';
+  }
+  if (submitLabel) submitLabel.textContent = isGeneric ? 'Abrir Telegram' : 'Abrir chat directo';
+  const pickerNote = document.querySelector('.admin-picker-note');
+  if (pickerNote) {
+    pickerNote.textContent = isGeneric
+      ? 'Abriremos Telegram con un mensaje general sobre los planes.'
+      : 'Abriremos Telegram con tu solicitud preparada.';
+  }
+}
+
+function openRequest(plan, isGeneric = false, opener = document.activeElement) {
+  if (!modal || !form) return;
+  modalOpener = opener;
+  if (!isGeneric && selectedPlan) selectedPlan.value = plan || 'plan solicitado';
+  setContactMode(isGeneric);
+  adminRadios.forEach((radio) => { radio.checked = false; });
   modal.hidden = false;
   document.body.classList.add('modal-open');
-  window.setTimeout(() => modal.querySelector('input[name="name"]')?.focus(), 80);
+  window.setTimeout(() => {
+    const initialFocus = isGeneric ? adminRadios[0] : modal.querySelector('input[name="name"]');
+    initialFocus?.focus();
+  }, 80);
 }
 
 function closeRequest() {
   if (!modal) return;
   modal.hidden = true;
   document.body.classList.remove('modal-open');
+  modalOpener?.focus?.();
 }
 
 document.querySelectorAll('.plan-button').forEach((button) => {
   button.addEventListener('click', (event) => {
     event.preventDefault();
-    openRequest(button.dataset.plan || 'plan solicitado');
+    openRequest(button.dataset.plan || 'plan solicitado', false, button);
   });
+});
+
+document.querySelector('[data-open-admin-picker]')?.addEventListener('click', (event) => {
+  event.preventDefault();
+  openRequest('', true, event.currentTarget);
 });
 
 closeButton?.addEventListener('click', closeRequest);
@@ -71,15 +110,35 @@ modal?.addEventListener('click', (event) => {
   if (event.target === modal) closeRequest();
 });
 document.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape') closeRequest();
+  if (modal?.hidden) return;
+  if (event.key === 'Escape') {
+    closeRequest();
+    return;
+  }
+  if (event.key !== 'Tab') return;
+  const focusable = [...modal.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])')]
+    .filter((element) => !element.closest('[hidden]') && element.getClientRects().length);
+  if (!focusable.length) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (event.shiftKey && (document.activeElement === first || !modal.contains(document.activeElement))) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && (document.activeElement === last || !modal.contains(document.activeElement))) {
+    event.preventDefault();
+    first.focus();
+  }
 });
 
 function openTelegramForHandle(handle, message) {
-  window.open(`https://t.me/${handle}?text=${encodeURIComponent(message)}`, '_blank', 'noopener');
+  window.open(`https://t.me/${encodeURIComponent(handle)}?text=${encodeURIComponent(message)}`, '_blank', 'noopener,noreferrer');
   closeRequest();
 }
 
 function requestMessage() {
+  if (genericContactMode) {
+    return 'Hola, quisiera recibir información sobre los planes Premium de ToDus S3.';
+  }
   const data = new FormData(form);
   const plan = String(data.get('plan') || 'plan solicitado').trim();
   const name = String(data.get('name') || '').trim();
@@ -104,12 +163,8 @@ function requestMessage() {
 form?.addEventListener('submit', (event) => {
   event.preventDefault();
   const message = requestMessage();
-  if (message) openTelegramForHandle(TELEGRAM_HANDLE, message);
-});
-
-contactFelix?.addEventListener('click', () => {
-  const message = requestMessage();
-  if (message) openTelegramForHandle(SECONDARY_TELEGRAM_HANDLE, message);
+  const handle = new FormData(form).get('admin');
+  if (message && handle) openTelegramForHandle(String(handle), message);
 });
 
 const revealItems = document.querySelectorAll('.plan-card, .visual-card, .step, .limits-panel, .final-cta');

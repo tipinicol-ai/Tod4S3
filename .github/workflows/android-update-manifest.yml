@@ -29,19 +29,9 @@ jobs:
           set -euo pipefail
           selected=""
           selected_code=0
-          mapfile -t candidates < <(git diff-tree --no-commit-id --name-only -r "$GITHUB_SHA" | grep -E '^Tod4S3-Sync.*\.apk$' || true)
+          mapfile -t candidates < <(git diff-tree --no-commit-id --name-only -r "$GITHUB_SHA" | grep -E '^Tod4S3-Sync-v[^/]*\.apk$' || true)
           if [[ ${#candidates[@]} -eq 0 ]]; then
-            mapfile -t candidates < <(find . -maxdepth 1 -type f -name 'Tod4S3-Sync*.apk' ! -name 'Tod4S3-Sync-latest.apk' -printf '%f\n' | sort)
-            if [[ ${#candidates[@]} -eq 0 && -f Tod4S3-Sync-latest.apk ]]; then
-              candidates=(Tod4S3-Sync-latest.apk)
-            fi
-          fi
-          if [[ ${#candidates[@]} -gt 0 ]]; then
-            versioned=()
-            for candidate in "${candidates[@]}"; do
-              [[ "$candidate" == "Tod4S3-Sync-latest.apk" ]] || versioned+=("$candidate")
-            done
-            if [[ ${#versioned[@]} -gt 0 ]]; then candidates=("${versioned[@]}"); fi
+            mapfile -t candidates < <(find . -maxdepth 1 -type f -name 'Tod4S3-Sync-v*.apk' -printf '%f\n' | sort)
           fi
           for candidate in "${candidates[@]}"; do
             [[ -f "$candidate" ]] || continue
@@ -56,10 +46,12 @@ jobs:
             echo "No compatible APK found in the repository." >&2
             exit 1
           fi
-          if [[ "$selected" != "Tod4S3-Sync-latest.apk" ]]; then
-            cp "$selected" Tod4S3-Sync-latest.apk
-          fi
-          info="$("$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging Tod4S3-Sync-latest.apk | head -n 1)"
+          for candidate in Tod4S3-Sync-v*.apk; do
+            [[ -f "$candidate" ]] || continue
+            [[ "$candidate" == "$selected" ]] || rm -f -- "$candidate"
+          done
+          if [[ -f Tod4S3-Sync-latest.apk ]]; then rm -f Tod4S3-Sync-latest.apk; fi
+          info="$("$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$selected" | head -n 1)"
           read -r version_code version_name < <(python3 - "$info" <<'PY'
           import re,sys
           line=sys.argv[1]
@@ -70,7 +62,7 @@ jobs:
           print(code.group(1), name.group(1))
           PY
           )
-          digest="$(sha256sum Tod4S3-Sync-latest.apk | awk '{print $1}')"
+          digest="$(sha256sum "$selected" | awk '{print $1}')"
           python3 - "$GITHUB_REPOSITORY" "$version_code" "$version_name" "$digest" "${ANDROID_UPDATE_MANIFEST_URL:-}" "$selected" <<'PY'
           import json,sys
           repository,code,name,digest,manifest_url,apk_file=sys.argv[1:]
@@ -87,9 +79,9 @@ jobs:
           PY
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Tod4S3-Sync-latest.apk web/android-update.json
+          git add -u -- 'Tod4S3-Sync*.apk' web/android-update.json
           if git diff --cached --quiet; then
-            echo "APK alias and manifest are already current."
+            echo "APK and manifest are already current."
           else
             git commit -m "Update Android APK manifest to v${version_name}"
             git push

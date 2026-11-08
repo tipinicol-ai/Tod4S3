@@ -167,7 +167,6 @@ public final class MainActivity extends Activity {
                 refreshAppTasks();
                 refreshAccountProfile();
             }
-            if (hasWindowFocus() && prefs != null) checkForAppUpdate(false);
             handler.postDelayed(this, 10_000L);
         }
     };
@@ -210,6 +209,11 @@ public final class MainActivity extends Activity {
     private ObjectAnimator launchSplashBreathX;
     private ObjectAnimator launchSplashBreathY;
     private ObjectAnimator launchSplashLogoFloat;
+    private int pendingSplashUpdateVersionCode;
+    private String pendingSplashUpdateVersionName = "";
+    private String pendingSplashUpdateApkUrl = "";
+    private String pendingSplashUpdateSha256 = "";
+    private volatile int updateDeclineInFlightVersion;
     private View dashboardFab;
     private View dashboardBalanceFab;
     private boolean ussdBalanceRequestInFlight;
@@ -518,20 +522,69 @@ public final class MainActivity extends Activity {
 
     private void offerAppUpdate(int versionCode, String versionName, String apkUrl, String expectedSha256) {
         if (isFinishing() || versionCode <= currentVersionCode() || localUpdateBlocked) return;
+        if (updateDeclineInFlightVersion == versionCode) return;
         long declinedVersion = prefs.getLong(PREF_UPDATE_DECLINE_VERSION, -1L);
         long deferUntil = prefs.getLong(PREF_UPDATE_DECLINE_UNTIL, 0L);
         if (declinedVersion == versionCode && deferUntil > System.currentTimeMillis()) return;
-        new AlertDialog.Builder(this)
-                .setTitle("Actualización disponible · v" + versionName)
-                .setMessage("¿Quieres instalar esta actualización ahora? Si rechazas explícitamente esta misma versión 3 veces, se bloqueará el acceso solo en este teléfono. Cerrar este aviso o pulsar atrás no cuenta como rechazo.")
-                .setPositiveButton("Actualizar ahora", (dialog, which) ->
-                        beginAppUpdateDownload(versionCode, versionName, apkUrl, expectedSha256))
-                .setNegativeButton("Rechazar actualización", (dialog, which) ->
-                        declineAppUpdate(versionCode, versionName, apkUrl, expectedSha256))
-                .show();
+        if (launchSplashOverlay != null) {
+            pendingSplashUpdateVersionCode = versionCode;
+            pendingSplashUpdateVersionName = versionName;
+            pendingSplashUpdateApkUrl = apkUrl;
+            pendingSplashUpdateSha256 = expectedSha256;
+            return;
+        }
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(dp(22), dp(20), dp(22), dp(18));
+        content.setBackground(roundRect(surfaceColor(), 24, borderColor()));
+
+        TextView heading = text("Actualización disponible", 20, true);
+        heading.setTextColor(accentColor());
+        content.addView(heading);
+        TextView version = text("v" + versionName, 15, true);
+        version.setTextColor(secondaryTextColor());
+        content.addView(version, margin(0, 3, 0, 13));
+        content.addView(bodyText("¿Quieres instalar esta actualización ahora?"));
+        TextView warning = bodyText("Si rechazas esta misma versión 3 veces, se bloqueará el acceso a la APK en este teléfono.");
+        warning.setTextSize(13);
+        warning.setTextColor(secondaryTextColor());
+        content.addView(warning, margin(0, 10, 0, 17));
+
+        LinearLayout actions = new LinearLayout(this);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+        actions.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+        Button reject = secondaryButton("Rechazar");
+        Button update = primaryButton("Actualizar");
+        LinearLayout.LayoutParams actionParams = new LinearLayout.LayoutParams(0, dp(48), 1f);
+        actions.addView(reject, actionParams);
+        LinearLayout.LayoutParams updateParams = new LinearLayout.LayoutParams(0, dp(48), 1f);
+        updateParams.setMargins(dp(9), 0, 0, 0);
+        actions.addView(update, updateParams);
+        content.addView(actions);
+
+        Dialog dialog = new Dialog(this);
+        dialog.setContentView(content);
+        dialog.setCancelable(true);
+        dialog.setCanceledOnTouchOutside(true);
+        reject.setOnClickListener(v -> {
+            dialog.dismiss();
+            declineAppUpdate(versionCode, versionName, apkUrl, expectedSha256);
+        });
+        update.setOnClickListener(v -> {
+            dialog.dismiss();
+            beginAppUpdateDownload(versionCode, versionName, apkUrl, expectedSha256);
+        });
+        dialog.show();
+        Window window = dialog.getWindow();
+        if (window != null) {
+            window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            int availableWidth = getResources().getDisplayMetrics().widthPixels - dp(40);
+            window.setLayout(Math.min(dp(440), availableWidth), WindowManager.LayoutParams.WRAP_CONTENT);
+        }
     }
     private void declineAppUpdate(int versionCode, String versionName, String apkUrl, String expectedSha256) {
         String requestKey = PREF_UPDATE_DECLINE_REQUEST_ID + "_" + versionCode;
+        updateDeclineInFlightVersion = versionCode;
         String requestId = prefs.getString(requestKey, "");
         if (requestId.isEmpty()) requestId = UUID.randomUUID().toString();
         prefs.edit().putString(requestKey, requestId).apply();
@@ -549,6 +602,7 @@ public final class MainActivity extends Activity {
                 String reason = result.optString("reason", "").trim();
                 prefs.edit().putLong(PREF_UPDATE_DECLINE_VERSION, versionCode)
                         .putInt(countKey, count).remove(requestKey).apply();
+                updateDeclineInFlightVersion = 0;
                 if (count >= 3) {
                     if (reason.isEmpty()) reason = "Se rechazó explícitamente tres veces la actualización v" + versionName + ".";
                     persistLocalUpdateBlock(versionCode, reason);
@@ -562,12 +616,14 @@ public final class MainActivity extends Activity {
                             Toast.LENGTH_LONG).show());
                 }
             } catch (Exception e) {
+                updateDeclineInFlightVersion = 0;
                 android.util.Log.w(LOG_TAG, "No se pudo registrar rechazo de actualización; se conserva request_id para reintentar.", e);
-                runOnUiThread(() -> {
-                    Toast.makeText(this, "No se registró el rechazo por un error de red. Puedes reintentar; no cuenta como rechazo.",
-                            Toast.LENGTH_LONG).show();
-                    offerAppUpdate(versionCode, versionName, apkUrl, expectedSha256);
-                });
+                long deferUntil = System.currentTimeMillis() + 24L * 60L * 60L * 1000L;
+                prefs.edit().putLong(PREF_UPDATE_DECLINE_VERSION, versionCode)
+                        .putLong(PREF_UPDATE_DECLINE_UNTIL, deferUntil).apply();
+                runOnUiThread(() -> Toast.makeText(this,
+                        "No se pudo confirmar el rechazo por un error de red. El aviso se pospondrá y no volverá a aparecer ahora.",
+                        Toast.LENGTH_LONG).show());
             }
         }, "tod4s3-update-decline").start();
     }
@@ -1151,7 +1207,7 @@ public final class MainActivity extends Activity {
                 share.setPackage(null);
                 startActivity(Intent.createChooser(share, "Compartir comprobante"));
             }
-            Toast.makeText(this, "En Telegram selecciona el chat @Niku_Blade y revisa el texto y la captura antes de enviar.", Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "En Telegram selecciona el chat del administrador al que deseas enviar la solicitud y revisa el texto y la captura antes de enviar.", Toast.LENGTH_LONG).show();
         } catch (Exception e) {
             Toast.makeText(this, "No se pudo compartir el comprobante.", Toast.LENGTH_LONG).show();
         }
@@ -1294,9 +1350,10 @@ public final class MainActivity extends Activity {
                 if (overlay.getParent() == appRoot) appRoot.removeView(overlay);
                 if (launchSplashOverlay == overlay) launchSplashOverlay = null;
                 dismissLaunchSplashRunnable = null;
+                showPendingSplashUpdate();
             }).start();
         };
-        handler.postDelayed(dismissLaunchSplashRunnable, 3_100L);
+        handler.postDelayed(dismissLaunchSplashRunnable, 5_180L);
     }
 
     private void stopLaunchSplashAnimations() {
@@ -1306,6 +1363,19 @@ public final class MainActivity extends Activity {
         launchSplashBreathX = null;
         launchSplashBreathY = null;
         launchSplashLogoFloat = null;
+    }
+
+    private void showPendingSplashUpdate() {
+        if (launchSplashOverlay != null || pendingSplashUpdateVersionCode <= 0) return;
+        int versionCode = pendingSplashUpdateVersionCode;
+        String versionName = pendingSplashUpdateVersionName;
+        String apkUrl = pendingSplashUpdateApkUrl;
+        String sha256 = pendingSplashUpdateSha256;
+        pendingSplashUpdateVersionCode = 0;
+        pendingSplashUpdateVersionName = "";
+        pendingSplashUpdateApkUrl = "";
+        pendingSplashUpdateSha256 = "";
+        offerAppUpdate(versionCode, versionName, apkUrl, sha256);
     }
 
     private void applyWallpaperBackground() {
@@ -1583,26 +1653,7 @@ public final class MainActivity extends Activity {
         alreadyPremium.setOnClickListener(v -> promptPremiumActivationToken());
         actions.addView(alreadyPremium, margin(0, 7, 0, 0));
         offer.addView(actions);
-        LinearLayout sellers = new LinearLayout(this);
-        sellers.setOrientation(LinearLayout.HORIZONTAL);
-        sellers.setGravity(Gravity.CENTER_VERTICAL);
-        TextView sellerLabel = text("VENDEDORES", 9, true);
-        sellerLabel.setTextColor(secondaryTextColor());
-        sellers.addView(sellerLabel, margin(0, 0, 5, 0));
-        sellers.addView(premiumSellerLink("@Niku_Blade"), margin(0, 0, 4, 0));
-        sellers.addView(premiumSellerLink("@fefefelix"));
-        offer.addView(sellers, margin(0, 9, 0, 0));
         return offer;
-    }
-
-    private TextView premiumSellerLink(String username) {
-        TextView link = text(username, 11, true);
-        link.setTextColor(accentColor());
-        link.setPadding(dp(6), dp(6), dp(6), dp(6));
-        link.setBackground(roundRect(raisedSurfaceColor(), 10, borderColor()));
-        link.setContentDescription("Contactar al vendedor " + username);
-        link.setOnClickListener(v -> openExternalUrl("https://t.me/" + username.substring(1)));
-        return link;
     }
 
     private void animatePlanSections(LinearLayout page) {
@@ -1784,7 +1835,7 @@ public final class MainActivity extends Activity {
         paymentError.setVisibility(View.GONE);
         form.addView(paymentError);
         paymentChoice.setOnCheckedChangeListener((group, checkedId) -> paymentError.setVisibility(View.GONE));
-        form.addView(bodyText("Para enviar texto y captura juntos, elige la primera opción y selecciona @Niku_Blade en Telegram. La opción de chat directo abre la conversación con el texto preparado; allí adjuntas la captura manualmente."), margin(0, 10, 0, 10));
+        form.addView(bodyText("Para enviar texto y captura juntos, elige la primera opción y selecciona en Telegram el chat del administrador al que deseas enviar la solicitud. La opción de chat directo abre Telegram con el texto preparado; allí adjuntas la captura manualmente."), margin(0, 10, 0, 10));
         Button shareReceipt = goldButton("Adjuntar captura + texto");
         form.addView(shareReceipt, margin(0, 0, 0, 8));
         Button directChat = secondaryButton("Abrir chat directo");
@@ -1805,9 +1856,50 @@ public final class MainActivity extends Activity {
             String message = premiumRequestMessage(selectedPlan, nameInput, usernameInput, paymentChoice, transfer, paymentError);
             if (message == null) return;
             dialog.dismiss();
-            openTelegramChat(message);
+            showPremiumAdminChooser(message);
         });
         dialog.show();
+    }
+
+    private void showPremiumAdminChooser(String message) {
+        Dialog chooser = new Dialog(this);
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(dp(20), dp(18), dp(20), dp(18));
+        content.setBackground(roundRect(surfaceColor(), 22, borderColor()));
+        TextView heading = text("Elige un administrador", 18, true);
+        heading.setTextColor(accentColor());
+        content.addView(heading);
+        TextView hint = bodyText("Se abrirá Telegram con tu solicitud preparada.");
+        hint.setTextSize(13);
+        content.addView(hint, margin(0, 4, 0, 13));
+
+        Button niku = secondaryButton("Administrador · @Niku_Blade");
+        Button felix = secondaryButton("Administrador · @fefefelix");
+        content.addView(niku, new LinearLayout.LayoutParams(-1, dp(48)));
+        content.addView(felix, margin(0, 8, 0, 0));
+        Button cancel = secondaryButton("Cancelar");
+        content.addView(cancel, margin(0, 8, 0, 0));
+
+        niku.setOnClickListener(v -> {
+            chooser.dismiss();
+            openTelegramChat(message, "Niku_Blade");
+        });
+        felix.setOnClickListener(v -> {
+            chooser.dismiss();
+            openTelegramChat(message, "fefefelix");
+        });
+        cancel.setOnClickListener(v -> chooser.dismiss());
+        chooser.setContentView(content);
+        chooser.setCancelable(true);
+        chooser.setCanceledOnTouchOutside(true);
+        chooser.show();
+        Window window = chooser.getWindow();
+        if (window != null) {
+            window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            int availableWidth = getResources().getDisplayMetrics().widthPixels - dp(40);
+            window.setLayout(Math.min(dp(440), availableWidth), WindowManager.LayoutParams.WRAP_CONTENT);
+        }
     }
 
     private void configurePaymentOption(RadioButton option, int iconResource, String title, String subtitle) {
@@ -1857,11 +1949,11 @@ public final class MainActivity extends Activity {
                 + "Realizaré el pago por el método indicado y enviaré la captura del comprobante por este chat para revisión y activación manual.";
     }
 
-    private void openTelegramChat(String message) {
+    private void openTelegramChat(String message, String username) {
         Uri directUri = Uri.parse("tg://resolve")
-                .buildUpon().appendQueryParameter("domain", "Niku_Blade")
+                .buildUpon().appendQueryParameter("domain", username)
                 .appendQueryParameter("text", message).build();
-        Uri webUri = Uri.parse("https://t.me/Niku_Blade")
+        Uri webUri = Uri.parse("https://t.me/" + username)
                 .buildUpon().appendQueryParameter("text", message).build();
         try {
             Intent telegram = new Intent(Intent.ACTION_VIEW, directUri);
@@ -1875,10 +1967,14 @@ public final class MainActivity extends Activity {
             } catch (Exception telegramUnavailable) {
                 try { startActivity(new Intent(Intent.ACTION_VIEW, webUri)); }
                 catch (Exception e) {
-                    Toast.makeText(this, "No se pudo abrir el chat @Niku_Blade en Telegram.", Toast.LENGTH_LONG).show();
+                    Toast.makeText(this, "No se pudo abrir el chat @" + username + " en Telegram.", Toast.LENGTH_LONG).show();
                 }
             }
         }
+    }
+
+    private void openTelegramChat(String message) {
+        openTelegramChat(message, "Niku_Blade");
     }
 
     private void chooseFreePlan() {
