@@ -125,7 +125,6 @@ public final class MainActivity extends Activity {
     private static final String PREF_PENDING_UPDATE_VERSION = "pending_android_update_version_v1";
     private static final String PREF_UPDATE_DECLINE_VERSION = "android_update_decline_version_v1";
     private static final String PREF_UPDATE_DECLINE_COUNT = "android_update_decline_count_v1";
-    private static final String PREF_UPDATE_DECLINE_UNTIL = "android_update_decline_until_v1";
     private static final String PREF_UPDATE_DECLINE_REASON = "android_update_decline_reason_v1";
     private static final String PREF_UPDATE_DECLINE_REQUEST_ID = "android_update_decline_request_id_v1";
     private static final String PREF_LOCAL_UPDATE_BLOCKED = "android_update_local_blocked_v1";
@@ -332,7 +331,6 @@ public final class MainActivity extends Activity {
         if (localUpdateBlocked) handler.post(this::showBannedScreen);
         ensureDownloadNotificationChannel();
         handler.postDelayed(this::requestNotificationPermissionIfNeeded, 1_200L);
-        handler.postDelayed(() -> checkForAppUpdate(false), 2_000L);
 
         if (!prefs.getString(PREF_SELECTED_PLAN, "").isEmpty()
                 && token != null && !token.isEmpty() && !todusPhone.isEmpty() && !todusPassword.isEmpty()) {
@@ -412,7 +410,7 @@ public final class MainActivity extends Activity {
         super.onResume();
         if (prefs != null && token != null && !token.isEmpty() && !localUpdateBlocked) refreshAccountProfile();
         if (prefs != null && localUpdateBlocked) refreshDeviceStatus();
-        if (prefs != null) checkForAppUpdate(false);
+        if (prefs != null) checkForAppUpdate(true);
         if (prefs != null && awaitingSpeedOverlayPermission) {
             awaitingSpeedOverlayPermission = false;
             if (Settings.canDrawOverlays(this)) {
@@ -523,9 +521,6 @@ public final class MainActivity extends Activity {
     private void offerAppUpdate(int versionCode, String versionName, String apkUrl, String expectedSha256) {
         if (isFinishing() || versionCode <= currentVersionCode() || localUpdateBlocked) return;
         if (updateDeclineInFlightVersion == versionCode) return;
-        long declinedVersion = prefs.getLong(PREF_UPDATE_DECLINE_VERSION, -1L);
-        long deferUntil = prefs.getLong(PREF_UPDATE_DECLINE_UNTIL, 0L);
-        if (declinedVersion == versionCode && deferUntil > System.currentTimeMillis()) return;
         if (launchSplashOverlay != null) {
             pendingSplashUpdateVersionCode = versionCode;
             pendingSplashUpdateVersionName = versionName;
@@ -608,21 +603,16 @@ public final class MainActivity extends Activity {
                     persistLocalUpdateBlock(versionCode, reason);
                     runOnUiThread(this::showBannedScreen);
                 } else {
-                    long until = System.currentTimeMillis() + 24L * 60L * 60L * 1000L;
-                    prefs.edit().putLong(PREF_UPDATE_DECLINE_UNTIL, until).apply();
                     int acceptedCount = count;
                     runOnUiThread(() -> Toast.makeText(this,
-                            "Rechazo " + acceptedCount + "/3 de esta versión. Se volverá a ofrecer en 24 horas.",
+                            "Rechazo " + acceptedCount + "/3 registrado. La actualización volverá a mostrarse la próxima vez que abras la APK.",
                             Toast.LENGTH_LONG).show());
                 }
             } catch (Exception e) {
                 updateDeclineInFlightVersion = 0;
                 android.util.Log.w(LOG_TAG, "No se pudo registrar rechazo de actualización; se conserva request_id para reintentar.", e);
-                long deferUntil = System.currentTimeMillis() + 24L * 60L * 60L * 1000L;
-                prefs.edit().putLong(PREF_UPDATE_DECLINE_VERSION, versionCode)
-                        .putLong(PREF_UPDATE_DECLINE_UNTIL, deferUntil).apply();
                 runOnUiThread(() -> Toast.makeText(this,
-                        "No se pudo confirmar el rechazo por un error de red. El aviso se pospondrá y no volverá a aparecer ahora.",
+                        "No se pudo confirmar el rechazo por un error de red. El aviso volverá a mostrarse al abrir la APK con conexión.",
                         Toast.LENGTH_LONG).show());
             }
         }, "tod4s3-update-decline").start();
