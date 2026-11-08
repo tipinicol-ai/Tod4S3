@@ -186,6 +186,9 @@ public final class MainActivity extends Activity {
     private final java.util.HashSet<String> animatedDeliveryIds = new java.util.HashSet<>();
     private View launchSplashOverlay;
     private Runnable dismissLaunchSplashRunnable;
+    private ObjectAnimator launchSplashBreathX;
+    private ObjectAnimator launchSplashBreathY;
+    private ObjectAnimator launchSplashLogoFloat;
     private View dashboardFab;
     private View dashboardBalanceFab;
     private boolean ussdBalanceRequestInFlight;
@@ -966,36 +969,36 @@ public final class MainActivity extends Activity {
         content.setGravity(Gravity.CENTER_HORIZONTAL);
         FrameLayout emblem = new FrameLayout(this);
         GradientDrawable halo = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
-                new int[]{Color.rgb(29, 104, 133), Color.rgb(20, 39, 73)});
+                new int[]{Color.rgb(33, 125, 152), Color.rgb(25, 58, 105), Color.rgb(17, 35, 71)});
         halo.setShape(GradientDrawable.OVAL);
-        halo.setStroke(dp(1), Color.rgb(77, 205, 202));
+        halo.setStroke(dp(1), Color.rgb(109, 233, 225));
         emblem.setBackground(halo);
-        emblem.setElevation(dp(12));
+        emblem.setElevation(dp(16));
         ProgressBar orbit = new ProgressBar(this, null, android.R.attr.progressBarStyle);
         orbit.setIndeterminate(true);
         orbit.setIndeterminateTintList(ColorStateList.valueOf(Color.rgb(109, 233, 225)));
-        emblem.addView(orbit, new FrameLayout.LayoutParams(dp(112), dp(112), Gravity.CENTER));
+        emblem.addView(orbit, new FrameLayout.LayoutParams(dp(132), dp(132), Gravity.CENTER));
         ImageView logo = new ImageView(this);
         logo.setImageResource(R.mipmap.ic_launcher);
         logo.setScaleType(ImageView.ScaleType.FIT_CENTER);
         logo.setContentDescription("Logo de Tod4S3 Sync, descarga en curso");
-        FrameLayout.LayoutParams logoLayout = new FrameLayout.LayoutParams(dp(68), dp(68), Gravity.CENTER);
+        FrameLayout.LayoutParams logoLayout = new FrameLayout.LayoutParams(dp(78), dp(78), Gravity.CENTER);
         emblem.addView(logo, logoLayout);
-        content.addView(emblem, new LinearLayout.LayoutParams(dp(124), dp(124)));
+        content.addView(emblem, new LinearLayout.LayoutParams(dp(148), dp(148)));
 
-        TextView title = text("Tod4S3 Sync", 24, true);
+        TextView title = text("Tod4S3 Sync", 26, true);
         title.setGravity(Gravity.CENTER);
         title.setTextColor(Color.WHITE);
-        content.addView(title, margin(0, 22, 0, 3));
-        TextView subtitle = text("TUS ARCHIVOS, A TU RITMO", 10, true);
+        content.addView(title, margin(0, 24, 0, 5));
+        TextView subtitle = text("SINCRONIZA · DESCARGA · DISFRUTA", 9, true);
         subtitle.setLetterSpacing(0.15f);
         subtitle.setGravity(Gravity.CENTER);
         subtitle.setTextColor(Color.rgb(132, 221, 220));
-        content.addView(subtitle, margin(0, 0, 0, 18));
+        content.addView(subtitle, margin(0, 0, 0, 22));
         ProgressBar loading = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
         loading.setIndeterminate(true);
         loading.setIndeterminateTintList(ColorStateList.valueOf(Color.rgb(109, 233, 225)));
-        content.addView(loading, new LinearLayout.LayoutParams(dp(150), dp(3)));
+        content.addView(loading, new LinearLayout.LayoutParams(dp(168), dp(4)));
 
         overlay.addView(content, new FrameLayout.LayoutParams(-2, -2, Gravity.CENTER));
         appRoot.addView(overlay, new FrameLayout.LayoutParams(-1, -1));
@@ -1010,15 +1013,43 @@ public final class MainActivity extends Activity {
         content.animate().alpha(1f).translationY(0f).setDuration(360L)
                 .setInterpolator(new DecelerateInterpolator()).start();
 
+        launchSplashBreathX = ObjectAnimator.ofFloat(emblem, View.SCALE_X, 1f, 1.035f);
+        launchSplashBreathY = ObjectAnimator.ofFloat(emblem, View.SCALE_Y, 1f, 1.035f);
+        for (ObjectAnimator pulse : new ObjectAnimator[]{launchSplashBreathX, launchSplashBreathY}) {
+            pulse.setDuration(900L);
+            pulse.setStartDelay(460L);
+            pulse.setRepeatMode(ObjectAnimator.REVERSE);
+            pulse.setRepeatCount(ObjectAnimator.INFINITE);
+            pulse.setInterpolator(new DecelerateInterpolator());
+            pulse.start();
+        }
+        launchSplashLogoFloat = ObjectAnimator.ofFloat(logo, View.TRANSLATION_Y, -dp(2), dp(2));
+        launchSplashLogoFloat.setDuration(1150L);
+        launchSplashLogoFloat.setStartDelay(440L);
+        launchSplashLogoFloat.setRepeatMode(ObjectAnimator.REVERSE);
+        launchSplashLogoFloat.setRepeatCount(ObjectAnimator.INFINITE);
+        launchSplashLogoFloat.setInterpolator(new DecelerateInterpolator());
+        launchSplashLogoFloat.start();
+
         dismissLaunchSplashRunnable = () -> {
             if (launchSplashOverlay != overlay) return;
-            overlay.animate().alpha(0f).setDuration(220L).withEndAction(() -> {
+            overlay.animate().alpha(0f).setDuration(320L).withEndAction(() -> {
+                stopLaunchSplashAnimations();
                 if (overlay.getParent() == appRoot) appRoot.removeView(overlay);
                 if (launchSplashOverlay == overlay) launchSplashOverlay = null;
                 dismissLaunchSplashRunnable = null;
             }).start();
         };
-        handler.postDelayed(dismissLaunchSplashRunnable, 920L);
+        handler.postDelayed(dismissLaunchSplashRunnable, 2_400L);
+    }
+
+    private void stopLaunchSplashAnimations() {
+        if (launchSplashBreathX != null) launchSplashBreathX.cancel();
+        if (launchSplashBreathY != null) launchSplashBreathY.cancel();
+        if (launchSplashLogoFloat != null) launchSplashLogoFloat.cancel();
+        launchSplashBreathX = null;
+        launchSplashBreathY = null;
+        launchSplashLogoFloat = null;
     }
 
     private void applyWallpaperBackground() {
@@ -6644,6 +6675,7 @@ public final class MainActivity extends Activity {
     @Override protected void onDestroy() {
         handler.removeCallbacks(poller);
         if (dismissLaunchSplashRunnable != null) handler.removeCallbacks(dismissLaunchSplashRunnable);
+        stopLaunchSplashAnimations();
         if (launchSplashOverlay != null) {
             launchSplashOverlay.animate().cancel();
             if (launchSplashOverlay.getParent() == appRoot) appRoot.removeView(launchSplashOverlay);

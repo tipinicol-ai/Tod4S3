@@ -52,7 +52,7 @@ El estado Premium y la cuota se vuelven a consultar al abrir/volver a la app y c
 
 ## Estado
 
-La versión 1.5.31 conserva las funciones de la 1.5.30 y añade una pantalla breve de inicio con el icono animado de Tod4S3, entradas escalonadas de tarjetas de planes, pulsos sutiles en la IA y el contador de descargas, y transiciones suaves de progreso para las descargas locales. La cuota Gratis muestra el porcentaje real y su barra animada; Premium permanece claramente ilimitado, sin inventar un porcentaje máximo. Las animaciones respetan la escala global del sistema y se limpian al cerrar la actividad. Se conservan las rutas existentes de descarga, multimedia y vídeo, notificaciones, navegación, Premium, temas y registro ToDus.
+La versión 1.5.32 conserva las funciones anteriores y pule la pantalla de inicio: el icono ampliado queda visible unos 2,7 segundos con un halo, un pulso y una flotación suaves antes de desvanecerse. Las animaciones respetan la escala global del sistema y se limpian al cerrar la actividad. Se conservan las rutas existentes de descarga, multimedia y vídeo, notificaciones, navegación, Premium, temas y registro ToDus.
 
 
 ## Tamaño del APK
