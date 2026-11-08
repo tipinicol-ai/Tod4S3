@@ -1040,7 +1040,7 @@ public final class MainActivity extends Activity {
                 dismissLaunchSplashRunnable = null;
             }).start();
         };
-        handler.postDelayed(dismissLaunchSplashRunnable, 2_400L);
+        handler.postDelayed(dismissLaunchSplashRunnable, 3_100L);
     }
 
     private void stopLaunchSplashAnimations() {
@@ -1274,20 +1274,6 @@ public final class MainActivity extends Activity {
         page.addView(planOffer("Premium 15 días", "250 CUP", "Descargas sin límite · 3 en paralelo · herramientas multimedia · AiTod4S3.", "Premium 15 días · 250 CUP"), margin(0, 0, 0, 8));
         page.addView(planOffer("Premium 20 días", "300 CUP", "Descargas sin límite · cola prioritaria · herramientas multimedia · AiTod4S3.", "Premium 20 días · 300 CUP"), margin(0, 0, 0, 8));
         page.addView(planOffer("Premium 30 días", "500 CUP", "Descargas sin límite · reintentos automáticos · herramientas multimedia · AiTod4S3.", "Premium 30 días · 500 CUP"), margin(0, 0, 0, 8));
-        LinearLayout streamsContact = card();
-        streamsContact.setPadding(dp(13), dp(11), dp(13), dp(11));
-        streamsContact.setOrientation(LinearLayout.HORIZONTAL);
-        streamsContact.setGravity(Gravity.CENTER_VERTICAL);
-        TextView streamsText = bodyText("¿Dudas sobre streams?  @fefefelix");
-        streamsText.setTextSize(12);
-        streamsText.setTextColor(primaryTextColor());
-        streamsContact.addView(streamsText, new LinearLayout.LayoutParams(0, -2, 1f));
-        Button streamsChat = secondaryButton("Escribir");
-        streamsChat.setTextSize(11);
-        streamsChat.setMinHeight(dp(38));
-        streamsChat.setOnClickListener(v -> openExternalUrl("https://t.me/fefefelix"));
-        streamsContact.addView(streamsChat, new LinearLayout.LayoutParams(-2, dp(38)));
-        page.addView(streamsContact, margin(0, 0, 0, 8));
         LinearLayout paymentMethods = new LinearLayout(this);
         paymentMethods.setOrientation(LinearLayout.HORIZONTAL);
         paymentMethods.addView(paymentMethodChip(R.drawable.transfermovil_payment, "Transfermóvil"), new LinearLayout.LayoutParams(0, -2, 1f));
@@ -1341,7 +1327,26 @@ public final class MainActivity extends Activity {
         alreadyPremium.setOnClickListener(v -> promptPremiumActivationToken());
         actions.addView(alreadyPremium, margin(0, 7, 0, 0));
         offer.addView(actions);
+        LinearLayout sellers = new LinearLayout(this);
+        sellers.setOrientation(LinearLayout.HORIZONTAL);
+        sellers.setGravity(Gravity.CENTER_VERTICAL);
+        TextView sellerLabel = text("VENDEDORES", 9, true);
+        sellerLabel.setTextColor(secondaryTextColor());
+        sellers.addView(sellerLabel, margin(0, 0, 5, 0));
+        sellers.addView(premiumSellerLink("@Niku_Blade"), margin(0, 0, 4, 0));
+        sellers.addView(premiumSellerLink("@fefefelix"));
+        offer.addView(sellers, margin(0, 9, 0, 0));
         return offer;
+    }
+
+    private TextView premiumSellerLink(String username) {
+        TextView link = text(username, 11, true);
+        link.setTextColor(accentColor());
+        link.setPadding(dp(6), dp(6), dp(6), dp(6));
+        link.setBackground(roundRect(raisedSurfaceColor(), 10, borderColor()));
+        link.setContentDescription("Contactar al vendedor " + username);
+        link.setOnClickListener(v -> openExternalUrl("https://t.me/" + username.substring(1)));
+        return link;
     }
 
     private void animatePlanSections(LinearLayout page) {

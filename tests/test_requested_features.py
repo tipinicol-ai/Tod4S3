@@ -319,13 +319,30 @@ class RequestedFeatureTests(unittest.TestCase):
         self.assertIn('"Premium 30 días"', plans)
         self.assertIn('goldButton("Comprar premium")', source)
         self.assertIn('secondaryButton("Ya soy premium")', source)
-        self.assertIn('"¿Dudas sobre streams?  @fefefelix"', plans)
-        self.assertIn('"https://t.me/fefefelix"', plans)
+        self.assertNotIn("streamsContact", plans)
+        self.assertIn('premiumSellerLink("@Niku_Blade")', plans)
+        self.assertIn('premiumSellerLink("@fefefelix")', plans)
+        self.assertIn('"https://t.me/" + username.substring(1)', plans)
         self.assertIn('"USO DE DATOS · PLAN ACTIVO"', source)
         self.assertIn('"DATOS USADOS · PREMIUM ILIMITADO"', source)
         self.assertIn('"Consumo de datos ilimitado · este plan no tiene un porcentaje máximo."', plans)
         self.assertIn("dp(20), dp(22), dp(20), dp(26)", page)
         self.assertIn("subtitleText.setTextSize(13)", page)
+
+    def test_web_premium_sellers_live_inside_plans_and_generic_bottom_note_is_removed(self):
+        root = Path(__file__).resolve().parents[1]
+        html = (root / "web/index.html").read_text()
+        css = (root / "web/styles.css").read_text()
+        footer = html.split("<footer", 1)[1].split("</footer>", 1)[0]
+        self.assertEqual(html.count('class="plan-sellers"'), 3)
+        self.assertGreaterEqual(html.count('href="https://t.me/Niku_Blade"'), 3)
+        self.assertGreaterEqual(html.count('href="https://t.me/fefefelix"'), 3)
+        self.assertNotIn('class="request-note"', html)
+        self.assertNotIn("Dudas sobre streams", html)
+        self.assertNotIn("@Niku_Blade", footer)
+        self.assertNotIn("@fefefelix", footer)
+        self.assertIn("vendedores indicados dentro del plan Premium", html)
+        self.assertIn(".plan-sellers a:hover", css)
 
     def test_android_hides_account_menu_during_first_todus_registration(self):
         source = (Path(__file__).resolve().parents[1]
@@ -366,7 +383,7 @@ class RequestedFeatureTests(unittest.TestCase):
         self.assertIn("showAnimatedLaunchSplash();", source.split("private void buildUi()", 1)[1])
         self.assertIn("R.mipmap.ic_launcher", splash)
         self.assertIn("setIndeterminateTintList", splash)
-        self.assertIn("handler.postDelayed(dismissLaunchSplashRunnable, 2_400L)", splash)
+        self.assertIn("handler.postDelayed(dismissLaunchSplashRunnable, 3_100L)", splash)
         self.assertIn("setDuration(900L)", splash)
         self.assertIn("launchSplashLogoFloat.start()", splash)
         self.assertIn("stopLaunchSplashAnimations()", splash)

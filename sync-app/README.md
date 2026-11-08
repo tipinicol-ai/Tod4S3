@@ -52,7 +52,7 @@ El estado Premium y la cuota se vuelven a consultar al abrir/volver a la app y c
 
 ## Estado
 
-La versión 1.5.32 conserva las funciones anteriores y pule la pantalla de inicio: el icono ampliado queda visible unos 2,7 segundos con un halo, un pulso y una flotación suaves antes de desvanecerse. Las animaciones respetan la escala global del sistema y se limpian al cerrar la actividad. Se conservan las rutas existentes de descarga, multimedia y vídeo, notificaciones, navegación, Premium, temas y registro ToDus.
+La versión 1.5.33 conserva las funciones anteriores, mantiene el splash animado visible unos 3,4 segundos y coloca a @Niku_Blade y @fefefelix como vendedores enlazados dentro de cada oferta Premium. Se eliminó el bloque confuso de dudas sobre streams de la app y la nota genérica bajo los planes web. Las animaciones se limpian al cerrar la actividad; las rutas de descarga, multimedia y vídeo permanecen intactas.
 
 
 ## Tamaño del APK
