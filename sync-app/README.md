@@ -52,7 +52,7 @@ El estado Premium y la cuota se vuelven a consultar al abrir/volver a la app y c
 
 ## Estado
 
-La versión 1.5.30 mantiene las funciones anteriores, moderniza las ofertas Premium y agrupa el plan activo con el consumo de datos en una tarjeta superior. La cuota Gratis conserva su progreso limitado al 100 %; Premium indica el uso sin inventar un límite porcentual. Durante los pasos iniciales de registro ToDus se oculta el menú de cuenta hasta volver a la app, con la excepción del flujo voluntario para volver a vincular el bot. Las descargas ToDus iniciadas pasan directamente a «Activas», esa pestaña muestra un contador y Android mantiene el aviso persistente de descarga. Se conserva el resto de la navegación, descargas en segundo plano, Premium y temas de la app.
+La versión 1.5.31 conserva las funciones de la 1.5.30 y añade una pantalla breve de inicio con el icono animado de Tod4S3, entradas escalonadas de tarjetas de planes, pulsos sutiles en la IA y el contador de descargas, y transiciones suaves de progreso para las descargas locales. La cuota Gratis muestra el porcentaje real y su barra animada; Premium permanece claramente ilimitado, sin inventar un porcentaje máximo. Las animaciones respetan la escala global del sistema y se limpian al cerrar la actividad. Se conservan las rutas existentes de descarga, multimedia y vídeo, notificaciones, navegación, Premium, temas y registro ToDus.
 
 
 ## Tamaño del APK

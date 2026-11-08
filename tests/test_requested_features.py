@@ -321,7 +321,7 @@ class RequestedFeatureTests(unittest.TestCase):
         self.assertIn('secondaryButton("Ya soy premium")', source)
         self.assertIn('"¿Dudas sobre streams?  @fefefelix"', plans)
         self.assertIn('"https://t.me/fefefelix"', plans)
-        self.assertIn('"CONSUMO DE DATOS DEL PLAN ACTIVO"', source)
+        self.assertIn('"USO DE DATOS · PLAN ACTIVO"', source)
         self.assertIn('"DATOS USADOS · PREMIUM ILIMITADO"', source)
         self.assertIn('"Consumo de datos ilimitado · este plan no tiene un porcentaje máximo."', plans)
         self.assertIn("dp(20), dp(22), dp(20), dp(26)", page)
@@ -356,6 +356,46 @@ class RequestedFeatureTests(unittest.TestCase):
         self.assertIn("summary.addView(quotaUsageBox", summary)
         self.assertIn('"CONSUMO DE DATOS · 1 GB / 24 H"', source)
         self.assertIn('"DATOS USADOS · PREMIUM ILIMITADO"', source)
+
+    def test_android_launch_splash_uses_the_existing_logo_and_finishes_cleanly(self):
+        root = Path(__file__).resolve().parents[1]
+        source = (root / "sync-app/app/src/main/java/com/tod4s3/sync/MainActivity.java").read_text()
+        manifest = (root / "sync-app/app/src/main/AndroidManifest.xml").read_text()
+        splash = source.split("private void showAnimatedLaunchSplash", 1)[1].split("private void applyWallpaperBackground", 1)[0]
+        destroy = source.split("@Override protected void onDestroy()", 1)[1].split("super.onDestroy()", 1)[0]
+        self.assertIn("showAnimatedLaunchSplash();", source.split("private void buildUi()", 1)[1])
+        self.assertIn("R.mipmap.ic_launcher", splash)
+        self.assertIn("setIndeterminateTintList", splash)
+        self.assertIn("handler.postDelayed(dismissLaunchSplashRunnable, 920L)", splash)
+        self.assertIn("appRoot.removeView(overlay)", splash)
+        self.assertIn("launchSplashOverlay", destroy)
+        self.assertIn('android:name=".MainActivity"', manifest)
+
+    def test_android_consumption_bar_animates_only_a_real_limited_quota(self):
+        source = (Path(__file__).resolve().parents[1]
+                  / "sync-app/app/src/main/java/com/tod4s3/sync/MainActivity.java").read_text()
+        quota = source.split("private void updateQuotaUsageCard", 1)[1].split("private void styleQuotaProgressBar", 1)[0]
+        animation = source.split("private void animateQuotaProgress", 1)[1].split("private void updateFreeQuotaPanel", 1)[0]
+        plans = source.split("private void showPlansStep", 1)[1].split("private LinearLayout planOffer", 1)[0]
+        self.assertIn('boolean freePlan = "free".equals(activePlan)', quota)
+        self.assertIn("animateQuotaProgress(quotaProgressBar, percent)", quota)
+        self.assertIn('"DATOS USADOS · PREMIUM ILIMITADO"', quota)
+        self.assertIn('"progress", start, safeTarget', animation)
+        self.assertIn("este plan no tiene un porcentaje máximo", plans)
+
+    def test_android_download_and_plan_cards_use_one_time_smooth_entry_animation(self):
+        source = (Path(__file__).resolve().parents[1]
+                  / "sync-app/app/src/main/java/com/tod4s3/sync/MainActivity.java").read_text()
+        download = source.split("private LinearLayout toDusDownloadTaskCard", 1)[1].split("private static final class DownloadCardRefs", 1)[0]
+        card_updates = source.split("private void updateDownloadCardViews", 1)[1].split("private int renderDirectLinkTasks", 1)[0]
+        plans = source.split("private void animatePlanSections", 1)[1].split("private void promptPremiumActivationToken", 1)[0]
+        ai = source.split("private void showAiChat", 1)[1].split("private void setAiActivityState", 1)[0]
+        self.assertIn("boolean firstAppearance = task.cardRefs == null", download)
+        self.assertIn("if (firstAppearance) animateCardEntrance(item, 0L)", download)
+        self.assertIn("ObjectAnimator.ofInt(refs.progress, \"progress\"", card_updates)
+        self.assertIn('"tod4s3_plan_card".equals(child.getTag())', plans)
+        self.assertIn("animatePop(brandOrb)", ai)
+        self.assertIn("animatedDeliveryIds.add(taskId)", source)
 
     def test_android_drawer_can_relink_bot_without_resetting_todus(self):
         source = (Path(__file__).resolve().parents[1]

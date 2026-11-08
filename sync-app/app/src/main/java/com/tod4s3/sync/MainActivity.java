@@ -170,15 +170,22 @@ public final class MainActivity extends Activity {
     private LinearLayout freeQuotaPanel;
     private ProgressBar freeQuotaPanelProgress;
     private TextView freeQuotaPanelUsage;
+    private TextView freeQuotaPanelPercent;
     private TextView freeQuotaPanelReset;
     private LinearLayout deliveriesBox;
     private LinearLayout dashboardItemsBox;
     private TextView dashboardStatusText;
     private TextView activeDownloadBadge;
+    private int activeDownloadBadgeCount;
     private LinearLayout quotaUsageBox;
     private ProgressBar quotaProgressBar;
     private TextView quotaUsageText;
     private TextView quotaResetText;
+    private final java.util.WeakHashMap<ProgressBar, ObjectAnimator> quotaProgressAnimators = new java.util.WeakHashMap<>();
+    private final java.util.HashSet<String> animatedAppTaskIds = new java.util.HashSet<>();
+    private final java.util.HashSet<String> animatedDeliveryIds = new java.util.HashSet<>();
+    private View launchSplashOverlay;
+    private Runnable dismissLaunchSplashRunnable;
     private View dashboardFab;
     private View dashboardBalanceFab;
     private boolean ussdBalanceRequestInFlight;
@@ -933,6 +940,85 @@ public final class MainActivity extends Activity {
         } else {
             showPhoneStep(false);
         }
+        showAnimatedLaunchSplash();
+    }
+
+    private boolean uiAnimationsEnabled() {
+        try {
+            return Settings.Global.getFloat(getContentResolver(), Settings.Global.ANIMATOR_DURATION_SCALE, 1f) > 0f;
+        } catch (Exception ignored) {
+            return true;
+        }
+    }
+
+    private void showAnimatedLaunchSplash() {
+        if (appRoot == null || !uiAnimationsEnabled()) return;
+        FrameLayout overlay = new FrameLayout(this);
+        GradientDrawable backdrop = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
+                new int[]{Color.rgb(7, 15, 31), Color.rgb(17, 25, 49), Color.rgb(8, 34, 47)});
+        overlay.setBackground(backdrop);
+        overlay.setClickable(true);
+        overlay.setFocusable(true);
+        overlay.setElevation(dp(30));
+
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setGravity(Gravity.CENTER_HORIZONTAL);
+        FrameLayout emblem = new FrameLayout(this);
+        GradientDrawable halo = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
+                new int[]{Color.rgb(29, 104, 133), Color.rgb(20, 39, 73)});
+        halo.setShape(GradientDrawable.OVAL);
+        halo.setStroke(dp(1), Color.rgb(77, 205, 202));
+        emblem.setBackground(halo);
+        emblem.setElevation(dp(12));
+        ProgressBar orbit = new ProgressBar(this, null, android.R.attr.progressBarStyle);
+        orbit.setIndeterminate(true);
+        orbit.setIndeterminateTintList(ColorStateList.valueOf(Color.rgb(109, 233, 225)));
+        emblem.addView(orbit, new FrameLayout.LayoutParams(dp(112), dp(112), Gravity.CENTER));
+        ImageView logo = new ImageView(this);
+        logo.setImageResource(R.mipmap.ic_launcher);
+        logo.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        logo.setContentDescription("Logo de Tod4S3 Sync, descarga en curso");
+        FrameLayout.LayoutParams logoLayout = new FrameLayout.LayoutParams(dp(68), dp(68), Gravity.CENTER);
+        emblem.addView(logo, logoLayout);
+        content.addView(emblem, new LinearLayout.LayoutParams(dp(124), dp(124)));
+
+        TextView title = text("Tod4S3 Sync", 24, true);
+        title.setGravity(Gravity.CENTER);
+        title.setTextColor(Color.WHITE);
+        content.addView(title, margin(0, 22, 0, 3));
+        TextView subtitle = text("TUS ARCHIVOS, A TU RITMO", 10, true);
+        subtitle.setLetterSpacing(0.15f);
+        subtitle.setGravity(Gravity.CENTER);
+        subtitle.setTextColor(Color.rgb(132, 221, 220));
+        content.addView(subtitle, margin(0, 0, 0, 18));
+        ProgressBar loading = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        loading.setIndeterminate(true);
+        loading.setIndeterminateTintList(ColorStateList.valueOf(Color.rgb(109, 233, 225)));
+        content.addView(loading, new LinearLayout.LayoutParams(dp(150), dp(3)));
+
+        overlay.addView(content, new FrameLayout.LayoutParams(-2, -2, Gravity.CENTER));
+        appRoot.addView(overlay, new FrameLayout.LayoutParams(-1, -1));
+        launchSplashOverlay = overlay;
+        logo.setScaleX(0.72f);
+        logo.setScaleY(0.72f);
+        logo.setAlpha(0f);
+        logo.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(440L)
+                .setInterpolator(new DecelerateInterpolator()).start();
+        content.setAlpha(0f);
+        content.setTranslationY(dp(12));
+        content.animate().alpha(1f).translationY(0f).setDuration(360L)
+                .setInterpolator(new DecelerateInterpolator()).start();
+
+        dismissLaunchSplashRunnable = () -> {
+            if (launchSplashOverlay != overlay) return;
+            overlay.animate().alpha(0f).setDuration(220L).withEndAction(() -> {
+                if (overlay.getParent() == appRoot) appRoot.removeView(overlay);
+                if (launchSplashOverlay == overlay) launchSplashOverlay = null;
+                dismissLaunchSplashRunnable = null;
+            }).start();
+        };
+        handler.postDelayed(dismissLaunchSplashRunnable, 920L);
     }
 
     private void applyWallpaperBackground() {
@@ -1082,6 +1168,7 @@ public final class MainActivity extends Activity {
         freeQuotaPanel = null;
         freeQuotaPanelProgress = null;
         freeQuotaPanelUsage = null;
+        freeQuotaPanelPercent = null;
         freeQuotaPanelReset = null;
         boolean verifiedPremium = hasAiPremiumAccess();
         LinearLayout page = createStepPage(0,
@@ -1104,6 +1191,7 @@ public final class MainActivity extends Activity {
         page.addView(planStatus, margin(0, 4, 0, 12));
         if (verifiedPremium) {
             LinearLayout active = card();
+            active.setTag("tod4s3_plan_card");
             active.setPadding(dp(15), dp(14), dp(15), dp(14));
             active.setBackground(roundRect(isDarkTheme() ? Color.rgb(18, 42, 42) : Color.rgb(231, 247, 240),
                     20, Color.rgb(52, 174, 148)));
@@ -1125,6 +1213,7 @@ public final class MainActivity extends Activity {
             page.addView(active, margin(0, 8, 0, 8));
         }
         LinearLayout free = card();
+        free.setTag("tod4s3_plan_card");
         TextView freeTag = text(verifiedPremium ? "PLAN GRATUITO" : "RECOMENDADO PARA EMPEZAR", 11, true);
         freeTag.setTextColor(accentColor());
         free.addView(freeTag);
@@ -1136,6 +1225,9 @@ public final class MainActivity extends Activity {
             free.addView(bodyText("Usa Tod4S3 sin pagar. Puedes volver a elegir un plan Premium más adelante."), margin(0, 8, 0, 14));
             freeQuotaPanel = new LinearLayout(this);
             freeQuotaPanel.setOrientation(LinearLayout.VERTICAL);
+            freeQuotaPanel.setPadding(dp(12), dp(10), dp(12), dp(10));
+            freeQuotaPanel.setBackground(roundRect(isDarkTheme() ? Color.rgb(18, 34, 48)
+                    : Color.rgb(241, 248, 251), 15, borderColor()));
             free.addView(freeQuotaPanel, margin(0, 0, 0, 10));
             updateFreeQuotaPanel();
             Button chooseFree = primaryButton("Continuar con el plan gratis");
@@ -1174,11 +1266,13 @@ public final class MainActivity extends Activity {
         page.addView(paymentMethods, margin(0, 5, 0, 10));
         page.addView(bodyText("Los pagos se coordinan por Transfermóvil o saldo móvil. La activación de Premium es manual. AiTod4S3 responde por texto mediante un servicio externo; su disponibilidad depende del saldo y los límites de la cuenta API."), margin(0, 6, 0, 0));
         showPage(page, animated);
+        animatePlanSections(page);
         if (token != null && !token.isEmpty()) refreshAccountProfile();
     }
 
     private LinearLayout planOffer(String name, String price, String detail, String purchasePlan) {
         LinearLayout offer = card();
+        offer.setTag("tod4s3_plan_card");
         offer.setPadding(dp(16), dp(15), dp(16), dp(15));
         int tierColor = name.contains("15 días") ? Color.rgb(106, 149, 226)
                 : name.contains("20 días") ? Color.rgb(242, 198, 106) : Color.rgb(82, 202, 177);
@@ -1217,6 +1311,46 @@ public final class MainActivity extends Activity {
         actions.addView(alreadyPremium, margin(0, 7, 0, 0));
         offer.addView(actions);
         return offer;
+    }
+
+    private void animatePlanSections(LinearLayout page) {
+        int stagger = 0;
+        for (int i = 0; i < page.getChildCount(); i++) {
+            View child = page.getChildAt(i);
+            if ("tod4s3_plan_card".equals(child.getTag())) {
+                animateCardEntrance(child, stagger);
+                stagger += 65;
+            }
+        }
+    }
+
+    private void animateCardEntrance(View view, long delayMs) {
+        if (view == null) return;
+        view.animate().cancel();
+        if (!uiAnimationsEnabled()) {
+            view.setAlpha(1f);
+            view.setTranslationY(0f);
+            view.setScaleX(1f);
+            view.setScaleY(1f);
+            return;
+        }
+        view.setAlpha(0f);
+        view.setTranslationY(dp(11));
+        view.setScaleX(0.985f);
+        view.setScaleY(0.985f);
+        view.animate().alpha(1f).translationY(0f).scaleX(1f).scaleY(1f)
+                .setStartDelay(delayMs).setDuration(270L)
+                .setInterpolator(new DecelerateInterpolator()).start();
+    }
+
+    private void animatePop(View view) {
+        if (view == null || !uiAnimationsEnabled()) return;
+        view.animate().cancel();
+        view.setScaleX(0.88f);
+        view.setScaleY(0.88f);
+        view.animate().scaleX(1.08f).scaleY(1.08f).setDuration(220L)
+                .setInterpolator(new DecelerateInterpolator()).withEndAction(() -> view.animate()
+                        .scaleX(1f).scaleY(1f).setDuration(190L).start()).start();
     }
 
     private void promptPremiumActivationToken() {
@@ -1788,6 +1922,16 @@ public final class MainActivity extends Activity {
             updateDashboardTabsBadge();
         }
         item.setOnClickListener(v -> action.run());
+        item.setOnTouchListener((view, event) -> {
+            if (!uiAnimationsEnabled()) return false;
+            if (event.getAction() == MotionEvent.ACTION_DOWN) {
+                view.animate().scaleX(0.97f).scaleY(0.97f).setDuration(75L).start();
+            } else if (event.getAction() == MotionEvent.ACTION_UP
+                    || event.getAction() == MotionEvent.ACTION_CANCEL) {
+                view.animate().scaleX(1f).scaleY(1f).setDuration(115L).start();
+            }
+            return false;
+        });
         LinearLayout.LayoutParams itemLayout = new LinearLayout.LayoutParams(0, dp(50), weight);
         itemLayout.setMargins(dp(4), dp(1), dp(4), dp(3));
         parent.addView(item, itemLayout);
@@ -1816,6 +1960,8 @@ public final class MainActivity extends Activity {
         activeDownloadBadge.setText(count > 99 ? "99+" : Integer.toString(count));
         activeDownloadBadge.setVisibility(count > 0 ? View.VISIBLE : View.GONE);
         activeDownloadBadge.setContentDescription(count + (count == 1 ? " descarga activa" : " descargas activas"));
+        if (count > 0 && count != activeDownloadBadgeCount) animatePop(activeDownloadBadge);
+        activeDownloadBadgeCount = count;
     }
 
     private void showDashboardFab() {
@@ -2092,6 +2238,7 @@ public final class MainActivity extends Activity {
     }
 
     private LinearLayout toDusDownloadTaskCard(ToDusDownloadTask task) {
+        boolean firstAppearance = task.cardRefs == null;
         task.cardRefs = new DownloadCardRefs();
         LinearLayout item = buildActiveDownloadCard(task.filename, task.bytes, task.total,
                 task.speedBytesPerSecond, task.state, task.cardRefs,
@@ -2100,6 +2247,7 @@ public final class MainActivity extends Activity {
         task.progressTextView = task.cardRefs.percent;
         task.progressBarView = task.cardRefs.progress;
         if (task.state.equals("error") && !task.error.isEmpty()) item.addView(bodyText(task.error), margin(0, 7, 0, 0));
+        if (firstAppearance) animateCardEntrance(item, 0L);
         return item;
     }
 
@@ -2109,6 +2257,7 @@ public final class MainActivity extends Activity {
         TextView speed;
         TextView state;
         ProgressBar progress;
+        ObjectAnimator progressAnimator;
     }
 
     private LinearLayout buildActiveDownloadCard(String filename, long bytes, long total,
@@ -2215,7 +2364,18 @@ public final class MainActivity extends Activity {
         if (refs.progress != null) {
             boolean running = state.equals("downloading") || state.equals("saving") || state.equals("pausing");
             refs.progress.setIndeterminate(running && total <= 0);
-            refs.progress.setProgress(percent);
+            if (refs.progress.getProgress() != percent) {
+                if (!uiAnimationsEnabled()) {
+                    refs.progress.setProgress(percent);
+                } else {
+                    if (refs.progressAnimator != null) refs.progressAnimator.cancel();
+                    refs.progressAnimator = ObjectAnimator.ofInt(refs.progress, "progress",
+                            refs.progress.getProgress(), percent);
+                    refs.progressAnimator.setDuration(330L);
+                    refs.progressAnimator.setInterpolator(new DecelerateInterpolator());
+                    refs.progressAnimator.start();
+                }
+            }
         }
         if (refs.state != null) {
             String label = state.equals("downloading") ? "DESCARGANDO"
@@ -2257,6 +2417,7 @@ public final class MainActivity extends Activity {
     }
 
     private LinearLayout directLinkTaskCard(DirectLinkTask task) {
+        boolean firstAppearance = task.cardRefs == null;
         task.cardRefs = new DownloadCardRefs();
         LinearLayout item = buildActiveDownloadCard(task.filename, task.bytes, task.total,
                 task.speedBytesPerSecond, task.state, task.cardRefs,
@@ -2267,6 +2428,7 @@ public final class MainActivity extends Activity {
         if (task.state.equals("error") && !task.error.isEmpty()) {
             item.addView(bodyText(task.error), margin(0, 7, 0, 0));
         }
+        if (firstAppearance) animateCardEntrance(item, 0L);
         return item;
     }
 
@@ -2298,6 +2460,7 @@ public final class MainActivity extends Activity {
         } else if (state.equals("error")) {
             item.addView(bodyText(row.optString("error", "La tarea falló; puedes volver a enviarla.")), margin(0, 5, 0, 0));
         }
+        if (!taskId.isEmpty() && animatedAppTaskIds.add(taskId)) animateCardEntrance(item, 0L);
         return item;
     }
 
@@ -3643,6 +3806,7 @@ public final class MainActivity extends Activity {
         loadAiChatHistory();
         renderAiConversation();
         showPage(page, animated);
+        animatePop(brandOrb);
         showingAiChat = true;
         homeTabPageVisible = true;
     }
@@ -4463,6 +4627,7 @@ public final class MainActivity extends Activity {
         freeQuotaPanel = null;
         freeQuotaPanelProgress = null;
         freeQuotaPanelUsage = null;
+        freeQuotaPanelPercent = null;
         freeQuotaPanelReset = null;
     }
 
@@ -5416,9 +5581,7 @@ public final class MainActivity extends Activity {
             quotaUsageBox.addView(title);
             if (freePlan) {
                 quotaProgressBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
-                quotaProgressBar.setMax(100);
-                quotaProgressBar.setProgressTintList(ColorStateList.valueOf(accentColor()));
-                quotaProgressBar.setProgressBackgroundTintList(ColorStateList.valueOf(borderColor()));
+                styleQuotaProgressBar(quotaProgressBar);
                 quotaUsageBox.addView(quotaProgressBar, margin(0, 7, 0, 0));
             }
             quotaUsageText = bodyText("");
@@ -5430,7 +5593,7 @@ public final class MainActivity extends Activity {
         }
         if (freePlan) {
             int percent = Math.max(0, Math.min(100, freeQuotaPercent));
-            if (quotaProgressBar != null) quotaProgressBar.setProgress(percent);
+            animateQuotaProgress(quotaProgressBar, percent);
             quotaUsageText.setText(percent + "% usado · " + formatBytes(freeQuotaUsedBytes)
                     + " de " + formatBytes(freeQuotaLimitBytes) + " · quedan "
                     + formatBytes(freeQuotaRemainingBytes));
@@ -5445,6 +5608,37 @@ public final class MainActivity extends Activity {
         }
     }
 
+    private void styleQuotaProgressBar(ProgressBar progress) {
+        progress.setMax(100);
+        progress.setProgressTintList(ColorStateList.valueOf(accentColor()));
+        progress.setProgressBackgroundTintList(ColorStateList.valueOf(
+                isDarkTheme() ? Color.rgb(52, 64, 82) : Color.rgb(218, 226, 235)));
+        progress.setMinimumHeight(dp(8));
+        progress.setPadding(0, 0, 0, 0);
+    }
+
+    private void animateQuotaProgress(ProgressBar progress, int target) {
+        if (progress == null) return;
+        int safeTarget = Math.max(0, Math.min(100, target));
+        ObjectAnimator previous = quotaProgressAnimators.remove(progress);
+        if (previous != null) previous.cancel();
+        int start = progress.getProgress();
+        if (!uiAnimationsEnabled() || start == safeTarget) {
+            progress.setProgress(safeTarget);
+            return;
+        }
+        ObjectAnimator animator = ObjectAnimator.ofInt(progress, "progress", start, safeTarget);
+        animator.setDuration(720L);
+        animator.setInterpolator(new DecelerateInterpolator());
+        quotaProgressAnimators.put(progress, animator);
+        animator.addListener(new android.animation.AnimatorListenerAdapter() {
+            @Override public void onAnimationEnd(android.animation.Animator animation) {
+                if (quotaProgressAnimators.get(progress) == animator) quotaProgressAnimators.remove(progress);
+            }
+        });
+        animator.start();
+    }
+
     private void updateFreeQuotaPanel() {
         if (freeQuotaPanel == null) return;
         if (token == null || token.isEmpty() || !"free".equals(activePlan) || freeQuotaLimitBytes <= 0) {
@@ -5452,18 +5646,24 @@ public final class MainActivity extends Activity {
             freeQuotaPanel.removeAllViews();
             freeQuotaPanelProgress = null;
             freeQuotaPanelUsage = null;
+            freeQuotaPanelPercent = null;
             freeQuotaPanelReset = null;
             return;
         }
         freeQuotaPanel.setVisibility(View.VISIBLE);
-        if (freeQuotaPanelProgress == null || freeQuotaPanelUsage == null || freeQuotaPanelReset == null) {
-            TextView usageTitle = text("CONSUMO DE DATOS DEL PLAN ACTIVO", 10, true);
+        if (freeQuotaPanelProgress == null || freeQuotaPanelUsage == null
+                || freeQuotaPanelPercent == null || freeQuotaPanelReset == null) {
+            LinearLayout quotaHeading = new LinearLayout(this);
+            quotaHeading.setGravity(Gravity.CENTER_VERTICAL);
+            TextView usageTitle = text("USO DE DATOS · PLAN ACTIVO", 9, true);
             usageTitle.setTextColor(accentColor());
-            freeQuotaPanel.addView(usageTitle, margin(0, 0, 0, 5));
+            quotaHeading.addView(usageTitle, new LinearLayout.LayoutParams(0, -2, 1f));
+            freeQuotaPanelPercent = text("0%", 16, true);
+            freeQuotaPanelPercent.setTextColor(accentColor());
+            quotaHeading.addView(freeQuotaPanelPercent);
+            freeQuotaPanel.addView(quotaHeading, margin(0, 0, 0, 5));
             freeQuotaPanelProgress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
-            freeQuotaPanelProgress.setMax(100);
-            freeQuotaPanelProgress.setProgressTintList(ColorStateList.valueOf(accentColor()));
-            freeQuotaPanelProgress.setProgressBackgroundTintList(ColorStateList.valueOf(borderColor()));
+            styleQuotaProgressBar(freeQuotaPanelProgress);
             freeQuotaPanel.addView(freeQuotaPanelProgress, margin(0, 0, 0, 0));
             freeQuotaPanelUsage = bodyText("");
             freeQuotaPanelUsage.setTextSize(12);
@@ -5477,7 +5677,9 @@ public final class MainActivity extends Activity {
                     .setInterpolator(new DecelerateInterpolator()).start();
         }
         int percent = Math.max(0, Math.min(100, freeQuotaPercent));
-        freeQuotaPanelProgress.setProgress(percent);
+        animateQuotaProgress(freeQuotaPanelProgress, percent);
+        freeQuotaPanelPercent.setText(percent + "%");
+        freeQuotaPanelPercent.setContentDescription(percent + " por ciento de la cuota gratis utilizada");
         freeQuotaPanelUsage.setText(percent + "% usado · " + formatBytes(freeQuotaUsedBytes)
                 + " de " + formatBytes(freeQuotaLimitBytes) + " · quedan "
                 + formatBytes(freeQuotaRemainingBytes));
@@ -5636,6 +5838,7 @@ public final class MainActivity extends Activity {
                     }
                     card.addView(cloudActions, margin(0, 8, 0, 0));
                     deliveriesBox.addView(card, margin(0, 0, 0, 8));
+                    if (!taskId.isEmpty() && animatedDeliveryIds.add(taskId)) animateCardEntrance(card, 45L);
                     shown++;
                 } catch (Exception ignored) { }
             }
@@ -6440,6 +6643,16 @@ public final class MainActivity extends Activity {
 
     @Override protected void onDestroy() {
         handler.removeCallbacks(poller);
+        if (dismissLaunchSplashRunnable != null) handler.removeCallbacks(dismissLaunchSplashRunnable);
+        if (launchSplashOverlay != null) {
+            launchSplashOverlay.animate().cancel();
+            if (launchSplashOverlay.getParent() == appRoot) appRoot.removeView(launchSplashOverlay);
+            launchSplashOverlay = null;
+        }
+        for (ObjectAnimator animator : quotaProgressAnimators.values()) {
+            if (animator != null) animator.cancel();
+        }
+        quotaProgressAnimators.clear();
         ussdBalanceRequestInFlight = false;
         hideUssdOrbitAnimation();
         pendingAiSpeech = "";
