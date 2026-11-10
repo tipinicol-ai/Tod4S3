@@ -8585,8 +8585,7 @@ async def sync_app_task_request(application: Application, action: str, user_id: 
         if not task_id or len(task_id) > 200:
             return {"ok": False, "error": "invalid_task_id"}, 400
         row = sync_api.delivery_for_user(user_id, task_id)
-        if (not isinstance(row, dict) or row.get("storage_backend") != "todus_native"
-                or row.get("remote_delete_supported") is not True):
+        if (not isinstance(row, dict) or row.get("storage_backend") != "todus_native"):
             return {"ok": False, "error": "delivery_not_deletable",
                     "message": "No hay identificadores ToDus propios para borrar esta entrega."}, 409
         expected_parts = row.get("parts")
@@ -8621,7 +8620,14 @@ async def sync_app_task_request(application: Application, action: str, user_id: 
             with _HISTORY_LOCK, sync_api._LOCK:
                 current_history = _load_json(HISTORY_DATA_FILE)
                 rows = current_history.get(str(user_id), [])
-                if rows != history_snapshot or sync_api.delivery_for_user(user_id, task_id) != row:
+                if not isinstance(rows, list):
+                    rows = []
+                # Solo la entrega solicitada debe permanecer intacta. Otras
+                # descargas pueden terminar mientras se borran las partes y
+                # no deben convertir un borrado remoto correcto en HTTP 409.
+                current_matching = [entry for entry in rows
+                                    if isinstance(entry, dict) and entry.get("task_id") == task_id]
+                if current_matching != matching_history or sync_api.delivery_for_user(user_id, task_id) != row:
                     return False
                 rollback = copy.deepcopy(current_history)
                 if matching_history:

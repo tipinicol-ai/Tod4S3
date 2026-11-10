@@ -584,7 +584,6 @@ def _delivery_cloud_deletable(row: dict, user_id: int) -> bool:
 def _delivery_todus_deletable(row: dict) -> bool:
     parts = row.get("parts")
     return bool(row.get("storage_backend") == "todus_native"
-                and row.get("remote_delete_supported") is True
                 and isinstance(row.get("task_id"), str) and row["task_id"].strip()
                 and isinstance(parts, list) and parts)
 

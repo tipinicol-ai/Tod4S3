@@ -156,6 +156,36 @@ async def test_app_deletes_only_registered_todus_messages_for_owned_delivery(mon
 
 
 @_run_async_test
+async def test_app_deletes_legacy_native_delivery_when_capability_flag_is_stale(monkeypatch, tmp_path):
+    part = "https://media.todus.cu/file/native-part"
+    _history(monkeypatch, tmp_path, {})
+    _deliveries(monkeypatch, tmp_path)
+    sent_path = tmp_path / "todus_sent_messages.json"
+    monkeypatch.setattr(bot, "TODUS_SENT_MESSAGES_FILE", str(sent_path))
+    sync_api.record_delivery(
+        42, "native-task", "native.bin", 10, [part],
+        storage_backend="todus_native", remote_delete_supported=False,
+    )
+    bot._save_json(str(sent_path), {"messages": [
+        {"target": "5350911221", "message_id": "msg-native", "user_id": 42, "task_id": "native-task"},
+    ]})
+    monkeypatch.setattr(bot, "get_user_todus_number", lambda user_id: "5350911221" if user_id == 42 else "")
+    class FakeToDusClient:
+        def delete_message(self, target, message_id):
+            return None
+    monkeypatch.setattr(bot, "get_todus_client", lambda: FakeToDusClient())
+    monkeypatch.setattr(bot, "schedule_data_backup", lambda *_args: None)
+
+    payload, status = await bot.sync_app_task_request(
+        SimpleNamespace(bot_data={"task_queue": None}), "delete_delivery", 42, {"task_id": "native-task"},
+    )
+
+    assert status == 200
+    assert payload["deleted_parts"] == 1
+    assert sync_api.deliveries_for_user(42) == []
+
+
+@_run_async_test
 async def test_app_delete_delivery_relogs_and_retries_after_todus_session_error(monkeypatch, tmp_path):
     part = "https://media.todus.cu/file/native-part"
     _history(monkeypatch, tmp_path, {})

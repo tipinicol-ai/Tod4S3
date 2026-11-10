@@ -3298,9 +3298,6 @@ public final class MainActivity extends Activity {
         addDrawerSectionHeader(content, "Planes y archivos");
         addDrawerRow(content, popup, "★", "Planes y ofertas", "Ver opciones y precios", () -> showPlansStep(true));
         addDrawerRow(content, popup, "▣", "Archivos de ToDus", "Entregas del bot", () -> showDashboard("all", true));
-        if (token != null && !token.isEmpty()) {
-            addDrawerRow(content, popup, "☁", "Vaciar mi nube", "Eliminar mis archivos de nube", this::confirmClearMyCloud);
-        }
         addDrawerRow(content, popup, "↓", "Descargas", "Archivos guardados en el teléfono", () -> showDashboard("completed", true));
 
         addDrawerSectionHeader(content, "Actividad");
@@ -3367,38 +3364,6 @@ public final class MainActivity extends Activity {
             action.run();
         });
         parent.addView(row, margin(0, 0, 0, 4));
-    }
-
-    private void confirmClearMyCloud() {
-        new AlertDialog.Builder(this)
-                .setTitle("Vaciar mi nube")
-                .setMessage("Se borrarán los archivos en la nube y sus enlaces registrados para tu cuenta. Las descargas que ya guardaste en el teléfono no se borrarán. Esta acción no se puede deshacer.")
-                .setNegativeButton("Cancelar", null)
-                .setPositiveButton("Vaciar mi nube", (dialog, which) -> clearMyCloud())
-                .show();
-    }
-
-    private void clearMyCloud() {
-        String currentToken = token;
-        if (currentToken == null || currentToken.isEmpty()) {
-            Toast.makeText(this, "Vincula primero la aplicación con el bot.", Toast.LENGTH_LONG).show();
-            return;
-        }
-        Toast.makeText(this, "Borrando tus archivos de nube…", Toast.LENGTH_SHORT).show();
-        new Thread(() -> {
-            try {
-                JSONObject result = request("POST", "/api/app/cloud/clear", "{}", currentToken);
-                int deleted = result.optInt("deleted_files", 0);
-                runOnUiThread(() -> {
-                    Toast.makeText(this, "Nube vaciada: " + deleted + " archivo(s) eliminado(s).", Toast.LENGTH_LONG).show();
-                    refreshDeliveries();
-                    if (viewingDashboard) renderDashboardItems();
-                });
-            } catch (Exception e) {
-                runOnUiThread(() -> Toast.makeText(this,
-                        "No se pudo vaciar la nube. Los registros se conservaron para reintentar.", Toast.LENGTH_LONG).show());
-            }
-        }, "clear-user-cloud").start();
     }
 
     private LinearLayout sectionHeader(String title) {

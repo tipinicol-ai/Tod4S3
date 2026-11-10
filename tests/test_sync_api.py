@@ -145,9 +145,8 @@ def test_native_todus_delivery_is_not_sent_to_s3_delete(tmp_path, monkeypatch):
 
     assert row is not None
     assert web_store._delivery_cloud_deletable(row, 42) is False
-    assert status == 409
-    assert payload["error"] == "delivery_not_deletable"
-    assert "no se borró" in payload["message"]
+    assert status == 503
+    assert payload["error"] == "task_service_unavailable"
     assert deleted == []
     assert sync_api.delivery_for_user(42, "task-delete") is not None
 
