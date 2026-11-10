@@ -3604,6 +3604,7 @@ TODUS_BOT_PASSWORD = os.getenv("TODUS_PASSWORD", "").strip()
 _todus_client = None
 _todus_client_lock = threading.Lock()
 _todus_cleanup_lock = threading.Lock()
+_todus_sent_messages_lock = threading.RLock()
 
 
 def _normalize_todus_number(value: str) -> str:
@@ -3669,28 +3670,29 @@ def record_todus_sent_message(target_number: str, message_id: str,
     if not target or not message_id:
         return
     try:
-        data = _load_json(TODUS_SENT_MESSAGES_FILE)
-        entries = data.get("messages", []) if isinstance(data, dict) else []
-        if not isinstance(entries, list):
-            entries = []
-        exists = any(
-            isinstance(item, dict)
-            and str(item.get("target")) == target
-            and str(item.get("message_id")) == message_id
-            for item in entries
-        )
-        if not exists:
-            record = {
-                "target": target,
-                "message_id": message_id,
-                "sent_at": datetime.now(timezone.utc).isoformat(),
-            }
-            if user_id is not None and int(user_id) > 0:
-                record["user_id"] = int(user_id)
-            if task_id:
-                record["task_id"] = str(task_id)[:200]
-            entries.append(record)
-        _save_json(TODUS_SENT_MESSAGES_FILE, {"messages": entries[-10000:]})
+        with _todus_sent_messages_lock:
+            data = _load_json(TODUS_SENT_MESSAGES_FILE)
+            entries = data.get("messages", []) if isinstance(data, dict) else []
+            if not isinstance(entries, list):
+                entries = []
+            exists = any(
+                isinstance(item, dict)
+                and str(item.get("target")) == target
+                and str(item.get("message_id")) == message_id
+                for item in entries
+            )
+            if not exists:
+                record = {
+                    "target": target,
+                    "message_id": message_id,
+                    "sent_at": datetime.now(timezone.utc).isoformat(),
+                }
+                if user_id is not None and int(user_id) > 0:
+                    record["user_id"] = int(user_id)
+                if task_id:
+                    record["task_id"] = str(task_id)[:200]
+                entries.append(record)
+            _save_json(TODUS_SENT_MESSAGES_FILE, {"messages": entries[-10000:]})
     except Exception:
         log.warning("No se pudo registrar un mensaje ToDus para limpieza.", exc_info=True)
 
@@ -3698,12 +3700,13 @@ def record_todus_sent_message(target_number: str, message_id: str,
 def cleanup_todus_sent_messages() -> tuple[int, int, int]:
     """Borra solo mensajes registrados como enviados por esta cuenta del bot."""
     with _todus_cleanup_lock:
-        data = _load_json(TODUS_SENT_MESSAGES_FILE)
-        entries = data.get("messages", []) if isinstance(data, dict) else []
+        with _todus_sent_messages_lock:
+            data = _load_json(TODUS_SENT_MESSAGES_FILE)
+            entries = data.get("messages", []) if isinstance(data, dict) else []
         if not isinstance(entries, list) or not entries:
             return 0, 0, 0
         client = get_todus_client()
-        remaining = []
+        deleted_ids = set()
         deleted = 0
         failed = 0
         for item in entries:
@@ -3715,33 +3718,47 @@ def cleanup_todus_sent_messages() -> tuple[int, int, int]:
                 continue
             try:
                 client.delete_message(target, message_id)
+                deleted_ids.add((_normalize_todus_number(target), message_id))
                 deleted += 1
             except Exception as exc:
                 failed += 1
-                remaining.append(item)
                 log.warning("No se pudo borrar el mensaje ToDus %s (%s).", message_id, type(exc).__name__)
-        _save_json(TODUS_SENT_MESSAGES_FILE, {"messages": remaining})
+        if deleted_ids:
+            with _todus_sent_messages_lock:
+                current_data = _load_json(TODUS_SENT_MESSAGES_FILE)
+                current = current_data.get("messages", []) if isinstance(current_data, dict) else []
+                if not isinstance(current, list):
+                    current = []
+                remaining = []
+                for item in current:
+                    if not isinstance(item, dict):
+                        continue
+                    key = (_normalize_todus_number(item.get("target", "")),
+                           str(item.get("message_id", "")).strip())
+                    if key not in deleted_ids:
+                        remaining.append(item)
+                _save_json(TODUS_SENT_MESSAGES_FILE, {"messages": remaining})
         return len(entries), deleted, failed
 
 
 def todus_messages_for_delivery(user_id: int, task_id: str) -> list[dict]:
-    """Return only current-format ToDus message records owned by this user/task."""
-    target = get_user_todus_number(user_id)
-    if not target:
-        return []
-    data = _load_json(TODUS_SENT_MESSAGES_FILE)
-    entries = data.get("messages", []) if isinstance(data, dict) else []
-    def belongs(item: object) -> bool:
-        if not isinstance(item, dict):
-            return False
-        try:
-            record_user = int(item.get("user_id", 0) or 0)
-        except (TypeError, ValueError):
-            return False
-        return (item.get("target") == target and record_user == int(user_id)
-                and str(item.get("task_id", "")) == str(task_id)
-                and bool(item.get("message_id")))
-    return [item for item in entries if belongs(item)] if isinstance(entries, list) else []
+    """Return current-format ToDus records owned by this user/task, regardless of current phone."""
+    with _todus_sent_messages_lock:
+        data = _load_json(TODUS_SENT_MESSAGES_FILE)
+        entries = data.get("messages", []) if isinstance(data, dict) else []
+        def belongs(item: object) -> bool:
+            if not isinstance(item, dict):
+                return False
+            try:
+                record_user = int(item.get("user_id", 0) or 0)
+            except (TypeError, ValueError):
+                return False
+            target = _normalize_todus_number(item.get("target", ""))
+            return (record_user == int(user_id)
+                    and str(item.get("task_id", "")) == str(task_id)
+                    and bool(re.fullmatch(r"53\d{8}", target))
+                    and bool(str(item.get("message_id", "")).strip()))
+        return [dict(item) for item in entries if belongs(item)] if isinstance(entries, list) else []
 
 
 def _delete_todus_message_with_retry(client, target: str, message_id: str,
@@ -3765,93 +3782,123 @@ def _delete_todus_message_with_retry(client, target: str, message_id: str,
 
 def delete_todus_messages_for_delivery(user_id: int, task_id: str) -> tuple[int, int, bool]:
     """Delete registered ToDus messages for one authenticated owner's delivery."""
-    target = get_user_todus_number(user_id)
-    if not target:
-        return 0, 0, False
     with _todus_cleanup_lock:
-        data = _load_json(TODUS_SENT_MESSAGES_FILE)
-        entries = data.get("messages", []) if isinstance(data, dict) else []
+        with _todus_sent_messages_lock:
+            data = _load_json(TODUS_SENT_MESSAGES_FILE)
+            entries = data.get("messages", []) if isinstance(data, dict) else []
         if not isinstance(entries, list):
             return 0, 0, False
-        selected = todus_messages_for_delivery(user_id, task_id)
-        if not selected:
-            return 0, 0, False
-        client = get_todus_client()
-        selected_ids = {str(item["message_id"]) for item in selected}
-        remaining = []
-        deleted = 0
-        failed = 0
+        selected = []
         for item in entries:
             if not isinstance(item, dict):
                 continue
             try:
                 record_user = int(item.get("user_id", 0) or 0)
             except (TypeError, ValueError):
-                record_user = 0
-            if (item.get("target") != target
-                    or record_user != int(user_id)
-                    or str(item.get("task_id", "")) != str(task_id)
-                    or str(item.get("message_id", "")) not in selected_ids):
-                remaining.append(item)
                 continue
+            target = _normalize_todus_number(item.get("target", ""))
+            message_id = str(item.get("message_id", "")).strip()
+            if (record_user == int(user_id) and str(item.get("task_id", "")) == str(task_id)
+                    and re.fullmatch(r"53\d{8}", target) and message_id):
+                selected.append(dict(item))
+        if not selected:
+            return 0, 0, False
+        client = get_todus_client()
+        deleted_ids = set()
+        deleted = 0
+        failed = 0
+        for item in selected:
+            target = _normalize_todus_number(item.get("target", ""))
+            message_id = str(item.get("message_id", "")).strip()
             deleted_ok, client = _delete_todus_message_with_retry(
-                client, target, str(item["message_id"]), task_id,
+                client, target, message_id, task_id,
             )
             if deleted_ok:
+                deleted_ids.add((target, message_id))
                 deleted += 1
             else:
                 failed += 1
-                remaining.append(item)
-        _save_json(TODUS_SENT_MESSAGES_FILE, {"messages": remaining})
+        if deleted_ids:
+            with _todus_sent_messages_lock:
+                current_data = _load_json(TODUS_SENT_MESSAGES_FILE)
+                current = current_data.get("messages", []) if isinstance(current_data, dict) else []
+                if not isinstance(current, list):
+                    current = []
+                remaining = []
+                for item in current:
+                    if not isinstance(item, dict):
+                        continue
+                    try:
+                        record_user = int(item.get("user_id", 0) or 0)
+                    except (TypeError, ValueError):
+                        record_user = 0
+                    key = (_normalize_todus_number(item.get("target", "")),
+                           str(item.get("message_id", "")).strip())
+                    if (record_user == int(user_id)
+                            and str(item.get("task_id", "")) == str(task_id)
+                            and key in deleted_ids):
+                        continue
+                    remaining.append(item)
+                _save_json(TODUS_SENT_MESSAGES_FILE, {"messages": remaining})
         return len(selected), deleted, failed == 0 and deleted == len(selected)
 
 
 def delete_todus_messages_for_user(user_id: int) -> tuple[int, int, bool]:
     """Delete only bot-sent ToDus messages explicitly bound to this Telegram user."""
-    target = get_user_todus_number(user_id)
-    if not target:
-        return 0, 0, True
     with _todus_cleanup_lock:
-        data = _load_json(TODUS_SENT_MESSAGES_FILE)
-        entries = data.get("messages", []) if isinstance(data, dict) else []
+        with _todus_sent_messages_lock:
+            data = _load_json(TODUS_SENT_MESSAGES_FILE)
+            entries = data.get("messages", []) if isinstance(data, dict) else []
         if not isinstance(entries, list):
             return 0, 0, False
         selected = []
         for item in entries:
-            if not isinstance(item, dict) or item.get("target") != target or not item.get("message_id"):
+            if not isinstance(item, dict) or not item.get("message_id"):
                 continue
             try:
                 if int(item.get("user_id", 0) or 0) == int(user_id):
-                    selected.append(item)
+                    target = _normalize_todus_number(item.get("target", ""))
+                    if re.fullmatch(r"53\d{8}", target):
+                        selected.append(dict(item))
             except (TypeError, ValueError):
                 continue
         if not selected:
             return 0, 0, True
-        selected_ids = {str(item.get("message_id", "")) for item in selected}
         client = get_todus_client()
-        remaining = []
+        deleted_ids = set()
         deleted = 0
         failed = 0
-        for item in entries:
-            if not isinstance(item, dict):
-                continue
-            try:
-                record_user = int(item.get("user_id", 0) or 0)
-            except (TypeError, ValueError):
-                record_user = 0
-            if (item.get("target") != target or record_user != int(user_id)
-                    or str(item.get("message_id", "")) not in selected_ids):
-                remaining.append(item)
-                continue
+        for item in selected:
+            target = _normalize_todus_number(item.get("target", ""))
+            message_id = str(item.get("message_id", "")).strip()
             deleted_ok, client = _delete_todus_message_with_retry(
-                client, target, str(item["message_id"]), "user-clear",
+                client, target, message_id, "user-clear",
             )
             if deleted_ok:
+                deleted_ids.add((target, message_id))
                 deleted += 1
             else:
                 failed += 1
-                remaining.append(item)
-        _save_json(TODUS_SENT_MESSAGES_FILE, {"messages": remaining})
+        if deleted_ids:
+            with _todus_sent_messages_lock:
+                current_data = _load_json(TODUS_SENT_MESSAGES_FILE)
+                current = current_data.get("messages", []) if isinstance(current_data, dict) else []
+                if not isinstance(current, list):
+                    current = []
+                remaining = []
+                for item in current:
+                    if not isinstance(item, dict):
+                        continue
+                    try:
+                        record_user = int(item.get("user_id", 0) or 0)
+                    except (TypeError, ValueError):
+                        record_user = 0
+                    key = (_normalize_todus_number(item.get("target", "")),
+                           str(item.get("message_id", "")).strip())
+                    if record_user == int(user_id) and key in deleted_ids:
+                        continue
+                    remaining.append(item)
+                _save_json(TODUS_SENT_MESSAGES_FILE, {"messages": remaining})
         return len(selected), deleted, failed == 0 and deleted == len(selected)
 
 
@@ -8590,9 +8637,12 @@ async def sync_app_task_request(application: Application, action: str, user_id: 
                     "message": "No hay identificadores ToDus propios para borrar esta entrega."}, 409
         expected_parts = row.get("parts")
         messages = todus_messages_for_delivery(user_id, task_id)
-        if not isinstance(expected_parts, list) or not expected_parts or len(messages) != len(expected_parts):
+        if not isinstance(expected_parts, list) or not expected_parts:
+            return {"ok": False, "error": "delivery_state_ambiguous",
+                    "message": "La entrega no tiene una lista válida de partes; no se borró nada."}, 409
+        if not messages:
             return {"ok": False, "error": "delivery_messages_incomplete",
-                    "message": "No están registrados todos los mensajes ToDus; no se intentó borrar."}, 409
+                    "message": "No hay IDs de mensajes ToDus registrados para esta entrega; no se borró ningún archivo."}, 409
         history_snapshot = all_task_history().get(str(user_id), [])
         if not isinstance(history_snapshot, list):
             history_snapshot = []
@@ -8611,7 +8661,7 @@ async def sync_app_task_request(application: Application, action: str, user_id: 
         selected, deleted, ok = await asyncio.to_thread(
             delete_todus_messages_for_delivery, user_id, task_id,
         )
-        if not ok or selected != len(expected_parts) or deleted != selected:
+        if not ok or selected == 0 or deleted != selected:
             return {"ok": False, "error": "remote_delete_failed",
                     "deleted_parts": deleted,
                     "message": "No se borraron todas las partes; la entrega se conserva para reintentar."}, 502
@@ -8655,7 +8705,15 @@ async def sync_app_task_request(application: Application, action: str, user_id: 
             return {"ok": False, "error": "delivery_changed",
                     "message": "El registro cambió; conserva la fila y consulta de nuevo."}, 409
         schedule_data_backup(application, "borrado individual de entrega ToDus desde Android")
-        return {"ok": True, "task_id": task_id, "deleted_parts": deleted}, 200
+        untracked_parts = max(0, len(expected_parts) - selected)
+        result = {"ok": True, "task_id": task_id, "deleted_parts": deleted,
+                  "untracked_parts": untracked_parts}
+        if untracked_parts:
+            result["warning"] = (
+                f"Se borraron {deleted} mensajes registrados y se retiró la entrega de la app; "
+                f"no había ID de borrado para {untracked_parts} parte(s)."
+            )
+        return result, 200
 
     if action == "clear_cloud":
         history_snapshot = all_task_history()

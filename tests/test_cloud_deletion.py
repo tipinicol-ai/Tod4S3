@@ -1,5 +1,6 @@
 import asyncio
 import json
+from concurrent.futures import ThreadPoolExecutor
 from functools import wraps
 from http.server import ThreadingHTTPServer
 from threading import Thread
@@ -37,6 +38,22 @@ def _deliveries(monkeypatch, tmp_path):
     path = tmp_path / "sync_app.json"
     monkeypatch.setattr(sync_api, "STATE_FILE", path)
     return path
+
+
+def test_concurrent_todus_sent_message_registration_does_not_lose_ids(monkeypatch, tmp_path):
+    path = tmp_path / "todus_sent_messages.json"
+    monkeypatch.setattr(bot, "TODUS_SENT_MESSAGES_FILE", str(path))
+    count = 120
+
+    def record(index):
+        bot.record_todus_sent_message("5350911221", f"message-{index}", 42, f"task-{index}")
+
+    with ThreadPoolExecutor(max_workers=12) as executor:
+        list(executor.map(record, range(count)))
+
+    rows = bot._load_json(str(path))["messages"]
+    assert len(rows) == count
+    assert {row["message_id"] for row in rows} == {f"message-{index}" for index in range(count)}
 
 
 @_run_async_test
@@ -153,6 +170,77 @@ async def test_app_deletes_only_registered_todus_messages_for_owned_delivery(mon
         {"target": "5350911221", "message_id": "msg-other-task", "user_id": 42, "task_id": "keep-task"},
         {"target": "5350999999", "message_id": "msg-other-user", "user_id": 43, "task_id": "native-task"},
     ]
+
+
+@_run_async_test
+async def test_app_deletes_delivery_from_its_recorded_todus_phone_after_user_changes_account(monkeypatch, tmp_path):
+    old_target = "5350911221"
+    _history(monkeypatch, tmp_path, {})
+    _deliveries(monkeypatch, tmp_path)
+    sent_path = tmp_path / "todus_sent_messages.json"
+    monkeypatch.setattr(bot, "TODUS_SENT_MESSAGES_FILE", str(sent_path))
+    sync_api.record_delivery(
+        42, "old-phone-task", "old-phone.bin", 10, ["https://media.todus.cu/file/old-phone"],
+        storage_backend="todus_native", remote_delete_supported=True,
+    )
+    bot.record_todus_sent_message(old_target, "old-phone-message", 42, "old-phone-task")
+    monkeypatch.setattr(bot, "get_user_todus_number", lambda _user_id: "5350888777")
+
+    class FakeToDusClient:
+        def __init__(self):
+            self.deleted = []
+        def delete_message(self, target, message_id):
+            self.deleted.append((target, message_id))
+
+    client = FakeToDusClient()
+    monkeypatch.setattr(bot, "get_todus_client", lambda: client)
+    monkeypatch.setattr(bot, "schedule_data_backup", lambda *_args: None)
+
+    payload, status = await bot.sync_app_task_request(
+        SimpleNamespace(bot_data={"task_queue": None}), "delete_delivery", 42,
+        {"task_id": "old-phone-task"},
+    )
+
+    assert status == 200
+    assert client.deleted == [(old_target, "old-phone-message")]
+    assert sync_api.deliveries_for_user(42) == []
+
+
+@_run_async_test
+async def test_app_deletes_registered_parts_when_legacy_delivery_registry_is_incomplete(monkeypatch, tmp_path):
+    _history(monkeypatch, tmp_path, {})
+    _deliveries(monkeypatch, tmp_path)
+    sent_path = tmp_path / "todus_sent_messages.json"
+    monkeypatch.setattr(bot, "TODUS_SENT_MESSAGES_FILE", str(sent_path))
+    sync_api.record_delivery(
+        42, "partial-task", "partial.bin", 20,
+        ["https://media.todus.cu/file/part-one", "https://media.todus.cu/file/part-two"],
+        storage_backend="todus_native", remote_delete_supported=False,
+    )
+    bot.record_todus_sent_message("5350911221", "known-message", 42, "partial-task")
+    monkeypatch.setattr(bot, "get_user_todus_number", lambda _user_id: "5350911221")
+
+    class FakeToDusClient:
+        def __init__(self):
+            self.deleted = []
+        def delete_message(self, target, message_id):
+            self.deleted.append((target, message_id))
+
+    client = FakeToDusClient()
+    monkeypatch.setattr(bot, "get_todus_client", lambda: client)
+    monkeypatch.setattr(bot, "schedule_data_backup", lambda *_args: None)
+
+    payload, status = await bot.sync_app_task_request(
+        SimpleNamespace(bot_data={"task_queue": None}), "delete_delivery", 42,
+        {"task_id": "partial-task"},
+    )
+
+    assert status == 200
+    assert payload["deleted_parts"] == 1
+    assert payload["untracked_parts"] == 1
+    assert "no había ID de borrado" in payload["warning"]
+    assert client.deleted == [("5350911221", "known-message")]
+    assert sync_api.deliveries_for_user(42) == []
 
 
 @_run_async_test

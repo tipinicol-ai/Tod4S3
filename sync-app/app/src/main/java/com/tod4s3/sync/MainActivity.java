@@ -6769,8 +6769,15 @@ public final class MainActivity extends Activity {
                     throw new IOException(result.optString("message", "El servidor no confirmó el borrado remoto."));
                 }
                 rememberHiddenDelivery(taskId);
+                int untrackedParts = Math.max(0, result.optInt("untracked_parts", 0));
+                int deletedParts = Math.max(0, result.optInt("deleted_parts", 0));
                 runOnUiThread(() -> {
-                    Toast.makeText(this, nativeToDus ? "Entrega eliminada de ToDus." : "Entrega eliminada de Nube S3.", Toast.LENGTH_LONG).show();
+                    String message = nativeToDus ? "Entrega eliminada de ToDus." : "Entrega eliminada de Nube S3.";
+                    if (nativeToDus && untrackedParts > 0) {
+                        message = "Entrega retirada; se borraron " + deletedParts + " mensajes registrados. "
+                                + "Faltaba el ID de " + untrackedParts + " parte(s); revísalas en ToDus.";
+                    }
+                    Toast.makeText(this, message, Toast.LENGTH_LONG).show();
                     refreshDeliveries();
                 });
             } catch (Exception e) {
@@ -7133,8 +7140,8 @@ public final class MainActivity extends Activity {
             String reason = "";
             try {
                 JSONObject error = new JSONObject(responseText);
-                detail = error.optString("error", "");
-                if (detail.isEmpty()) detail = error.optString("message", "");
+                detail = error.optString("message", "").trim();
+                if (detail.isEmpty()) detail = error.optString("error", "");
                 reason = error.optString("reason", "").replaceAll("[\\p{Cntrl}]+", " ").trim();
             } catch (Exception ignored) { }
             detail = detail.replaceAll("[\\p{Cntrl}]+", " ").trim();

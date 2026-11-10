@@ -51,7 +51,7 @@ El estado Premium y la cuota se vuelven a consultar al abrir/volver a la app y c
 
 ## Estado
 
-La versión 1.5.34 conserva las funciones anteriores, mantiene el splash animado visible unos 3,4 segundos y coloca a @Niku_Blade y @fefefelix como vendedores enlazados dentro de cada oferta Premium. El diálogo de actualización no muestra el origen de descarga y usa un indicador animado; AiTod4S3 incluye preguntas frecuentes para ayudar con actualización, instalación, descargas, registro y errores comunes, tanto al iniciar el chat como en su menú. La IA ofrece pasos seguros sin recomendar borrar los datos ni compartir códigos o credenciales.
+La versión 1.5.43 conserva las funciones anteriores, mantiene el splash animado visible unos 3,4 segundos y coloca a @Niku_Blade y @fefefelix como vendedores enlazados dentro de cada oferta Premium. Corrige el borrado de entregas ToDus cuando cambió el número asociado y presenta mensajes claros del servidor; si un registro antiguo perdió IDs de borrado, elimina los mensajes aún rastreables y advierte que hay partes que deben revisarse en ToDus. El diálogo de actualización no muestra el origen de descarga y usa un indicador animado; AiTod4S3 incluye preguntas frecuentes para ayudar con actualización, instalación, descargas, registro y errores comunes, tanto al iniciar el chat como en su menú. La IA ofrece pasos seguros sin recomendar borrar los datos ni compartir códigos o credenciales.
 
 
 ## Tamaño del APK
