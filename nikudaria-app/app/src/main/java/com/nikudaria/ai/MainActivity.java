@@ -58,6 +58,7 @@ public final class MainActivity extends Activity implements TermuxResultReceiver
         super.onCreate(state);
         getWindow().setStatusBarColor(C_BG);
         getWindow().setNavigationBarColor(C_BG);
+        getWindow().setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
         api = new ApiClient(this);
         buildScreen();
         TermuxResultReceiver.setListener(this);
@@ -91,7 +92,8 @@ public final class MainActivity extends Activity implements TermuxResultReceiver
         if (android.os.Build.VERSION.SDK_INT >= 35) {
             page.setOnApplyWindowInsetsListener((view, windowInsets) -> {
                 android.graphics.Insets bars = windowInsets.getInsets(android.view.WindowInsets.Type.systemBars());
-                view.setPadding(bars.left, bars.top, bars.right, bars.bottom);
+                android.graphics.Insets ime = windowInsets.getInsets(android.view.WindowInsets.Type.ime());
+                view.setPadding(bars.left, bars.top, bars.right, Math.max(bars.bottom, ime.bottom));
                 return windowInsets;
             });
             page.requestApplyInsets();
@@ -205,7 +207,20 @@ public final class MainActivity extends Activity implements TermuxResultReceiver
         composer.setPadding(dp(2), dp(4), dp(2), dp(4));
         composer.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
         composer.setImeOptions(EditorInfo.IME_ACTION_SEND);
-        composerBox.addView(composer, new LinearLayout.LayoutParams(-1, -2));
+        composer.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout inputRow = new LinearLayout(this);
+        inputRow.setGravity(Gravity.CENTER_VERTICAL);
+        composerBox.addView(inputRow, new LinearLayout.LayoutParams(-1, -2));
+        inputRow.addView(composer, new LinearLayout.LayoutParams(0, -2, 1));
+        sendButton = control("Enviar");
+        sendButton.setTextSize(12);
+        sendButton.setTextColor(C_BG);
+        sendButton.setContentDescription("Enviar mensaje a NikuDarIA");
+        sendButton.setBackground(round(C_ACCENT, C_ACCENT, 0, 12));
+        LinearLayout.LayoutParams sendLp = new LinearLayout.LayoutParams(dp(76), dp(40));
+        sendLp.setMargins(dp(6), 0, 0, 0);
+        inputRow.addView(sendButton, sendLp);
+        sendButton.setOnClickListener(v -> sendMessage());
         LinearLayout controls = new LinearLayout(this); controls.setGravity(Gravity.CENTER_VERTICAL);
         TextView plus = control("+"); controls.addView(plus, new LinearLayout.LayoutParams(dp(37), dp(35)));
         plus.setOnClickListener(v -> showMenu());
@@ -217,9 +232,6 @@ public final class MainActivity extends Activity implements TermuxResultReceiver
         View spacer = new View(this); controls.addView(spacer, new LinearLayout.LayoutParams(0, 1, 1));
         TextView mic = control("♩"); controls.addView(mic, new LinearLayout.LayoutParams(dp(38), dp(35)));
         mic.setOnClickListener(v -> startVoiceInput());
-        sendButton = control("↑"); sendButton.setTextColor(C_BG); sendButton.setBackground(round(C_ACCENT, C_ACCENT, 0, 12));
-        LinearLayout.LayoutParams sendLp = new LinearLayout.LayoutParams(dp(38), dp(35)); sendLp.setMargins(dp(5), 0, 0, 0);
-        controls.addView(sendButton, sendLp); sendButton.setOnClickListener(v -> sendMessage());
         composer.setOnEditorActionListener((v, actionId, event) -> {
             if (actionId == EditorInfo.IME_ACTION_SEND) { sendMessage(); return true; } return false;
         });

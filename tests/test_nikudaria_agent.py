@@ -315,3 +315,15 @@ def test_nikudaria_maps_provider_credit_limit_safely(monkeypatch):
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
+
+
+def test_nikudaria_has_visible_send_button_and_keyboard_insets():
+    from pathlib import Path
+
+    activity = (Path(__file__).resolve().parents[1] / "nikudaria-app/app/src/main/java/com/nikudaria/ai/MainActivity.java").read_text(encoding="utf-8")
+    assert 'sendButton = control("Enviar")' in activity
+    assert "inputRow.addView(sendButton, sendLp)" in activity
+    assert "sendButton.setOnClickListener(v -> sendMessage())" in activity
+    assert "SOFT_INPUT_ADJUST_RESIZE" in activity
+    assert "WindowInsets.Type.ime()" in activity
+    assert "Math.max(bars.bottom, ime.bottom)" in activity
