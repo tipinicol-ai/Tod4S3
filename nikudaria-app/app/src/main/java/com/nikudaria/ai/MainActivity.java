@@ -52,7 +52,7 @@ public final class MainActivity extends Activity implements TermuxResultReceiver
     private final JSONArray history = new JSONArray();
     private JSONObject pendingAction;
     private boolean requestBusy;
-    private String selectedTab = "Código";
+    private String selectedTab = "Chat";
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
@@ -108,22 +108,10 @@ public final class MainActivity extends Activity implements TermuxResultReceiver
         menu.setBackground(round(C_PANEL, C_LINE, 1, 14));
         header.addView(menu, new LinearLayout.LayoutParams(dp(38), dp(34)));
         menu.setOnClickListener(v -> showMenu());
-        LinearLayout tabs = new LinearLayout(this);
-        tabs.setGravity(Gravity.CENTER);
-        String[] tabNames = {"Chat", "Código", "Equipo"};
-        for (String tab : tabNames) {
-            TextView t = label(tab, 12, tab.equals(selectedTab) ? C_ACCENT : C_MUTED);
-            t.setGravity(Gravity.CENTER);
-            t.setPadding(dp(10), 0, dp(10), 0);
-            tabs.addView(t, new LinearLayout.LayoutParams(-2, dp(34)));
-            t.setOnClickListener(v -> { selectedTab = tab; refreshTab(tabs, tabNames); });
-        }
-        header.addView(tabs, new LinearLayout.LayoutParams(0, dp(36), 1));
-        TextView terminal = label("▣", 17, C_TEXT);
-        terminal.setGravity(Gravity.CENTER);
-        terminal.setBackground(round(C_PANEL, C_LINE, 1, 14));
-        header.addView(terminal, new LinearLayout.LayoutParams(dp(38), dp(34)));
-        terminal.setOnClickListener(v -> showTermuxGuide());
+        TextView chatTitle = label("Chat", 13, C_TEXT);
+        chatTitle.setGravity(Gravity.CENTER);
+        chatTitle.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        header.addView(chatTitle, new LinearLayout.LayoutParams(0, dp(36), 1));
         page.addView(header);
         View rule = new View(this); rule.setBackgroundColor(C_LINE); page.addView(rule, new LinearLayout.LayoutParams(-1, dp(1)));
 
@@ -154,9 +142,24 @@ public final class MainActivity extends Activity implements TermuxResultReceiver
         title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         title.setGravity(Gravity.CENTER);
         codeIntro.addView(title, margin(0, 0, 0, 8));
-        TextView subtitle = label("Trabajo con las carpetas y la terminal de este teléfono.", 13, C_MUTED);
+        TextView subtitle = label("Un chat directo para ayudarte desde este teléfono.", 13, C_MUTED);
         subtitle.setGravity(Gravity.CENTER);
         codeIntro.addView(subtitle, margin(0, 0, 0, 17));
+
+        TextView chatFab = control("✦");
+        chatFab.setTextSize(17);
+        chatFab.setTextColor(C_BG);
+        chatFab.setContentDescription("Empezar a escribir en el chat");
+        chatFab.setBackground(round(C_ACCENT, C_ACCENT, 0, 22));
+        LinearLayout fabRow = new LinearLayout(this);
+        fabRow.setGravity(Gravity.CENTER);
+        fabRow.addView(chatFab, new LinearLayout.LayoutParams(dp(44), dp(44)));
+        codeIntro.addView(fabRow, margin(0, 0, 0, 15));
+        chatFab.setOnClickListener(v -> {
+            composer.requestFocus();
+            ((android.view.inputmethod.InputMethodManager) getSystemService(INPUT_METHOD_SERVICE))
+                    .showSoftInput(composer, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT);
+        });
 
         TextView online = label("IA lista · conexión directa con el servidor", 12, C_MUTED);
         online.setGravity(Gravity.CENTER);
@@ -179,9 +182,6 @@ public final class MainActivity extends Activity implements TermuxResultReceiver
         addSystemLog("Listo cuando tú lo estés. Ninguna acción se ejecuta sin tu confirmación.");
         addText(codeIntro, "Protección activa", 11, C_MUTED, 0, 2, 0, 3);
         addText(codeIntro, "Antes de abrir una app o ejecutar un comando, verás el objetivo exacto, la razón y podrás cancelar.", 12, C_MUTED, 0, 0, 0, 12);
-        TextView help = pill("Guía de Termux y permisos");
-        codeIntro.addView(help, margin(0, 2, 0, 10)); help.setOnClickListener(v -> showTermuxGuide());
-
         teamPanel = new LinearLayout(this);
         teamPanel.setOrientation(LinearLayout.VERTICAL);
         teamPanel.setPadding(dp(15), dp(14), dp(15), dp(14));
@@ -214,15 +214,15 @@ public final class MainActivity extends Activity implements TermuxResultReceiver
         composerBox.addView(inputRow, new LinearLayout.LayoutParams(-1, -2));
         inputRow.addView(composer, new LinearLayout.LayoutParams(0, -2, 1));
         sendButton = control("Enviar");
-        sendButton.setText("Enviar  ↑");
+        sendButton.setText("↑");
         sendButton.setGravity(Gravity.CENTER);
         sendButton.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         sendButton.setIncludeFontPadding(false);
-        sendButton.setTextSize(12);
+        sendButton.setTextSize(19);
         sendButton.setTextColor(C_BG);
         sendButton.setContentDescription("Enviar mensaje a NikuDarIA");
         sendButton.setBackground(round(C_ACCENT, C_ACCENT, 0, 12));
-        LinearLayout.LayoutParams sendLp = new LinearLayout.LayoutParams(dp(84), dp(40));
+        LinearLayout.LayoutParams sendLp = new LinearLayout.LayoutParams(dp(42), dp(42));
         sendLp.setMargins(dp(6), 0, 0, 0);
         inputRow.addView(sendButton, sendLp);
         sendButton.setOnClickListener(v -> sendMessage());
@@ -258,10 +258,11 @@ public final class MainActivity extends Activity implements TermuxResultReceiver
     }
 
     private void showMenu() {
-        String[] choices = {"Guía de Termux", "Limpiar conversación"};
+        String[] choices = {"Limpiar conversación"};
         new AlertDialog.Builder(this).setTitle("NikuDarIA").setItems(choices, (dialog, which) -> {
-            if (which == 0) showTermuxGuide();
-            else { while (history.length() > 0) history.remove(0); conversation.removeAllViews(); addSystemLog("Conversación limpiada. Ninguna acción pendiente."); }
+            while (history.length() > 0) history.remove(0);
+            conversation.removeAllViews();
+            addSystemLog("Conversación limpiada. Ninguna acción pendiente.");
         }).show();
     }
 

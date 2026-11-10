@@ -281,15 +281,17 @@ def test_nikudaria_termux_results_return_to_the_ai_context():
     assert "Build.VERSION_CODES.S" in runner
 
 
-def test_nikudaria_tabs_match_the_video_flow_without_accounts():
+def test_nikudaria_uses_a_single_clean_chat_without_account_tabs():
     from pathlib import Path
 
     activity = (Path(__file__).resolve().parents[1] / "nikudaria-app/app/src/main/java/com/nikudaria/ai/MainActivity.java").read_text(encoding="utf-8")
-    assert 'private String selectedTab = "Código"' in activity
+    assert 'private String selectedTab = "Chat"' in activity
+    assert 'TextView chatTitle = label("Chat"' in activity
     assert 'codeIntro.setVisibility("Código".equals(selectedTab)' in activity
     assert 'teamPanel.setVisibility(team ? View.VISIBLE : View.GONE)' in activity
     assert 'composerBox.setVisibility(team ? View.GONE : View.VISIBLE)' in activity
     assert "funciona sin cuentas, Telegram ni Premium" in activity
+    assert 'chatFab.setContentDescription("Empezar a escribir en el chat")' in activity
 
 
 def test_nikudaria_maps_provider_credit_limit_safely(monkeypatch):
