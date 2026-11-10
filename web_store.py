@@ -37,6 +37,11 @@ _AI_RATE_LOCK = Lock()
 _AI_REQUESTS_BY_USER: dict[int, list[float]] = {}
 _AI_DAILY_REQUESTS_BY_USER: dict[int, list[float]] = {}
 _AI_DAILY_GLOBAL_REQUESTS: list[float] = []
+_NIKUDARIA_CLIENT_ID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+_NIKUDARIA_RECENT_REQUESTS: dict[str, list[float]] = {}
+_NIKUDARIA_DAILY_REQUESTS: dict[str, list[float]] = {}
 _AI_GATEWAY_SEMAPHORE = BoundedSemaphore(2)
 
 
@@ -210,6 +215,237 @@ def _dispatch_ai_chat(token: str, body: dict) -> tuple[dict, int]:
         return {"ok": False, "error": "ai_invalid_response"}, 502
     # Do not persist or log prompts, replies, provider response bodies, or the API key.
     return {"ok": True, "reply": answer.strip()}, 200
+
+
+def _has_control_characters(value: str) -> bool:
+    return any(ord(char) < 32 or 0x7F <= ord(char) <= 0x9F for char in value)
+
+
+def _unique_json_object(pairs: list[tuple[str, object]]) -> dict:
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate_json_key")
+        result[key] = value
+    return result
+
+
+def _blocked_termux_command(command: str) -> bool:
+    """Block obvious privilege escalation and destructive Termux commands."""
+    blocked_program = re.compile(
+        r"(?:^|[\s;&|\"'`])(?:[\w./-]+/)?(?:sudo|su|mkfs(?:\.[\w.-]+)?|dd|wipefs|reboot|shutdown)(?=\s|$|[;&|\"'`])",
+        re.IGNORECASE,
+    )
+    if blocked_program.search(command):
+        return True
+    if re.search(r"\brm\s+", command, re.IGNORECASE):
+        try:
+            import shlex
+            tokens = shlex.split(command, posix=True)
+        except ValueError:
+            return True
+        separators = {";", "&&", "||", "|", "&"}
+        for index, token in enumerate(tokens):
+            if token.rsplit("/", 1)[-1].lower() != "rm":
+                continue
+            arguments = []
+            for argument in tokens[index + 1:]:
+                if argument in separators:
+                    break
+                arguments.append(argument.lower())
+            recursive = any(
+                (arg.startswith("-") and not arg.startswith("--") and "r" in arg[1:])
+                or arg == "--recursive" for arg in arguments
+            )
+            force = any(
+                (arg.startswith("-") and not arg.startswith("--") and "f" in arg[1:])
+                or arg == "--force" for arg in arguments
+            )
+            if recursive and force:
+                return True
+        # Detect dangerous flags even when the command is nested in `sh -c '…'`.
+        for match in re.finditer(r"\brm\s+([^;&|\n]*)", command, re.IGNORECASE):
+            try:
+                nested_arguments = shlex.split(match.group(1), posix=True)
+            except ValueError:
+                return True
+            nested_flags = [arg.lower() for arg in nested_arguments if arg.startswith("-")]
+            nested_recursive = any(
+                (not flag.startswith("--") and "r" in flag[1:]) or flag == "--recursive"
+                for flag in nested_flags
+            )
+            nested_force = any(
+                (not flag.startswith("--") and "f" in flag[1:]) or flag == "--force"
+                for flag in nested_flags
+            )
+            if nested_recursive and nested_force:
+                return True
+    return False
+
+
+def _dispatch_nikudaria_agent(body: dict) -> tuple[dict, int]:
+    """Return at most one unexecuted, user-confirmable action proposal."""
+    client_id = body.get("client_id")
+    if not isinstance(client_id, str) or not _NIKUDARIA_CLIENT_ID_RE.fullmatch(client_id):
+        return {"ok": False, "error": "invalid_client_id"}, 400
+    api_key = os.getenv("IASINCENSURA", "").strip()
+    if (not api_key.startswith("sk-notrack-") or len(api_key) < 24
+            or any(char.isspace() for char in api_key)):
+        return {"ok": False, "error": "ai_not_configured"}, 503
+    messages = body.get("messages")
+    if not isinstance(messages, list) or not 1 <= len(messages) <= 12:
+        return {"ok": False, "error": "invalid_messages"}, 400
+    clean_messages: list[dict[str, str]] = []
+    total_chars = 0
+    for item in messages:
+        if not isinstance(item, dict) or item.get("role") not in {"user", "assistant"}:
+            return {"ok": False, "error": "invalid_messages"}, 400
+        content = item.get("content")
+        if not isinstance(content, str):
+            return {"ok": False, "error": "invalid_messages"}, 400
+        if len(content) > 4000:
+            return {"ok": False, "error": "invalid_messages"}, 400
+        total_chars += len(content)
+        if total_chars > 16000:
+            return {"ok": False, "error": "conversation_too_long"}, 413
+        content = content.strip()
+        if not content:
+            return {"ok": False, "error": "invalid_messages"}, 400
+        clean_messages.append({"role": item["role"], "content": content})
+    if clean_messages[-1]["role"] != "user":
+        return {"ok": False, "error": "invalid_messages"}, 400
+
+    # client_id is an installation identifier, not a secret or authenticated identity.
+    # Enforce 8 requests/minute and 60/day per installation, plus the shared global cap.
+    now = time.monotonic()
+    with _AI_RATE_LOCK:
+        recent = [seen for seen in _NIKUDARIA_RECENT_REQUESTS.get(client_id, []) if now - seen < 60]
+        if len(recent) >= 8:
+            return {"ok": False, "error": "ai_rate_limited"}, 429
+        daily_client = [seen for seen in _NIKUDARIA_DAILY_REQUESTS.get(client_id, []) if now - seen < 86_400]
+        if len(daily_client) >= 60:
+            return {"ok": False, "error": "ai_daily_limit"}, 429
+        try:
+            global_limit = max(1, min(100_000, int(os.getenv("IASINCENSURA_DAILY_REQUEST_LIMIT", "1000"))))
+        except ValueError:
+            global_limit = 1000
+        daily_global = [seen for seen in _AI_DAILY_GLOBAL_REQUESTS if now - seen < 86_400]
+        if len(daily_global) >= global_limit:
+            return {"ok": False, "error": "ai_service_daily_limit"}, 429
+        recent.append(now)
+        daily_client.append(now)
+        daily_global.append(now)
+        _NIKUDARIA_RECENT_REQUESTS[client_id] = recent
+        _NIKUDARIA_DAILY_REQUESTS[client_id] = daily_client
+        _AI_DAILY_GLOBAL_REQUESTS[:] = daily_global
+        if len(_NIKUDARIA_DAILY_REQUESTS) > 5000:
+            oldest_client = min(
+                (key for key in _NIKUDARIA_DAILY_REQUESTS if key != client_id),
+                key=lambda key: max(_NIKUDARIA_DAILY_REQUESTS[key], default=now),
+                default=None,
+            )
+            if oldest_client is not None:
+                _NIKUDARIA_DAILY_REQUESTS.pop(oldest_client, None)
+                _NIKUDARIA_RECENT_REQUESTS.pop(oldest_client, None)
+            _NIKUDARIA_DAILY_REQUESTS[client_id] = daily_client
+
+    system_prompt = (
+        "Eres NikuDarIA, un asistente para ayudar al usuario con su dispositivo Android. Responde en el idioma del usuario. "
+        'Devuelve exclusivamente JSON estricto, sin Markdown, con exactamente las claves "reply" y "action". '
+        '"reply" es texto; "action" es null o una única acción: '
+        '{"type":"open_app","app_name":"nombre","reason":"motivo"} o '
+        '{"type":"termux_command","command":"comando","reason":"motivo"}. '
+        "Como máximo propone una acción por turno. Las acciones son solo propuestas para que el usuario las revise y confirme: "
+        "nunca afirmes tener acceso al teléfono, haber ejecutado un comando o abierto una app. Nunca ejecutes ni solicites ejecución "
+        "automática. Prefiere action:null si no hace falta una acción. Nunca propongas escalada de privilegios/root ni comandos destructivos."
+    )
+    request_body = json.dumps({
+        "model": "notrack-uncensored",
+        "messages": [{"role": "system", "content": system_prompt}, *clean_messages],
+        "max_tokens": 768,
+        "temperature": 0.5,
+        "stream": False,
+    }, separators=(",", ":")).encode("utf-8")
+    outgoing = urllib.request.Request(
+        "https://api.notrack.ai/v1/chat/completions",
+        data=request_body,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+        method="POST",
+    )
+    if not _AI_GATEWAY_SEMAPHORE.acquire(blocking=False):
+        return {"ok": False, "error": "ai_busy"}, 429
+    try:
+        with urllib.request.urlopen(outgoing, timeout=60) as response:
+            provider_data = json.loads(response.read(1_000_000).decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        provider_error_type = ""
+        try:
+            error_payload = json.loads(exc.read(8192).decode("utf-8"))
+            nested_error = error_payload.get("error", {}) if isinstance(error_payload, dict) else {}
+            if isinstance(nested_error, dict):
+                provider_error_type = str(nested_error.get("type", ""))[:64]
+        except (UnicodeDecodeError, ValueError, OSError):
+            pass
+        provider_error = {
+            401: "ai_provider_auth", 429: "ai_busy", 404: "ai_provider_endpoint",
+            400: "ai_provider_request", 403: "ai_provider_access", 503: "ai_unavailable",
+        }.get(exc.code, "ai_provider_error" if exc.code < 500 else "ai_unavailable")
+        if exc.code == 402:
+            provider_error = {
+                "no_credit": "ai_credits_exhausted",
+                "key_daily_cap": "ai_provider_daily_cap",
+            }.get(provider_error_type, "ai_payment_required")
+        status = 429 if exc.code == 429 else 502 if exc.code < 500 else 503
+        return {"ok": False, "error": provider_error}, status
+    except Exception:
+        # Keep network/provider failures distinct from malformed model output.
+        return {"ok": False, "error": "ai_unavailable"}, 502
+    finally:
+        _AI_GATEWAY_SEMAPHORE.release()
+
+    try:
+        answer = provider_data["choices"][0]["message"]["content"]
+        if not isinstance(answer, str):
+            raise ValueError("invalid_model_output")
+        model_result = json.loads(answer, object_pairs_hook=_unique_json_object)
+        if not isinstance(model_result, dict) or set(model_result) != {"reply", "action"}:
+            raise ValueError("invalid_model_output")
+        reply = model_result["reply"]
+        action = model_result["action"]
+        if (not isinstance(reply, str) or not reply.strip() or len(reply) > 4000
+                or _has_control_characters(reply)):
+            raise ValueError("invalid_model_output")
+        reply = reply.strip()
+        if action is not None:
+            if not isinstance(action, dict) or not isinstance(action.get("type"), str):
+                raise ValueError("invalid_model_output")
+            action_type = action["type"]
+            reason = action.get("reason")
+            if not isinstance(reason, str) or not reason.strip() or len(reason) > 300 or _has_control_characters(reason):
+                raise ValueError("invalid_model_output")
+            reason = reason.strip()
+            if action_type == "open_app" and set(action) == {"type", "app_name", "reason"}:
+                app_name = action.get("app_name")
+                if (not isinstance(app_name, str) or not app_name.strip() or len(app_name) > 80
+                        or _has_control_characters(app_name)):
+                    raise ValueError("invalid_model_output")
+                action = {"type": action_type, "app_name": app_name.strip(), "reason": reason}
+            elif action_type == "termux_command" and set(action) == {"type", "command", "reason"}:
+                command = action.get("command")
+                if (not isinstance(command, str) or not command.strip() or len(command) > 1000
+                        or _has_control_characters(command) or _blocked_termux_command(command)):
+                    raise ValueError("invalid_model_output")
+                action = {"type": action_type, "command": command.strip(), "reason": reason}
+            else:
+                raise ValueError("invalid_model_output")
+    except Exception:
+        # Do not expose provider payloads, user content, commands, or credentials.
+        return {"ok": False, "error": "ai_invalid_response"}, 502
+    return {"ok": True, "reply": reply, "action": action}, 200
 
 
 def configure_app_task_bridge(bridge: Callable[[str, int, dict], tuple[dict, int]] | None) -> None:
@@ -591,13 +827,16 @@ class StoreHandler(SimpleHTTPRequestHandler):
             "/api/app/pair", "/api/app/revoke", "/api/app/deliveries/delete",
             "/api/app/download", "/api/app/tasks/cancel", "/api/app/cloud/clear",
             "/api/app/premium/claim", "/api/app/support", "/api/app/ai/chat",
+            "/api/app/nikudaria/agent",
             "/api/app/update-decline", "/api/app/device-status",
         }:
             self._json_response({"ok": False, "error": "not_found"}, 404)
             return
         try:
             length = int(self.headers.get("Content-Length", "0"))
-            max_body_length = 65_536 if parsed.path == "/api/app/ai/chat" else 8192
+            max_body_length = 65_536 if parsed.path in {
+                "/api/app/ai/chat", "/api/app/nikudaria/agent",
+            } else 8192
             if length < 0 or length > max_body_length:
                 raise ValueError("body_too_large")
             body = json.loads(self.rfile.read(length) or b"{}")
@@ -677,6 +916,10 @@ class StoreHandler(SimpleHTTPRequestHandler):
             return
         if parsed.path == "/api/app/ai/chat":
             payload, status = _dispatch_ai_chat(token, body)
+            self._json_response(payload, status)
+            return
+        if parsed.path == "/api/app/nikudaria/agent":
+            payload, status = _dispatch_nikudaria_agent(body)
             self._json_response(payload, status)
             return
         if parsed.path == "/api/app/support":

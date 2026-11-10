@@ -18,3 +18,5 @@ __pycache__/
 /Tod4S3-Sync-debug.apk
 /sync-app/.gradle/
 /sync-app/**/build/
+/nikudaria-app/.gradle/
+/nikudaria-app/**/build/
