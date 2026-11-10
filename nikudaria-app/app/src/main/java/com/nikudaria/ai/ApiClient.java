@@ -7,10 +7,13 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
+import java.net.SocketTimeoutException;
 import java.net.URL;
+import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 import java.util.UUID;
 
@@ -37,7 +40,25 @@ public final class ApiClient {
 
     public JSONObject agent(JSONArray messages) throws Exception {
         JSONObject payload = new JSONObject().put("client_id", clientId()).put("messages", messages);
-        return request("/api/app/nikudaria/agent", payload);
+        Exception last = null;
+        for (int attempt = 0; attempt < 2; attempt++) {
+            try {
+                return request("/api/app/nikudaria/agent", payload);
+            } catch (Exception error) {
+                last = error;
+                if (attempt == 0 && isTransient(error)) {
+                    try {
+                        Thread.sleep(900);
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw error;
+                    }
+                } else {
+                    throw error;
+                }
+            }
+        }
+        throw last == null ? new IOException("No se pudo contactar con el servidor.") : last;
     }
 
     private JSONObject request(String path, JSONObject payload) throws Exception {
@@ -45,8 +66,10 @@ public final class ApiClient {
         try {
             conn = (HttpURLConnection) new URL(API_BASE + path).openConnection();
             conn.setRequestMethod("POST");
-            conn.setConnectTimeout(15000);
-            conn.setReadTimeout(65000);
+            conn.setConnectTimeout(20000);
+            conn.setReadTimeout(90000);
+            conn.setUseCaches(false);
+            conn.setInstanceFollowRedirects(true);
             conn.setDoOutput(true);
             conn.setRequestProperty("Content-Type", "application/json; charset=utf-8");
             conn.setRequestProperty("Accept", "application/json");
@@ -56,14 +79,27 @@ public final class ApiClient {
             int status = conn.getResponseCode();
             InputStream stream = status >= 200 && status < 400 ? conn.getInputStream() : conn.getErrorStream();
             String body = readAll(stream);
-            JSONObject result = body.isEmpty() ? new JSONObject() : new JSONObject(body);
+            JSONObject result;
+            try {
+                result = body.isEmpty() ? new JSONObject() : new JSONObject(body);
+            } catch (Exception malformed) {
+                throw new IOException("El servidor devolvió una respuesta inválida (HTTP " + status + ").");
+            }
             if (status < 200 || status >= 300 || !result.optBoolean("ok", status < 300)) {
-                throw new Exception(result.optString("error", result.optString("message", "Error HTTP " + status)));
+                String message = result.optString("error", result.optString("message", ""));
+                if (message.isEmpty()) message = "Error HTTP " + status;
+                throw new IOException(message + " (HTTP " + status + ")");
             }
             return result;
         } finally {
             if (conn != null) conn.disconnect();
         }
+    }
+
+    private static boolean isTransient(Exception error) {
+        if (error instanceof SocketTimeoutException || error instanceof UnknownHostException || error instanceof IOException) return true;
+        String message = error.getMessage();
+        return message != null && (message.contains("HTTP 429") || message.matches(".*HTTP 5\\d\\d.*"));
     }
 
     private static String readAll(InputStream in) throws Exception {

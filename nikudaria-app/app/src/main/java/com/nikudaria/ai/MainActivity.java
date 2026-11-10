@@ -213,7 +213,8 @@ public final class MainActivity extends Activity implements TermuxResultReceiver
         inputRow.setPadding(0, 0, 0, dp(2));
         composerBox.addView(inputRow, new LinearLayout.LayoutParams(-1, -2));
         inputRow.addView(composer, new LinearLayout.LayoutParams(0, -2, 1));
-        sendButton = label("Enviar  ↑", 12, C_BG);
+        sendButton = control("Enviar");
+        sendButton.setText("Enviar  ↑");
         sendButton.setGravity(Gravity.CENTER);
         sendButton.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         sendButton.setIncludeFontPadding(false);
@@ -288,7 +289,12 @@ public final class MainActivity extends Activity implements TermuxResultReceiver
                     if (action != null && !action.isNull("type")) offerAction(action);
                 });
             } catch (Exception e) {
-                runOnUiThread(() -> { setBusy(false); addSystemLog("Solicitud fallida · " + safeError(e)); });
+                runOnUiThread(() -> {
+                    setBusy(false);
+                    String error = safeError(e);
+                    addSystemLog("No se pudo completar la solicitud · " + error);
+                    addAssistant("No pude completar la solicitud. " + error);
+                });
             }
         }, "niku-agent").start();
     }
@@ -428,7 +434,15 @@ public final class MainActivity extends Activity implements TermuxResultReceiver
         }
     }
     private JSONArray copyArray(JSONArray source) { JSONArray copy = new JSONArray(); for (int i = 0; i < source.length(); i++) copy.put(source.opt(i)); return copy; }
-    private String safeError(Exception e) { String message = e.getMessage(); return message == null ? "error de conexión" : message; }
+    private String safeError(Exception e) {
+        if (e instanceof java.net.SocketTimeoutException) return "El servidor tardó demasiado. Inténtalo de nuevo.";
+        if (e instanceof java.net.UnknownHostException) return "No se pudo encontrar el servidor. Comprueba tu conexión a internet.";
+        String message = e.getMessage();
+        if (message == null || message.trim().isEmpty()) return "Error de conexión. Inténtalo de nuevo.";
+        if (message.contains("HTTP 429") || message.contains("ai_rate_limited")) return "Hay muchas solicitudes en curso. Espera unos segundos y vuelve a intentarlo.";
+        if (message.contains("HTTP 5") || message.contains("ai_provider_error")) return "El servicio de IA tuvo un problema temporal. Vuelve a intentarlo.";
+        return message;
+    }
     private void toast(String text) { Toast.makeText(this, text, Toast.LENGTH_SHORT).show(); }
 
     private LinearLayout card(LinearLayout parent) {
