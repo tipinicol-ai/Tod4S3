@@ -258,6 +258,8 @@ public final class MainActivity extends Activity {
     private TextView aiActivityLabel;
     private LinearLayout aiVoiceVisualizer;
     private ObjectAnimator aiTypingAnimator;
+    private Runnable aiThinkingTicker;
+    private long aiThinkingStartedAt;
     private final ArrayList<ObjectAnimator> aiVoiceAnimators = new ArrayList<>();
     private volatile String aiLastUtteranceId = "";
     private TextToSpeech aiTextToSpeech;
@@ -4217,6 +4219,30 @@ public final class MainActivity extends Activity {
         }
     }
 
+    private void startAiThinkingTimeline() {
+        stopAiThinkingTimeline();
+        aiThinkingStartedAt = System.currentTimeMillis();
+        aiThinkingTicker = new Runnable() {
+            @Override public void run() {
+                if (!aiChatRequestInFlight || aiActivityLabel == null) return;
+                long seconds = Math.max(0, (System.currentTimeMillis() - aiThinkingStartedAt) / 1000L);
+                String phase = seconds < 2 ? "Pensando"
+                        : (seconds < 5 ? "Analizando tu pregunta" : "Preparando una respuesta clara");
+                aiActivityLabel.setText(phase + "  ·  " + seconds + "s");
+                if (aiChatStatus != null) aiChatStatus.setText("●  " + phase.toUpperCase(java.util.Locale.ROOT));
+                handler.postDelayed(this, 1000L);
+            }
+        };
+        handler.post(aiThinkingTicker);
+    }
+
+    private void stopAiThinkingTimeline() {
+        if (aiThinkingTicker != null) {
+            handler.removeCallbacks(aiThinkingTicker);
+            aiThinkingTicker = null;
+        }
+    }
+
     private void renderAiConversation() {
         if (aiConversationBox == null || aiConversationScroll == null) return;
         aiConversationBox.removeAllViews();
@@ -4490,6 +4516,7 @@ public final class MainActivity extends Activity {
         aiChatRequestInFlight = true;
         renderAiConversation();
         setAiActivityState("AiTod4S3 está escribiendo…", false, true);
+        startAiThinkingTimeline();
         aiSendButton.setEnabled(false);
         aiSendButton.setText("…");
         aiChatStatus.setText("●  PREPARANDO TU RESPUESTA");
@@ -4554,19 +4581,17 @@ public final class MainActivity extends Activity {
             final String finalReply = reply;
             final String finalFailure = failure;
             runOnUiThread(() -> {
-                aiChatRequestInFlight = false;
                 if (currentToken.equals(token) && requestGeneration == appAccessGeneration && !appBanned
                         && aiConversationBox != null) {
                     if (finalReply != null) {
-                        aiChatMessages.add(new AiChatMessage("assistant", finalReply));
-                        if (prefs != null && prefs.getBoolean(PREF_AI_VOICE_MODE, false)) {
-                            aiChatStatus.setText("●  RESPUESTA LISTA · INICIANDO VOZ");
-                            speakAiReply(finalReply);
-                        } else {
-                            aiChatStatus.setText("●  RESPUESTA RECIBIDA");
-                            setAiActivityState("Respuesta lista", false, false);
-                        }
+                        aiChatStatus.setText("●  ESCRIBIENDO RESPUESTA");
+                        setAiActivityState("AiTod4S3 está redactando…", false, true);
+                        aiChatMessages.add(new AiChatMessage("assistant", ""));
+                        renderAiConversation();
+                        typeAiReply(finalReply, 0, currentToken, requestGeneration);
                     } else {
+                        aiChatRequestInFlight = false;
+                        stopAiThinkingTimeline();
                         String visibleFailure = finalFailure == null ? "No se pudo obtener una respuesta." : finalFailure;
                         aiChatStatus.setText("●  NO SE PUDO RESPONDER");
                         setAiActivityState("Inténtalo de nuevo", false, false);
@@ -4577,11 +4602,45 @@ public final class MainActivity extends Activity {
                     renderAiConversation();
                 }
                 if (aiSendButton != null) {
-                    aiSendButton.setEnabled(true);
-                    aiSendButton.setText("➤");
+                    aiSendButton.setEnabled(!aiChatRequestInFlight);
+                    if (!aiChatRequestInFlight) aiSendButton.setText("➤");
                 }
             });
         }, "aitod4s3-chat").start();
+    }
+
+    /** Muestra la respuesta como texto progresivo, con ritmo humano y sin bloquear el hilo de UI. */
+    private void typeAiReply(String reply, int offset, String requestToken, int requestGeneration) {
+        if (reply == null || aiChatMessages.isEmpty() || !requestToken.equals(token)
+                || requestGeneration != appAccessGeneration || isFinishing()) {
+            aiChatRequestInFlight = false;
+            stopAiThinkingTimeline();
+            if (aiSendButton != null) { aiSendButton.setEnabled(true); aiSendButton.setText("➤"); }
+            return;
+        }
+        AiChatMessage message = aiChatMessages.get(aiChatMessages.size() - 1);
+        if (!"assistant".equals(message.role)) return;
+        int next = Math.min(reply.length(), offset + (offset < 18 ? 1 : 2));
+        message.content = reply.substring(0, next);
+        renderAiConversation();
+        if (next < reply.length()) {
+            long delay = reply.charAt(next - 1) == '\n' ? 90L
+                    : (reply.charAt(next - 1) == '.' || reply.charAt(next - 1) == ',' ? 42L : 22L);
+            handler.postDelayed(() -> typeAiReply(reply, next, requestToken, requestGeneration), delay);
+            return;
+        }
+        aiChatRequestInFlight = false;
+        stopAiThinkingTimeline();
+        if (aiChatMessages.size() > 24) aiChatMessages.subList(0, aiChatMessages.size() - 24).clear();
+        persistAiChatHistory();
+        if (prefs != null && prefs.getBoolean(PREF_AI_VOICE_MODE, false)) {
+            aiChatStatus.setText("●  RESPUESTA LISTA · INICIANDO VOZ");
+            speakAiReply(reply);
+        } else {
+            aiChatStatus.setText("●  RESPUESTA LISTA");
+            setAiActivityState("Respuesta lista", false, false);
+        }
+        if (aiSendButton != null) { aiSendButton.setEnabled(true); aiSendButton.setText("➤"); }
     }
 
     private void setAiVoiceMode(boolean enabled) {
@@ -4726,7 +4785,7 @@ public final class MainActivity extends Activity {
 
     private static final class AiChatMessage {
         final String role;
-        final String content;
+        String content;
         AiChatMessage(String role, String content) {
             this.role = role;
             this.content = content;
@@ -6158,14 +6217,44 @@ public final class MainActivity extends Activity {
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
         card.setPadding(dp(13), dp(10), dp(13), dp(10));
-        card.setBackground(roundRect(Color.rgb(11, 31, 48), 15, borderColor()));
-        TextView title = text("SESIÓN TODUS", 10, true);
-        title.setTextColor(accentColor());
-        card.addView(title);
+        card.setBackground(roundRect(isDarkTheme() ? Color.rgb(13, 34, 48) : Color.rgb(242, 251, 252), 18,
+                isDarkTheme() ? Color.rgb(42, 112, 119) : Color.rgb(177, 222, 224)));
+        LinearLayout heading = new LinearLayout(this);
+        heading.setGravity(Gravity.CENTER_VERTICAL);
+        FrameLayout orb = new FrameLayout(this);
+        GradientDrawable orbBackground = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
+                new int[]{Color.rgb(37, 182, 184), Color.rgb(76, 112, 226)});
+        orbBackground.setShape(GradientDrawable.OVAL);
+        orb.setBackground(orbBackground);
+        TextView orbGlyph = text("T", 16, true);
+        orbGlyph.setGravity(Gravity.CENTER);
+        orbGlyph.setTextColor(Color.WHITE);
+        orb.addView(orbGlyph, new FrameLayout.LayoutParams(-1, -1));
+        heading.addView(orb, new LinearLayout.LayoutParams(dp(34), dp(34)));
+        LinearLayout titleGroup = new LinearLayout(this);
+        titleGroup.setOrientation(LinearLayout.VERTICAL);
+        TextView title = text("SESIÓN TODUS", 11, true);
+        title.setTextColor(isDarkTheme() ? Color.rgb(150, 239, 226) : Color.rgb(20, 119, 129));
+        titleGroup.addView(title);
+        TextView subtitle = bodyText("Tu conexión segura para recibir archivos");
+        subtitle.setTextSize(10);
+        titleGroup.addView(subtitle, margin(0, 2, 0, 0));
+        LinearLayout.LayoutParams titleGroupParams = new LinearLayout.LayoutParams(0, -2, 1f);
+        titleGroupParams.setMargins(dp(10), 0, dp(8), 0);
+        heading.addView(titleGroup, titleGroupParams);
+        String sessionLower = todusSessionStatusMessage == null ? "" : todusSessionStatusMessage.toLowerCase(java.util.Locale.ROOT);
+        boolean sessionLooksActive = sessionLower.contains("conectada") || sessionLower.contains("restaurada");
+        TextView statusPill = text(sessionLooksActive ? "●  ACTIVA" : "●  REVISAR", 9, true);
+        statusPill.setTextColor(sessionLooksActive ? Color.rgb(104, 236, 199) : Color.rgb(242, 198, 106));
+        statusPill.setPadding(dp(8), dp(5), dp(8), dp(5));
+        statusPill.setBackground(roundRect(Color.argb(55, 53, 193, 151), 20, Color.argb(105, 84, 215, 182)));
+        heading.addView(statusPill);
+        card.addView(heading);
         TextView detail = bodyText(todusSessionStatusMessage);
         detail.setTextSize(12);
         detail.setSingleLine(false);
-        card.addView(detail, margin(0, 4, 0, 0));
+        detail.setPadding(dp(44), dp(6), dp(2), 0);
+        card.addView(detail);
         parent.addView(card, margin(0, 0, 0, 9));
         todusSessionStatusText = detail;
         colorToDusSessionStatus(detail, todusSessionStatusMessage);
