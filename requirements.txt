@@ -7,4 +7,5 @@ todus-sdk>=1.8
 cryptg>=0.4,<1
 yt-dlp>=2026.10.26,<2027
 yt-dlp-ejs>=0.8,<1
+curl-cffi>=0.10,<1
 cryptography>=42,<52

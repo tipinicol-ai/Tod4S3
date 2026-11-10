@@ -19,6 +19,7 @@ PLATFORM_HOST_HINTS = {
     "facebook.com", "fb.watch", "youtube.com", "youtu.be", "instagram.com",
     "tiktok.com", "twitter.com", "x.com", "reddit.com", "twitch.tv",
 }
+INSTAGRAM_HOSTS = {"instagram.com", "www.instagram.com"}
 YOUTUBE_PUBLIC_CLIENTS = ("mweb", "android_vr", "android", "tv_embedded", "mediaconnect")
 CNV_ORIGIN = "https://frame.y2meta-uk.com"
 CNV_KEY_URL = "https://cnv.cx/v2/sanity/key"
@@ -28,6 +29,11 @@ CNV_CONVERTER_URL = "https://cnv.cx/v2/converter"
 def is_youtube_url(url: str) -> bool:
     host = (urlsplit(url).hostname or "").rstrip(".").lower()
     return host == "youtu.be" or host == "youtube.com" or host.endswith(".youtube.com")
+
+
+def is_instagram_url(url: str) -> bool:
+    host = (urlsplit(url).hostname or "").rstrip(".").lower()
+    return host in INSTAGRAM_HOSTS or host.endswith(".instagram.com")
 
 
 def _youtube_video_id(url: str) -> str | None:
@@ -324,6 +330,10 @@ def download_platform_video(
         # YouTube actualmente requiere ejecutar el desafío JavaScript para
         # resolver firmas y formatos. Docker instala Node.js y yt-dlp-ejs.
         "js_runtimes": {"node": {}},
+        # Instagram increasingly serves different metadata to generic HTTP
+        # clients. curl-cffi is an optional yt-dlp dependency installed by the
+        # deployment and lets the extractor use a normal browser TLS profile.
+        "impersonate": "chrome",
     }
     if audio_only:
         base_options["format"] = "bestaudio/best"
@@ -387,6 +397,12 @@ def download_platform_video(
                     message = None
                     break
         if message is not None:
+            if is_instagram_url(url) and "empty media response" in lowered:
+                raise ValueError(
+                    "Instagram no entregó los datos multimedia de esta publicación. "
+                    "Comprueba que sea pública y visible sin iniciar sesión; "
+                    "Instagram no permite descargar publicaciones privadas o bloqueadas sin autorización."
+                ) from exc
             if any(marker in lowered for marker in restricted_markers):
                 raise ValueError(
                     "YouTube bloqueó esta descarga desde el servidor. "

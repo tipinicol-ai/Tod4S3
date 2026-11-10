@@ -3991,10 +3991,7 @@ public final class MainActivity extends Activity {
         LinearLayout page = new LinearLayout(this);
         page.setOrientation(LinearLayout.VERTICAL);
         page.setPadding(dp(12), dp(8), dp(12), dp(12));
-        page.setBackground(new GradientDrawable(GradientDrawable.Orientation.TL_BR,
-                isDarkTheme()
-                        ? new int[]{Color.rgb(8, 13, 28), Color.rgb(21, 17, 43), Color.rgb(12, 28, 43)}
-                        : new int[]{Color.rgb(238, 244, 255), Color.rgb(248, 241, 255), Color.rgb(236, 249, 251)}));
+        page.setBackgroundColor(Color.rgb(8, 10, 9));
 
         LinearLayout header = new LinearLayout(this);
         header.setGravity(Gravity.CENTER_VERTICAL);
@@ -4010,22 +4007,22 @@ public final class MainActivity extends Activity {
         header.addView(back, new LinearLayout.LayoutParams(dp(82), dp(40)));
         FrameLayout brandOrb = new FrameLayout(this);
         GradientDrawable brandOrbBackground = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
-                new int[]{Color.rgb(101, 88, 235), Color.rgb(54, 184, 213)});
+                new int[]{Color.rgb(209, 221, 204), Color.rgb(151, 177, 157)});
         brandOrbBackground.setShape(GradientDrawable.OVAL);
         brandOrb.setBackground(brandOrbBackground);
         brandOrb.setElevation(dp(5));
         ImageView brandGlyph = new ImageView(this);
         brandGlyph.setImageResource(R.drawable.ic_ai_sparkle);
-        brandGlyph.setColorFilter(Color.WHITE);
+        brandGlyph.setColorFilter(Color.rgb(8, 10, 9));
         brandOrb.addView(brandGlyph, new FrameLayout.LayoutParams(dp(21), dp(21), Gravity.CENTER));
         LinearLayout.LayoutParams brandOrbLayout = new LinearLayout.LayoutParams(dp(38), dp(38));
         brandOrbLayout.setMargins(dp(9), 0, dp(8), 0);
         header.addView(brandOrb, brandOrbLayout);
         LinearLayout brandText = new LinearLayout(this);
         brandText.setOrientation(LinearLayout.VERTICAL);
-        brandText.addView(text("AiTod4S3", 16, true));
-        TextView brandSubtitle = text("ASISTENTE INTELIGENTE", 8, true);
-        brandSubtitle.setTextColor(secondaryTextColor());
+        brandText.addView(text("Chat", 16, true));
+        TextView brandSubtitle = text("TODUS AI", 8, true);
+        brandSubtitle.setTextColor(Color.rgb(151, 157, 152));
         brandSubtitle.setLetterSpacing(0.1f);
         brandText.addView(brandSubtitle, margin(0, 1, 0, 0));
         header.addView(brandText, new LinearLayout.LayoutParams(0, -2, 1f));
@@ -4034,7 +4031,8 @@ public final class MainActivity extends Activity {
         premiumBadge.setTextColor(Color.rgb(255, 221, 141));
         premiumBadge.setPadding(dp(7), dp(4), dp(7), dp(4));
         premiumBadge.setBackground(roundRect(Color.rgb(60, 48, 28), 18, Color.rgb(143, 111, 48)));
-        header.addView(premiumBadge, new LinearLayout.LayoutParams(-2, dp(26)));
+        premiumBadge.setVisibility(View.GONE);
+        header.addView(premiumBadge, new LinearLayout.LayoutParams(0, 0));
         Button chatOptions = secondaryButton("⋮");
         chatOptions.setTextSize(18);
         chatOptions.setPadding(0, 0, 0, 0);
@@ -4056,12 +4054,11 @@ public final class MainActivity extends Activity {
         page.addView(header);
 
         aiChatStatus = text("●  LISTA PARA AYUDAR", 9, true);
-        aiChatStatus.setTextColor(isDarkTheme() ? Color.rgb(147, 224, 220) : Color.rgb(33, 126, 139));
+        aiChatStatus.setTextColor(Color.rgb(209, 221, 204));
         aiChatStatus.setSingleLine(true);
         aiChatStatus.setEllipsize(android.text.TextUtils.TruncateAt.END);
         aiChatStatus.setPadding(dp(10), dp(6), dp(10), dp(6));
-        aiChatStatus.setBackground(roundRect(isDarkTheme() ? Color.rgb(22, 34, 52) : Color.rgb(228, 242, 248), 16,
-                isDarkTheme() ? Color.rgb(42, 58, 78) : Color.rgb(208, 229, 239)));
+        aiChatStatus.setBackground(roundRect(Color.rgb(19, 22, 21), 16, Color.rgb(57, 62, 58)));
         page.addView(aiChatStatus, margin(2, 2, 2, 7));
 
         aiActivityPanel = new LinearLayout(this);
@@ -4111,7 +4108,7 @@ public final class MainActivity extends Activity {
         aiConversationScroll = new ScrollView(this);
         aiConversationScroll.setFillViewport(true);
         aiConversationScroll.setVerticalScrollBarEnabled(true);
-        aiConversationScroll.setBackground(roundRect(isDarkTheme() ? Color.rgb(11, 17, 31) : Color.rgb(249, 251, 255), 22, borderColor()));
+        aiConversationScroll.setBackground(roundRect(Color.rgb(8, 10, 9), 22, Color.rgb(57, 62, 58)));
         aiConversationBox = new LinearLayout(this);
         aiConversationBox.setOrientation(LinearLayout.VERTICAL);
         aiConversationBox.setGravity(Gravity.CENTER);
@@ -4119,7 +4116,7 @@ public final class MainActivity extends Activity {
         aiConversationScroll.addView(aiConversationBox, new ScrollView.LayoutParams(-1, -2));
         LinearLayout chatPanel = card();
         chatPanel.setPadding(dp(6), dp(6), dp(6), dp(6));
-        chatPanel.setBackground(roundRect(isDarkTheme() ? Color.rgb(17, 23, 39) : Color.rgb(255, 255, 255), 25, borderColor()));
+        chatPanel.setBackground(roundRect(Color.rgb(19, 22, 21), 25, Color.rgb(57, 62, 58)));
         chatPanel.setElevation(dp(7));
         chatPanel.setMinimumHeight(dp(190));
         chatPanel.addView(aiConversationScroll, new LinearLayout.LayoutParams(-1, -1));
@@ -4130,7 +4127,7 @@ public final class MainActivity extends Activity {
         aiVoiceToggle = new Switch(this);
         aiVoiceToggle.setText("La IA responde hablando");
         aiVoiceToggle.setTextSize(12);
-        aiVoiceToggle.setTextColor(secondaryTextColor());
+        aiVoiceToggle.setTextColor(Color.rgb(151, 157, 152));
         aiVoiceToggle.setPadding(dp(6), 0, dp(6), 0);
         aiVoiceToggle.setContentDescription("Activar o desactivar respuestas habladas de AiTod4S3");
         aiVoiceToggle.setChecked(prefs.getBoolean(PREF_AI_VOICE_MODE, false));
@@ -4142,7 +4139,7 @@ public final class MainActivity extends Activity {
         composerRow.setGravity(Gravity.CENTER_VERTICAL);
         composerRow.setOrientation(LinearLayout.HORIZONTAL);
         composerRow.setPadding(dp(6), dp(5), dp(6), dp(5));
-        composerRow.setBackground(roundRect(isDarkTheme() ? Color.rgb(20, 27, 44) : Color.WHITE, 28, borderColor()));
+        composerRow.setBackground(roundRect(Color.rgb(19, 22, 21), 28, Color.rgb(57, 62, 58)));
         composerRow.setElevation(dp(6));
         aiComposer = new EditText(this);
         aiComposer.setHint("Escribe tu pregunta…");
@@ -4155,8 +4152,8 @@ public final class MainActivity extends Activity {
                 | android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
         aiComposer.setImeOptions(EditorInfo.IME_ACTION_SEND);
         aiComposer.setFilters(new InputFilter[]{new InputFilter.LengthFilter(2500)});
-        aiComposer.setTextColor(primaryTextColor());
-        aiComposer.setHintTextColor(secondaryTextColor());
+        aiComposer.setTextColor(Color.rgb(239, 240, 236));
+        aiComposer.setHintTextColor(Color.rgb(151, 157, 152));
         aiComposer.setTextSize(15);
         aiComposer.setPadding(dp(12), dp(7), dp(12), dp(7));
         aiComposer.setBackground(roundRect(Color.TRANSPARENT, 22, 0));
@@ -4167,7 +4164,7 @@ public final class MainActivity extends Activity {
         aiSendButton.setMinHeight(0);
         aiSendButton.setMinWidth(0);
         GradientDrawable sendCircle = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
-                new int[]{Color.rgb(104, 83, 230), Color.rgb(45, 170, 204)});
+                new int[]{Color.rgb(209, 221, 204), Color.rgb(151, 177, 157)});
         sendCircle.setShape(GradientDrawable.OVAL);
         aiSendButton.setBackground(sendCircle);
         aiSendButton.setElevation(dp(4));
