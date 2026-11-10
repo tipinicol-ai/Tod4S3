@@ -193,7 +193,7 @@ public final class MainActivity extends Activity implements TermuxResultReceiver
 
         composerBox = new LinearLayout(this);
         composerBox.setOrientation(LinearLayout.VERTICAL);
-        composerBox.setPadding(dp(11), dp(7), dp(11), dp(7));
+        composerBox.setPadding(dp(12), dp(8), dp(12), dp(8));
         composerBox.setBackground(round(C_PANEL, C_LINE, 1, 18));
         LinearLayout.LayoutParams composerBoxLp = new LinearLayout.LayoutParams(-1, -2);
         composerBoxLp.setMargins(dp(10), dp(6), dp(10), dp(8));
@@ -210,14 +210,18 @@ public final class MainActivity extends Activity implements TermuxResultReceiver
         composer.setGravity(Gravity.CENTER_VERTICAL);
         LinearLayout inputRow = new LinearLayout(this);
         inputRow.setGravity(Gravity.CENTER_VERTICAL);
+        inputRow.setPadding(0, 0, 0, dp(2));
         composerBox.addView(inputRow, new LinearLayout.LayoutParams(-1, -2));
         inputRow.addView(composer, new LinearLayout.LayoutParams(0, -2, 1));
-        sendButton = control("Enviar");
+        sendButton = label("Enviar  ↑", 12, C_BG);
+        sendButton.setGravity(Gravity.CENTER);
+        sendButton.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        sendButton.setIncludeFontPadding(false);
         sendButton.setTextSize(12);
         sendButton.setTextColor(C_BG);
         sendButton.setContentDescription("Enviar mensaje a NikuDarIA");
         sendButton.setBackground(round(C_ACCENT, C_ACCENT, 0, 12));
-        LinearLayout.LayoutParams sendLp = new LinearLayout.LayoutParams(dp(76), dp(40));
+        LinearLayout.LayoutParams sendLp = new LinearLayout.LayoutParams(dp(84), dp(40));
         sendLp.setMargins(dp(6), 0, 0, 0);
         inputRow.addView(sendButton, sendLp);
         sendButton.setOnClickListener(v -> sendMessage());
@@ -296,12 +300,12 @@ public final class MainActivity extends Activity implements TermuxResultReceiver
         else if ("termux_command".equals(type)) exact = "Comando: " + action.optString("command", "");
         else { addSystemLog("El servidor propuso un tipo de acción no reconocido; no se ejecutó."); return; }
         pendingAction = action;
-        LinearLayout panel = new LinearLayout(this); panel.setOrientation(LinearLayout.VERTICAL); panel.setPadding(dp(12), dp(10), dp(12), dp(10)); panel.setBackground(round(C_PANEL2, C_LINE, 1, 14));
-        TextView heading = label("Acción pendiente · requiere tu permiso", 13, C_ACCENT); panel.addView(heading, margin(0, 0, 0, 7));
-        TextView exactView = label(exact, 13, C_TEXT); panel.addView(exactView, margin(0, 0, 0, 6));
+        LinearLayout panel = new LinearLayout(this); panel.setOrientation(LinearLayout.VERTICAL); panel.setPadding(dp(14), dp(12), dp(14), dp(12)); panel.setBackground(round(C_PANEL2, C_LINE, 1, 16)); panel.setElevation(dp(2));
+        TextView heading = label("Confirmar acción", 13, C_ACCENT); heading.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); panel.addView(heading, margin(0, 0, 0, 7));
+        TextView exactView = label(exact, 13, C_TEXT); exactView.setTypeface(Typeface.create("monospace", Typeface.NORMAL)); panel.addView(exactView, margin(0, 0, 0, 6));
         TextView reason = label("Razón: " + action.optString("reason", "No se proporcionó razón."), 12, C_MUTED); panel.addView(reason, margin(0, 0, 0, 10));
         LinearLayout buttons = new LinearLayout(this);
-        TextView cancel = pill("Cancelar"); TextView execute = pill("Ejecutar");
+        TextView cancel = pill("Ahora no"); TextView execute = label("Ejecutar", 12, C_BG); execute.setGravity(Gravity.CENTER); execute.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); execute.setBackground(round(C_ACCENT, C_ACCENT, 0, 12)); execute.setPadding(dp(14), dp(8), dp(14), dp(8));
         buttons.addView(cancel, new LinearLayout.LayoutParams(0, -2, 1)); buttons.addView(execute, margin(8, 0, 0, 0));
         panel.addView(buttons); conversation.addView(panel, margin(0, 9, 0, 4));
         cancel.setOnClickListener(v -> {
