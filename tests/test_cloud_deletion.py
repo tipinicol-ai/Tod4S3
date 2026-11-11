@@ -207,7 +207,7 @@ async def test_app_deletes_delivery_from_its_recorded_todus_phone_after_user_cha
 
 
 @_run_async_test
-async def test_app_deletes_registered_parts_when_legacy_delivery_registry_is_incomplete(monkeypatch, tmp_path):
+async def test_app_preserves_legacy_delivery_when_message_registry_is_incomplete(monkeypatch, tmp_path):
     _history(monkeypatch, tmp_path, {})
     _deliveries(monkeypatch, tmp_path)
     sent_path = tmp_path / "todus_sent_messages.json"
@@ -235,12 +235,10 @@ async def test_app_deletes_registered_parts_when_legacy_delivery_registry_is_inc
         {"task_id": "partial-task"},
     )
 
-    assert status == 200
-    assert payload["deleted_parts"] == 1
-    assert payload["untracked_parts"] == 1
-    assert "no había ID de borrado" in payload["warning"]
-    assert client.deleted == [("5350911221", "known-message")]
-    assert sync_api.deliveries_for_user(42) == []
+    assert status == 409
+    assert payload["error"] == "delivery_messages_incomplete"
+    assert client.deleted == []
+    assert len(sync_api.deliveries_for_user(42)) == 1
 
 
 @_run_async_test

@@ -8640,9 +8640,9 @@ async def sync_app_task_request(application: Application, action: str, user_id: 
         if not isinstance(expected_parts, list) or not expected_parts:
             return {"ok": False, "error": "delivery_state_ambiguous",
                     "message": "La entrega no tiene una lista válida de partes; no se borró nada."}, 409
-        if not messages:
+        if len(messages) != len(expected_parts):
             return {"ok": False, "error": "delivery_messages_incomplete",
-                    "message": "No hay IDs de mensajes ToDus registrados para esta entrega; no se borró ningún archivo."}, 409
+                    "message": "Faltan IDs de mensajes ToDus para una o más partes de esta entrega antigua; no se borró ninguna parte."}, 409
         history_snapshot = all_task_history().get(str(user_id), [])
         if not isinstance(history_snapshot, list):
             history_snapshot = []
@@ -8705,14 +8705,8 @@ async def sync_app_task_request(application: Application, action: str, user_id: 
             return {"ok": False, "error": "delivery_changed",
                     "message": "El registro cambió; conserva la fila y consulta de nuevo."}, 409
         schedule_data_backup(application, "borrado individual de entrega ToDus desde Android")
-        untracked_parts = max(0, len(expected_parts) - selected)
         result = {"ok": True, "task_id": task_id, "deleted_parts": deleted,
-                  "untracked_parts": untracked_parts}
-        if untracked_parts:
-            result["warning"] = (
-                f"Se borraron {deleted} mensajes registrados y se retiró la entrega de la app; "
-                f"no había ID de borrado para {untracked_parts} parte(s)."
-            )
+                  "untracked_parts": 0}
         return result, 200
 
     if action == "clear_cloud":

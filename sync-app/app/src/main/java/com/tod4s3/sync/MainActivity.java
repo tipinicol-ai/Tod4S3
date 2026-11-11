@@ -256,6 +256,7 @@ public final class MainActivity extends Activity {
     private TextView aiChatStatus;
     private LinearLayout aiActivityPanel;
     private TextView aiActivityLabel;
+    private TextView aiChatThinkingBubbleLabel;
     private LinearLayout aiVoiceVisualizer;
     private ObjectAnimator aiTypingAnimator;
     private Runnable aiThinkingTicker;
@@ -4191,6 +4192,9 @@ public final class MainActivity extends Activity {
                 String phase = seconds < 2 ? "Pensando"
                         : (seconds < 5 ? "Analizando tu pregunta" : "Preparando una respuesta clara");
                 aiActivityLabel.setText(phase + "  ·  " + seconds + "s");
+                if (aiChatThinkingBubbleLabel != null) {
+                    aiChatThinkingBubbleLabel.setText(phase + "  ·  " + seconds + "s");
+                }
                 if (aiChatStatus != null) aiChatStatus.setText("●  " + phase.toUpperCase(java.util.Locale.ROOT));
                 handler.postDelayed(this, 1000L);
             }
@@ -4208,6 +4212,7 @@ public final class MainActivity extends Activity {
     private void renderAiConversation() {
         if (aiConversationBox == null || aiConversationScroll == null) return;
         aiConversationBox.removeAllViews();
+        aiChatThinkingBubbleLabel = null;
         if (aiChatMessages.isEmpty()) {
             aiConversationBox.setGravity(Gravity.TOP | Gravity.CENTER_HORIZONTAL);
             LinearLayout welcome = new LinearLayout(this);
@@ -4314,6 +4319,39 @@ public final class MainActivity extends Activity {
             bubbleParams.setMargins(dp(2), 0, dp(2), dp(8));
             row.addView(bubble, bubbleParams);
             aiConversationBox.addView(row, new LinearLayout.LayoutParams(-1, -2));
+        }
+        if (aiChatRequestInFlight) {
+            LinearLayout thinking = new LinearLayout(this);
+            thinking.setOrientation(LinearLayout.HORIZONTAL);
+            thinking.setGravity(Gravity.CENTER_VERTICAL);
+            thinking.setPadding(dp(11), dp(8), dp(14), dp(8));
+            thinking.setBackground(roundRect(isDarkTheme() ? Color.rgb(25, 31, 51) : Color.rgb(244, 246, 255),
+                    18, isDarkTheme() ? Color.rgb(74, 83, 135) : Color.rgb(214, 220, 247)));
+            FrameLayout orb = new FrameLayout(this);
+            GradientDrawable orbBg = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
+                    new int[]{Color.rgb(120, 88, 245), Color.rgb(36, 164, 220)});
+            orbBg.setShape(GradientDrawable.OVAL);
+            orb.setBackground(orbBg);
+            TextView sparkle = text("✦", 14, true);
+            sparkle.setTextColor(Color.WHITE);
+            sparkle.setGravity(Gravity.CENTER);
+            orb.addView(sparkle, new FrameLayout.LayoutParams(-1, -1));
+            thinking.addView(orb, new LinearLayout.LayoutParams(dp(30), dp(30)));
+            TextView label = text("Pensando · 0s", 12, true);
+            aiChatThinkingBubbleLabel = label;
+            label.setTextColor(isDarkTheme() ? Color.rgb(223, 221, 255) : Color.rgb(74, 70, 142));
+            LinearLayout.LayoutParams labelParams = new LinearLayout.LayoutParams(-2, -2);
+            labelParams.setMargins(dp(9), 0, 0, 0);
+            thinking.addView(label, labelParams);
+            ObjectAnimator pulse = ObjectAnimator.ofFloat(orb, View.ALPHA, 1f, 0.55f, 1f);
+            pulse.setDuration(1000L);
+            pulse.setRepeatCount(ObjectAnimator.INFINITE);
+            pulse.start();
+            thinking.addOnAttachStateChangeListener(new View.OnAttachStateChangeListener() {
+                @Override public void onViewAttachedToWindow(View view) { if (!pulse.isRunning()) pulse.start(); }
+                @Override public void onViewDetachedFromWindow(View view) { pulse.cancel(); }
+            });
+            aiConversationBox.addView(thinking, margin(0, 0, 0, 10));
         }
         if (!aiChatMessages.isEmpty()) {
             aiConversationScroll.post(() -> aiConversationScroll.scrollTo(0,
