@@ -1069,7 +1069,15 @@ def broadcast_button_choice_keyboard(button_count: int = 0) -> InlineKeyboardMar
 
 def broadcast_confirmation_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [btn("Enviar a todos", callback_data="admin:broadcast:send")],
+        [btn("Enviar difusión", callback_data="admin:broadcast:send")],
+        [btn("Cancelar", callback_data="admin:broadcast:cancel")],
+    ])
+
+
+def broadcast_destination_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [btn("Usuarios + canal", callback_data="admin:broadcast:users")],
+        [btn(f"Solo al canal {GLOBAL_BROADCAST_CHANNEL}", callback_data="admin:broadcast:channel")],
         [btn("Cancelar", callback_data="admin:broadcast:cancel")],
     ])
 
@@ -1104,9 +1112,9 @@ def broadcast_preview_text(state: dict) -> str:
         "",
         f"Adjunto: {attachment}",
         f"Botones ({len(buttons[:3])}/3):\n{button}",
-        f"Destino adicional: {GLOBAL_BROADCAST_CHANNEL} (el bot necesita permiso para publicar)",
+        f"Destino: {'solo el canal ' + GLOBAL_BROADCAST_CHANNEL if state.get('destination') == 'channel' else 'usuarios y canal ' + GLOBAL_BROADCAST_CHANNEL}",
         "",
-        "Pulsa Enviar a todos para confirmar.",
+        "Pulsa Enviar difusión para confirmar.",
     ])
 
 
@@ -1172,9 +1180,10 @@ async def broadcast_admin_message(
     button_label: str | None = None,
     button_url: str | None = None,
     buttons: list[dict] | None = None,
+    include_users: bool = True,
 ) -> tuple[int, int, int, bool]:
-    """Envía la difusión a los usuarios conocidos y al canal configurado."""
-    targets = registered_user_ids()
+    """Envía a usuarios conocidos y al canal; permite seleccionar solo el canal."""
+    targets = registered_user_ids() if include_users else []
     sent = failed = 0
     channel_sent = False
     keyboard = None
@@ -5706,6 +5715,21 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 reply_markup=InlineKeyboardMarkup([[btn("Volver al panel", callback_data="admin:back")]]),
             )
             return
+        if action in {"users", "channel"}:
+            destination = "channel" if action == "channel" else "users"
+            context.user_data["admin_state"] = {"step": "broadcast_text", "destination": destination}
+            await query.answer()
+            destination_text = (f"Solo se enviará al canal {GLOBAL_BROADCAST_CHANNEL}; no se enviará a usuarios."
+                                if destination == "channel" else
+                                f"Se enviará a usuarios registrados y al canal {GLOBAL_BROADCAST_CHANNEL}.")
+            await edit_query_message_text(
+                query.message,
+                card("📢 ᴅɪꜰᴜꜱɪóɴ", [destination_text, "", "Escribe el texto (hasta 3500 caracteres).",
+                                     "Después puedes adjuntar una foto o APK y añadir botones.",
+                                     "No se enviará hasta que confirmes."]),
+                reply_markup=broadcast_cancel_keyboard(),
+            )
+            return
         if not isinstance(state, dict):
             await query.answer(sc("No hay una difusión activa"), show_alert=True)
             return
@@ -5776,15 +5800,17 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 media_type=state.get("media_type"),
                 media_file_id=state.get("media_file_id"),
                 buttons=buttons,
+                include_users=state.get("destination") != "channel",
             )
+            summary = ([f"Destino: solo canal {GLOBAL_BROADCAST_CHANNEL}",
+                        f"Canal: {'publicado' if channel_sent else 'no publicado; revisa permisos del bot'}"]
+                       if state.get("destination") == "channel" else
+                       [f"Usuarios registrados: {total}", f"Entregados a usuarios: {sent}",
+                        f"No entregados a usuarios: {failed}",
+                        f"Canal {GLOBAL_BROADCAST_CHANNEL}: {'publicado' if channel_sent else 'no publicado; revisa permisos del bot'}"])
             await edit_query_message_text(
                 query.message,
-                card("📢 ᴅɪꜰᴜꜱɪóɴ ᴛᴇʀᴍɪɴᴀᴅᴀ", [
-                    f"Usuarios registrados: {total}",
-                    f"Entregados a usuarios: {sent}",
-                    f"No entregados a usuarios: {failed}",
-                    f"Canal {GLOBAL_BROADCAST_CHANNEL}: {'publicado' if channel_sent else 'no publicado; revisa permisos del bot'}",
-                ]),
+                card("📢 ᴅɪꜰᴜꜱɪóɴ ᴛᴇʀᴍɪɴᴀᴅᴀ", summary),
                 reply_markup=InlineKeyboardMarkup([[btn("Volver al panel", callback_data="admin:back")]]),
             )
             return
@@ -6595,18 +6621,16 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             return
 
         if query.data == "admin:broadcast":
-            context.user_data["admin_state"] = {"step": "broadcast_text"}
+            context.user_data.pop("admin_state", None)
             await query.answer()
             await edit_query_message_text(query.message,
                 card("📢 ᴅɪꜰᴜꜱɪóɴ", [
-                    "Escribe el texto que recibirán",
-                    "los usuarios registrados (hasta 3500 caracteres).",
-                    "",
-                    "Después podrás adjuntar una foto o APK",
-                    "y añadir opcionalmente un botón con enlace.",
+                    "Elige dónde quieres enviar el anuncio.", "",
+                    "Usuarios + canal: envía a usuarios registrados y al canal.",
+                    f"Solo canal: publica únicamente en {GLOBAL_BROADCAST_CHANNEL}.",
                     "La difusión no saldrá hasta que la confirmes.",
                 ]),
-                reply_markup=broadcast_cancel_keyboard(),
+                reply_markup=broadcast_destination_keyboard(),
             )
             return
 
@@ -7561,7 +7585,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             if not body:
                 await message.reply_text(sc("Escribe un texto para la difusión."), reply_markup=broadcast_cancel_keyboard())
                 return
-            context.user_data["admin_state"] = {"step": "broadcast_media", "body": body}
+            context.user_data["admin_state"] = {
+                "step": "broadcast_media", "body": body,
+                "destination": admin_state.get("destination", "users"),
+            }
             await message.reply_text(
                 card("📎 ᴀᴅᴊᴜɴᴛᴏ ᴏᴘᴄɪᴏɴᴀʟ", [
                     "Ahora puedes enviar una foto, un vídeo o un documento, por ejemplo el APK.",

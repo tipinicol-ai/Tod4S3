@@ -147,3 +147,21 @@ def test_channel_permission_failure_does_not_mark_user_delivery_as_failed(monkey
     assert result == (1, 1, 0, False)
     assert len(calls) == 1
     assert calls[0]["chat_id"] == 101
+
+
+def test_channel_only_broadcast_does_not_fetch_or_message_registered_users(monkeypatch):
+    calls = []
+
+    def unexpected_users_lookup():
+        raise AssertionError("channel-only mode must not fetch user recipients")
+
+    class FakeBot:
+        async def send_message(self, **kwargs):
+            calls.append(kwargs)
+
+    monkeypatch.setattr(bot, "registered_user_ids", unexpected_users_lookup)
+    result = asyncio.run(bot.broadcast_admin_message(FakeBot(), "Solo canal", include_users=False))
+
+    assert result == (0, 0, 0, True)
+    assert len(calls) == 1
+    assert calls[0]["chat_id"] == bot.GLOBAL_BROADCAST_CHANNEL

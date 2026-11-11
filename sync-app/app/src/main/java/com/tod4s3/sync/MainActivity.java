@@ -2671,9 +2671,9 @@ public final class MainActivity extends Activity {
 
         refs.state = text("", 10, true);
         refs.state.setGravity(Gravity.CENTER);
-        refs.state.setPadding(dp(7), dp(7), dp(7), dp(7));
-        refs.state.setMinWidth(dp(72));
-        LinearLayout.LayoutParams stateParams = new LinearLayout.LayoutParams(-2, dp(34));
+        refs.state.setPadding(dp(10), dp(7), dp(10), dp(7));
+        refs.state.setMinWidth(dp(82));
+        LinearLayout.LayoutParams stateParams = new LinearLayout.LayoutParams(-2, dp(36));
         stateParams.setMargins(0, 0, dp(5), 0);
         header.addView(refs.state, stateParams);
 
@@ -2695,13 +2695,13 @@ public final class MainActivity extends Activity {
 
         refs.progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
         refs.progress.setMax(100);
-        refs.progress.setProgressTintList(ColorStateList.valueOf(accentColor()));
-        refs.progress.setProgressBackgroundTintList(ColorStateList.valueOf(borderColor()));
+        refs.progress.setProgressDrawable(roundedProgressDrawable(accentColor(), borderColor()));
         refs.progress.setIndeterminateTintList(ColorStateList.valueOf(accentColor()));
         int percent = total > 0 ? (int) Math.min(100L, Math.max(0L, bytes * 100L / total)) : 0;
         refs.progress.setProgress(percent);
         refs.progress.setIndeterminate(running && total <= 0);
-        item.addView(refs.progress, margin(dp(2), 12, dp(2), 0));
+        item.addView(refs.progress, margin(dp(1), 12, dp(1), 0));
+        refs.progress.getLayoutParams().height = dp(12);
 
         LinearLayout bottom = new LinearLayout(this);
         bottom.setGravity(Gravity.CENTER_VERTICAL);
@@ -2752,7 +2752,7 @@ public final class MainActivity extends Activity {
                     if (refs.progressAnimator != null) refs.progressAnimator.cancel();
                     refs.progressAnimator = ObjectAnimator.ofInt(refs.progress, "progress",
                             refs.progress.getProgress(), percent);
-                    refs.progressAnimator.setDuration(330L);
+                    refs.progressAnimator.setDuration(480L);
                     refs.progressAnimator.setInterpolator(new DecelerateInterpolator());
                     refs.progressAnimator.start();
                 }
@@ -2770,8 +2770,26 @@ public final class MainActivity extends Activity {
                     : state.equals("paused") ? Color.rgb(54, 43, 27) : raisedSurfaceColor();
             refs.state.setText(label);
             refs.state.setTextColor(foreground);
-            refs.state.setBackground(roundRect(background, 9, foreground));
+            refs.state.setBackground(roundRect(background, 18, foreground));
         }
+    }
+
+    private android.graphics.drawable.Drawable roundedProgressDrawable(int fillColor, int trackColor) {
+        GradientDrawable track = new GradientDrawable();
+        track.setShape(GradientDrawable.RECTANGLE);
+        track.setColor(trackColor);
+        track.setCornerRadius(dp(20));
+        GradientDrawable fill = new GradientDrawable();
+        fill.setShape(GradientDrawable.RECTANGLE);
+        fill.setColor(fillColor);
+        fill.setCornerRadius(dp(20));
+        android.graphics.drawable.ClipDrawable clipped = new android.graphics.drawable.ClipDrawable(
+                fill, Gravity.LEFT, android.graphics.drawable.ClipDrawable.HORIZONTAL);
+        android.graphics.drawable.LayerDrawable layers = new android.graphics.drawable.LayerDrawable(
+                new android.graphics.drawable.Drawable[]{track, clipped});
+        layers.setId(0, android.R.id.background);
+        layers.setId(1, android.R.id.progress);
+        return layers;
     }
 
     private int renderDirectLinkTasks() {
@@ -4328,14 +4346,20 @@ public final class MainActivity extends Activity {
             thinking.setBackground(roundRect(isDarkTheme() ? Color.rgb(25, 31, 51) : Color.rgb(244, 246, 255),
                     18, isDarkTheme() ? Color.rgb(74, 83, 135) : Color.rgb(214, 220, 247)));
             FrameLayout orb = new FrameLayout(this);
-            GradientDrawable orbBg = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
-                    new int[]{Color.rgb(120, 88, 245), Color.rgb(36, 164, 220)});
+            GradientDrawable orbBg = new GradientDrawable();
             orbBg.setShape(GradientDrawable.OVAL);
+            orbBg.setColor(isDarkTheme() ? Color.rgb(31, 43, 62) : Color.rgb(231, 242, 255));
+            orbBg.setStroke(dp(1), Color.rgb(65, 157, 232));
             orb.setBackground(orbBg);
-            TextView sparkle = text("✦", 14, true);
-            sparkle.setTextColor(Color.WHITE);
-            sparkle.setGravity(Gravity.CENTER);
-            orb.addView(sparkle, new FrameLayout.LayoutParams(-1, -1));
+            View blueDot = new View(this);
+            GradientDrawable dotBg = new GradientDrawable();
+            dotBg.setShape(GradientDrawable.OVAL);
+            dotBg.setColor(Color.rgb(70, 177, 255));
+            blueDot.setBackground(dotBg);
+            FrameLayout.LayoutParams dotParams = new FrameLayout.LayoutParams(dp(7), dp(7),
+                    Gravity.TOP | Gravity.CENTER_HORIZONTAL);
+            dotParams.topMargin = dp(1);
+            orb.addView(blueDot, dotParams);
             thinking.addView(orb, new LinearLayout.LayoutParams(dp(30), dp(30)));
             TextView label = text("Pensando · 0s", 12, true);
             aiChatThinkingBubbleLabel = label;
@@ -4343,13 +4367,14 @@ public final class MainActivity extends Activity {
             LinearLayout.LayoutParams labelParams = new LinearLayout.LayoutParams(-2, -2);
             labelParams.setMargins(dp(9), 0, 0, 0);
             thinking.addView(label, labelParams);
-            ObjectAnimator pulse = ObjectAnimator.ofFloat(orb, View.ALPHA, 1f, 0.55f, 1f);
-            pulse.setDuration(1000L);
-            pulse.setRepeatCount(ObjectAnimator.INFINITE);
-            pulse.start();
+            ObjectAnimator spin = ObjectAnimator.ofFloat(orb, View.ROTATION, 0f, 360f);
+            spin.setDuration(850L);
+            spin.setInterpolator(new android.view.animation.LinearInterpolator());
+            spin.setRepeatCount(ObjectAnimator.INFINITE);
+            spin.start();
             thinking.addOnAttachStateChangeListener(new View.OnAttachStateChangeListener() {
-                @Override public void onViewAttachedToWindow(View view) { if (!pulse.isRunning()) pulse.start(); }
-                @Override public void onViewDetachedFromWindow(View view) { pulse.cancel(); }
+                @Override public void onViewAttachedToWindow(View view) { if (!spin.isRunning()) spin.start(); }
+                @Override public void onViewDetachedFromWindow(View view) { spin.cancel(); }
             });
             aiConversationBox.addView(thinking, margin(0, 0, 0, 10));
         }
@@ -4633,6 +4658,7 @@ public final class MainActivity extends Activity {
         stopAiThinkingTimeline();
         if (aiChatMessages.size() > 24) aiChatMessages.subList(0, aiChatMessages.size() - 24).clear();
         persistAiChatHistory();
+        renderAiConversation();
         if (prefs != null && prefs.getBoolean(PREF_AI_VOICE_MODE, false)) {
             aiChatStatus.setText("●  RESPUESTA LISTA · INICIANDO VOZ");
             speakAiReply(reply);
@@ -6351,10 +6377,9 @@ public final class MainActivity extends Activity {
                     card.addView(progressLabel, margin(0, 8, 0, 4));
                     ProgressBar progressBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
                     progressBar.setMax(100);
-                    progressBar.setProgressTintList(ColorStateList.valueOf(accentColor()));
-                    progressBar.setProgressBackgroundTintList(ColorStateList.valueOf(borderColor()));
+                    progressBar.setProgressDrawable(roundedProgressDrawable(accentColor(), borderColor()));
                     progressBar.setVisibility(View.GONE);
-                    LinearLayout.LayoutParams progressLayout = new LinearLayout.LayoutParams(-1, dp(8));
+                    LinearLayout.LayoutParams progressLayout = new LinearLayout.LayoutParams(-1, dp(12));
                     progressLayout.setMargins(0, 0, 0, dp(8));
                     card.addView(progressBar, progressLayout);
                     LinearLayout cloudActions = new LinearLayout(this);
