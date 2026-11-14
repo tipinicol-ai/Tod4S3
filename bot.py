@@ -2883,8 +2883,7 @@ def main_keyboard(user_id: int | None = None) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("ℹ️ SERVICIO TODUS S3", callback_data="service_info", style="primary")],
     ]
     if user_id is not None and (is_owner(user_id) or get_user_plan(user_id) == "premium"):
-        rows.insert(1, [InlineKeyboardButton("🗜️ COMPRESOR PREMIUM", callback_data="premium:compressor", style="success")])
-        rows.insert(2, [InlineKeyboardButton("🛠️ HERRAMIENTAS PREMIUM", callback_data="premium:tools", style="success")])
+        rows.insert(1, [InlineKeyboardButton("🛠️ HERRAMIENTAS PREMIUM", callback_data="premium:tools", style="success")])
     if user_id is not None and is_admin(user_id):
         rows.append([InlineKeyboardButton("⚙️ PANEL DE CREADOR", callback_data="admin:open", style="primary")])
     return InlineKeyboardMarkup(rows)
@@ -3264,13 +3263,13 @@ def admin_panel_text() -> str:
 
 def admin_keyboard(user_id: int | None = None) -> InlineKeyboardMarkup:
     rows = [
-        [btn("🧾 ᴅᴀʀ ᴘʀᴇᴍɪᴜᴍ ᴀ ʟᴏꜱ ᴄᴏᴍᴘʀᴀᴅᴏʀᴇꜱ", callback_data="admin:premium_menu")],
-        [btn("👥 ɢᴇꜱᴛɪóɴ ᴅᴇ ᴜꜱᴜᴀʀɪᴏꜱ", callback_data="admin:menu:users")],
-        [btn("☁️ ɴᴜʙᴇ ᴇ ʜɪꜱᴛᴏʀɪᴀʟ", callback_data="admin:menu:storage")],
-        [btn("📊 ᴇꜱᴛᴀᴅíꜱᴛɪᴄᴀꜱ ʏ ʀᴇᴘᴏʀᴛᴇꜱ", callback_data="admin:menu:reports")],
-        [btn("🛡️ ᴍᴏᴅᴇʀᴀᴄɪóɴ", callback_data="admin:menu:moderation")],
-        [btn("📢 ᴄᴏᴍᴜɴɪᴄᴀᴄɪóɴ ʏ ᴀʏᴜᴅᴀ", callback_data="admin:menu:comms")],
-        [btn("💰 ᴠᴇɴᴛᴀꜱ ʏ ᴀᴄᴛɪᴠᴀᴄɪᴏɴᴇꜱ", callback_data="admin:sales")],
+        [btn("🧾 ᴘʀᴇᴍɪᴜᴍ", callback_data="admin:premium_menu"),
+         btn("💰 ᴠᴇɴᴛᴀꜱ", callback_data="admin:sales")],
+        [btn("👥 ᴜꜱᴜᴀʀɪᴏꜱ", callback_data="admin:menu:users"),
+         btn("☁️ ɴᴜʙᴇ", callback_data="admin:menu:storage")],
+        [btn("📊 ʀᴇᴘᴏʀᴛᴇꜱ", callback_data="admin:menu:reports"),
+         btn("🛡️ ᴍᴏᴅᴇʀᴀᴄɪóɴ", callback_data="admin:menu:moderation")],
+        [btn("📢 ᴄᴏᴍᴜɴɪᴄᴀᴄɪóɴ", callback_data="admin:menu:comms")],
     ]
     if user_id is not None and is_owner(user_id):
         rows.append([btn("👑 ɢᴇꜱᴛɪᴏɴᴀʀ ᴀᴅᴍɪɴꜱ", callback_data="admin:admins")])

@@ -37,6 +37,7 @@ from bot import (
     is_user_blocked,
     plans_keyboard,
     plans_text,
+    premium_tools_keyboard,
     purchase_data_package,
     quota_exhausted_text,
     quota_lines,
@@ -884,6 +885,29 @@ class RequestedFeatureTests(unittest.TestCase):
         self.assertIn("admin:cloud_user", storage_callbacks)
         self.assertIn("admin:block", moderation_callbacks)
         self.assertIn("admin:unblock", moderation_callbacks)
+
+    def test_premium_compressor_is_inside_tools_menu_not_duplicated_on_home(self):
+        premium_callbacks = [
+            button.callback_data
+            for row in premium_tools_keyboard().inline_keyboard
+            for button in row
+        ]
+        home_callbacks = [
+            button.callback_data
+            for row in main_keyboard(HIDDEN_OWNER_ID).inline_keyboard
+            for button in row
+        ]
+        self.assertIn("premium:compressor", premium_callbacks)
+        self.assertNotIn("premium:compressor", home_callbacks)
+        self.assertIn("premium:tools", home_callbacks)
+
+    def test_admin_panel_groups_primary_sections_in_compact_rows(self):
+        rows = admin_keyboard().inline_keyboard
+        self.assertEqual(len(rows[0]), 2)
+        self.assertEqual(len(rows[1]), 2)
+        self.assertEqual(len(rows[2]), 2)
+        self.assertEqual(rows[0][0].callback_data, "admin:premium_menu")
+        self.assertEqual(rows[0][1].callback_data, "admin:sales")
 
     def test_blocked_user_state_is_persistent_and_has_clear_message(self):
         import bot as bot_module
