@@ -52,6 +52,7 @@ def test_broadcast_sends_text_optional_button_photo_and_document_to_users_and_ch
         message = by_chat[chat_id]
         assert message["parse_mode"] is None
         assert "Anuncio de prueba <seguro> & texto" in message["text"]
+        assert "📢 Mensaje del administrador" not in message["text"]
         assert message["reply_markup"].inline_keyboard[0][0].url == "https://example.org/app"
     calls.clear()
 

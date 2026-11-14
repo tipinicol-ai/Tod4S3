@@ -1201,7 +1201,9 @@ async def broadcast_admin_message(
         keyboard = InlineKeyboardMarkup([
             [btn(item["label"], url=item["url"])] for item in normalized_buttons
         ])
-    message_text = f"📢 Mensaje del administrador\n\n{body}"
+    # Envía exactamente el contenido escrito en el panel, sin añadir un
+    # encabezado automático al mensaje que reciben los usuarios.
+    message_text = body
     caption_fits = len(message_text.encode("utf-16-le")) // 2 <= 900
     for target_id in targets:
         try:
